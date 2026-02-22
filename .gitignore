@@ -1,11 +1,27 @@
+# Build artifacts
 /target
 **/*.rs.bk
+
+# Editor files
 *.swp
 *.swo
+*~
 .vscode/
 .idea/
 *.log
 
+# OS files
+.DS_Store
+Thumbs.db
+
 # Test WAV files (large, not committed — see tests/wav/README.md)
 tests/wav/*.wav
 tests/wav/*.raw
+
+# ISO images and extracted test data
+iso/
+
+# ESP32 build artifacts
+esp32/target/
+esp32/sdkconfig
+esp32/sdkconfig.old
