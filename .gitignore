@@ -1,0 +1,11 @@
+/target
+**/*.rs.bk
+*.swp
+*.swo
+.vscode/
+.idea/
+*.log
+
+# Test WAV files (large, not committed — see tests/wav/README.md)
+tests/wav/*.wav
+tests/wav/*.raw

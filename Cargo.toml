@@ -1,0 +1,15 @@
+[workspace]
+members = [
+    "core",
+    "desktop",
+    "esp32",
+    "shared",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+# TODO: Pick your project name and update this
+description = "A cross-platform packet radio TNC and APRS engine written in Rust"

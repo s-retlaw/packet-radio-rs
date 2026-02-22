@@ -1,0 +1,9 @@
+[package]
+name = "packet-radio-shared"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform std utilities: APRS-IS client, IGate, config"
+
+[dependencies]
+packet-radio-core = { path = "../core", features = ["std"] }

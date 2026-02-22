@@ -1,0 +1,26 @@
+[package]
+name = "packet-radio-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop packet radio TNC — sound card I/O, KISS TCP, APRS-IS"
+
+[dependencies]
+packet-radio-core = { path = "../core", features = ["std", "float", "multi-decoder"] }
+packet-radio-shared = { path = "../shared" }
+
+# Audio I/O
+# cpal = "0.15"
+
+# Async runtime
+# tokio = { version = "1", features = ["full"] }
+
+# CLI argument parsing
+# clap = { version = "4", features = ["derive"] }
+
+# Logging
+# tracing = "0.1"
+# tracing-subscriber = "0.3"
+
+# Serial port (for KISS serial TNC)
+# serialport = "4"

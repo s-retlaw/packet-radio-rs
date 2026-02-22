@@ -1,0 +1,23 @@
+[package]
+name = "packet-radio-esp32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ESP32 packet radio firmware — WiFi IGate, standalone TNC"
+
+# NOTE: This crate requires the ESP32 Rust toolchain.
+# It will not compile with the standard Rust toolchain.
+# See docs/ESP32_GUIDE.md for setup instructions.
+
+[dependencies]
+packet-radio-core = { path = "../core", features = ["alloc", "float"] }
+# packet-radio-shared = { path = "../shared" }
+
+# Uncomment when building for ESP32:
+# esp-idf-hal = "0.44"
+# esp-idf-svc = "0.49"
+# esp-idf-sys = "0.35"
+# log = "0.4"
+
+# [build-dependencies]
+# embuild = "0.32"
