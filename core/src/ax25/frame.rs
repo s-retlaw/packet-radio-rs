@@ -5,6 +5,149 @@
 //! to prevent false flag detection. The receiver must remove these stuffed bits.
 
 use crate::MAX_FRAME_LEN;
+use super::Address;
+
+/// Maximum number of bits in an encoded HDLC frame
+const MAX_ENCODED_BITS: usize = 4096;
+
+/// An HDLC-encoded frame as a sequence of bits.
+pub struct EncodedFrame {
+    /// Each element is 0 or 1
+    pub bits: [u8; MAX_ENCODED_BITS],
+    /// Number of valid bits in the buffer
+    pub bit_count: usize,
+}
+
+impl EncodedFrame {
+    /// Create an empty encoded frame.
+    const fn new() -> Self {
+        Self {
+            bits: [0u8; MAX_ENCODED_BITS],
+            bit_count: 0,
+        }
+    }
+
+    /// Push a single bit. Returns false if buffer is full.
+    fn push_bit(&mut self, bit: u8) -> bool {
+        if self.bit_count >= MAX_ENCODED_BITS {
+            return false;
+        }
+        self.bits[self.bit_count] = bit;
+        self.bit_count += 1;
+        true
+    }
+}
+
+/// Encode raw frame bytes into an HDLC bit stream.
+///
+/// Takes raw frame data (address + control + PID + info, WITHOUT CRC).
+/// Computes CRC, appends it, bit-stuffs the content, and wraps with flag bytes.
+/// Bits are output LSB first within each byte.
+pub fn hdlc_encode(data: &[u8]) -> EncodedFrame {
+    let mut frame = EncodedFrame::new();
+
+    // Compute CRC over the raw data
+    let crc = super::crc16_ccitt(data);
+    let crc_lo = crc as u8;
+    let crc_hi = (crc >> 8) as u8;
+
+    // Emit preamble flags (4x 0x7E) — NOT bit-stuffed
+    for _ in 0..4 {
+        emit_flag(&mut frame);
+    }
+
+    // Bit-stuff and emit data bytes, then CRC bytes (low first, then high)
+    let mut ones_count: u8 = 0;
+    for &byte in data.iter().chain(&[crc_lo, crc_hi]) {
+        // LSB first
+        for bit_pos in 0..8 {
+            let bit = (byte >> bit_pos) & 1;
+            frame.push_bit(bit);
+            if bit == 1 {
+                ones_count += 1;
+                if ones_count == 5 {
+                    // Insert stuffed zero
+                    frame.push_bit(0);
+                    ones_count = 0;
+                }
+            } else {
+                ones_count = 0;
+            }
+        }
+    }
+
+    // Emit postamble flag — NOT bit-stuffed
+    emit_flag(&mut frame);
+
+    frame
+}
+
+/// Emit a single flag byte (0x7E = 01111110) as raw bits, LSB first.
+fn emit_flag(frame: &mut EncodedFrame) {
+    // 0x7E = 0b01111110, LSB first: 0,1,1,1,1,1,1,0
+    let flag: u8 = 0x7E;
+    for bit_pos in 0..8 {
+        frame.push_bit((flag >> bit_pos) & 1);
+    }
+}
+
+/// Build a test AX.25 UI frame from source, destination, and info payload.
+///
+/// Returns the raw frame bytes (address + control + PID + info) in a fixed-size buffer,
+/// along with the number of valid bytes.
+pub fn build_test_frame(
+    src: &str,
+    dest: &str,
+    info: &[u8],
+) -> ([u8; MAX_FRAME_LEN], usize) {
+    let mut buf = [0u8; MAX_FRAME_LEN];
+    let mut pos = 0;
+
+    // Build destination address
+    let dest_addr = address_from_str(dest);
+    let mut dest_bytes = [0u8; 7];
+    dest_addr.to_bytes(&mut dest_bytes, false);
+    buf[pos..pos + 7].copy_from_slice(&dest_bytes);
+    pos += 7;
+
+    // Build source address (last address)
+    let src_addr = address_from_str(src);
+    let mut src_bytes = [0u8; 7];
+    src_addr.to_bytes(&mut src_bytes, true);
+    buf[pos..pos + 7].copy_from_slice(&src_bytes);
+    pos += 7;
+
+    // Control field: UI frame
+    buf[pos] = 0x03;
+    pos += 1;
+
+    // PID: no layer 3
+    buf[pos] = 0xF0;
+    pos += 1;
+
+    // Info payload
+    let info_len = info.len().min(MAX_FRAME_LEN - pos);
+    buf[pos..pos + info_len].copy_from_slice(&info[..info_len]);
+    pos += info_len;
+
+    (buf, pos)
+}
+
+/// Helper to create an Address from a callsign string.
+fn address_from_str(call: &str) -> Address {
+    let mut callsign = [b' '; 6];
+    let bytes = call.as_bytes();
+    let len = bytes.len().min(6);
+    for i in 0..len {
+        callsign[i] = bytes[i];
+    }
+    Address {
+        callsign,
+        callsign_len: len as u8,
+        ssid: 0,
+        h_bit: false,
+    }
+}
 
 /// HDLC decoder state
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -180,9 +323,41 @@ mod tests {
         assert_eq!(decoder.frame_len, 0);
     }
 
-    // TODO: Add tests with known HDLC bit sequences
-    // TODO: Test bit unstuffing
-    // TODO: Test flag detection
-    // TODO: Test abort detection
-    // TODO: Test CRC verification with known frames
+    #[test]
+    fn test_hdlc_encode_roundtrip() {
+        // Build a test frame
+        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"Hello, World!");
+        let raw = &frame_data[..frame_len];
+
+        // Encode it
+        let encoded = hdlc_encode(raw);
+
+        // Decode it
+        let mut decoder = HdlcDecoder::new();
+        let mut decoded: Option<([u8; 330], usize)> = None;
+        for i in 0..encoded.bit_count {
+            if let Some(frame) = decoder.feed_bit(encoded.bits[i] != 0) {
+                let mut buf = [0u8; 330];
+                let len = frame.len();
+                buf[..len].copy_from_slice(frame);
+                decoded = Some((buf, len));
+            }
+        }
+
+        let (dec_buf, dec_len) = decoded.expect("Should have decoded a frame");
+        assert_eq!(&dec_buf[..dec_len], raw);
+    }
+
+    #[test]
+    fn test_build_test_frame_structure() {
+        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"Test");
+        // dest(7) + src(7) + control(1) + pid(1) + info(4) = 20
+        assert_eq!(frame_len, 20);
+        // Control = 0x03
+        assert_eq!(frame_data[14], 0x03);
+        // PID = 0xF0
+        assert_eq!(frame_data[15], 0xF0);
+        // Info
+        assert_eq!(&frame_data[16..20], b"Test");
+    }
 }

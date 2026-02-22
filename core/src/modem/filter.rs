@@ -71,7 +71,8 @@ pub fn bandpass_coeffs(sample_rate: u32, center_freq: f64, bandwidth: f64) -> Bi
 
     let fs = sample_rate as f64;
     let w0 = 2.0 * PI * center_freq / fs;
-    let alpha = (w0 / 2.0 * bandwidth / center_freq).sin();
+    let q = center_freq / bandwidth;
+    let alpha = w0.sin() / (2.0 * q);
 
     let b0 = alpha;
     let b1 = 0.0;
@@ -124,17 +125,20 @@ pub fn lowpass_coeffs(sample_rate: u32, cutoff: f64, q: f64) -> BiquadFilter {
 
 /// Precomputed bandpass filter for AFSK passband (900-2500 Hz) at 11025 Hz.
 /// Passes mark (1200 Hz) and space (2200 Hz), rejects out-of-band noise.
+///
+/// Computed from Audio EQ Cookbook BPF (constant 0 dB peak gain):
+/// center=1700 Hz, BW=1600 Hz (Q=1.0625), Fs=11025 Hz.
 pub const fn afsk_bandpass_11025() -> BiquadFilter {
-    // Precomputed for center=1700 Hz, BW=1600 Hz, Fs=11025 Hz
-    // These are approximate — regenerate with bandpass_coeffs() for precision
-    BiquadFilter::new(13383, 0, -13383, -11784, 5894)
+    BiquadFilter::new(9158, 0, -9158, -26739, 14453)
 }
 
 /// Precomputed lowpass filter for post-detection at 11025 Hz.
-/// Cutoff at ~1200 Hz to smooth the discriminator output.
+/// Cutoff at 1200 Hz to smooth the delay-multiply discriminator output.
+///
+/// Computed from Audio EQ Cookbook LPF:
+/// cutoff=1200 Hz, Q=0.707 (Butterworth), Fs=11025 Hz.
 pub const fn post_detect_lpf_11025() -> BiquadFilter {
-    // Precomputed for cutoff=1200 Hz, Q=0.707, Fs=11025 Hz
-    BiquadFilter::new(5765, 11530, 5765, -7662, 4773)
+    BiquadFilter::new(2547, 5093, 2547, -35110, 12528)
 }
 
 #[cfg(test)]

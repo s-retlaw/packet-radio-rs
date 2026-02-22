@@ -86,20 +86,16 @@ impl<const N: usize> HilbertTransform<N> {
 /// Even-indexed coefficients are zero.
 pub fn hilbert_31() -> HilbertTransform<31> {
     // Precomputed 31-tap Hilbert FIR, Q15 format.
-    // h[n] = (2/(π·(n-15))) × hamming(n) for odd (n-15), 0 for even
-    // Computed externally and rounded to nearest integer.
-    #[allow(clippy::excessive_precision)]
+    // h[n] = (2/(π·k)) × hamming(n) for odd k = n-15, 0 for even k
+    // hamming(n) = 0.54 - 0.46·cos(2πn/30)
+    // Antisymmetric: h[n] = -h[30-n], non-zero only at even array indices.
     let coeffs: [i16; 31] = [
-        0,    -83, 0,   -222, 0,   -579, 0,  -1417, 0, -4246, 0, -20860,
-        0,  20860, 0,   4246, 0,   1417, 0,    579, 0,   222, 0,     83,
-        0,      0, 0,      0, 0,      0, 0,
+        -111,  0,  -192,  0,   -440,  0,   -922,  0,  -1753,  0,  -3213,
+           0,  -6343,   0, -20651,
+           0,
+        20651,  0,   6343,  0,   3213,  0,   1753,  0,    922,  0,    440,
+           0,    192,  0,    111,
     ];
-    // NOTE: These coefficients are approximate placeholders.
-    // TODO: Generate exact coefficients using the formula:
-    //   h[n] = (2/π) × (1/(n-M)) × w[n]  for odd (n-M)
-    //   h[n] = 0                           for even (n-M)
-    //   where M = 15 (center), w[n] = 0.54 - 0.46·cos(2πn/30) (Hamming)
-    // The correct values should be computed in a build script or test.
 
     HilbertTransform::new(coeffs)
 }
@@ -253,18 +249,121 @@ mod tests {
     }
 
     #[test]
-    fn test_inst_freq_constant_tone() {
-        // For a constant tone, the phase difference between successive
-        // analytic samples should give the frequency.
-        // This is a simplified test — real Hilbert output needed for full test.
-        let _det = InstFreqDetector::new(11025);
-        // With proper analytic signal input, frequency should track the tone.
-        // Full integration test needed with HilbertTransform + InstFreqDetector.
-    }
-
-    #[test]
     fn test_hilbert_group_delay() {
         let h = hilbert_31();
         assert_eq!(h.group_delay(), 15);
+    }
+
+    /// Recompute 31-tap Hilbert coefficients with f64 and validate the
+    /// precomputed Q15 table matches.
+    #[test]
+    fn test_hilbert_coefficients_match_formula() {
+        use core::f64::consts::PI;
+
+        let h = hilbert_31();
+        let n_taps = 31;
+        let center = 15;
+
+        for n in 0..n_taps {
+            let k = n as i32 - center as i32;
+            let expected = if k % 2 == 0 {
+                0i16
+            } else {
+                let hamming = 0.54 - 0.46 * (2.0 * PI * n as f64 / 30.0).cos();
+                let h_val = (2.0 / (PI * k as f64)) * hamming;
+                let q15 = (h_val * 32768.0).round() as i16;
+                q15
+            };
+
+            assert_eq!(h.coeffs[n], expected,
+                "Coefficient mismatch at n={}, k={}: got {}, expected {}",
+                n, k, h.coeffs[n], expected);
+        }
+    }
+
+    /// Verify antisymmetry: h[n] = -h[30-n]
+    #[test]
+    fn test_hilbert_antisymmetry() {
+        let h = hilbert_31();
+        for n in 0..15 {
+            assert_eq!(h.coeffs[n], -h.coeffs[30 - n],
+                "Antisymmetry failed at n={}: h[{}]={}, h[{}]={}",
+                n, n, h.coeffs[n], 30 - n, h.coeffs[30 - n]);
+        }
+        assert_eq!(h.coeffs[15], 0, "Center tap must be zero");
+    }
+
+    /// Feed a 1700 Hz tone through the Hilbert transform and verify the
+    /// output envelope (real² + imag²) is roughly constant after the
+    /// initial transient settles.
+    #[test]
+    fn test_hilbert_envelope_constant_tone() {
+        use core::f64::consts::PI;
+
+        let sample_rate = 11025u32;
+        let freq = 1700.0f64;
+        let amplitude = 16000i16;
+
+        let mut h = hilbert_31();
+        let num_samples = 500;
+        let transient = 50; // Skip initial samples for filter to settle
+
+        let mut envelopes = [0i64; 500];
+        for i in 0..num_samples {
+            let t = i as f64 / sample_rate as f64;
+            let sample = (amplitude as f64 * (2.0 * PI * freq * t).sin()) as i16;
+            let (real, imag) = h.process(sample);
+            envelopes[i] = (real as i64) * (real as i64) + (imag as i64) * (imag as i64);
+        }
+
+        // After the transient, the envelope should be roughly constant.
+        let steady = &envelopes[transient..num_samples];
+        let mean: i64 = steady.iter().sum::<i64>() / steady.len() as i64;
+        assert!(mean > 0, "Envelope mean should be positive, got {}", mean);
+
+        // Check that all steady-state envelopes are within 25% of the mean
+        for (i, &env) in steady.iter().enumerate() {
+            let ratio = (env as f64) / (mean as f64);
+            assert!(ratio > 0.75 && ratio < 1.25,
+                "Envelope at sample {} deviates too much: ratio={:.3}, env={}, mean={}",
+                i + transient, ratio, env, mean);
+        }
+    }
+
+    /// Feed a 1700 Hz tone through Hilbert + InstFreqDetector and verify
+    /// the frequency estimate is within 10% of 1700 Hz.
+    #[test]
+    fn test_hilbert_inst_freq_1700hz() {
+        use core::f64::consts::PI;
+
+        let sample_rate = 11025u32;
+        let freq = 1700.0f64;
+        let amplitude = 16000i16;
+
+        let mut h = hilbert_31();
+        let mut det = InstFreqDetector::new(sample_rate);
+
+        let num_samples = 500;
+        let transient = 60; // Filter + detector settling
+
+        let mut freq_estimates = [0i32; 500];
+        for i in 0..num_samples {
+            let t = i as f64 / sample_rate as f64;
+            let sample = (amplitude as f64 * (2.0 * PI * freq * t).sin()) as i16;
+            let (real, imag) = h.process(sample);
+            freq_estimates[i] = det.process(real, imag);
+        }
+
+        // After settling, frequency estimates (in Hz × 256) should be near 1700 × 256
+        let expected_fp = (freq * 256.0) as i32;
+        let tolerance = (expected_fp as f64 * 0.10) as i32; // 10%
+
+        let steady = &freq_estimates[transient..num_samples];
+        let mean: i64 = steady.iter().map(|&f| f as i64).sum::<i64>() / steady.len() as i64;
+        let mean_hz = mean as f64 / 256.0;
+
+        assert!((mean as i32 - expected_fp).abs() < tolerance,
+            "Mean frequency estimate {:.1} Hz deviates from expected {:.1} Hz by more than 10%",
+            mean_hz, freq);
     }
 }

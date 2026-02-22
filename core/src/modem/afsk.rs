@@ -17,6 +17,8 @@ pub struct AfskModulator {
     space_step: u32,
     /// Current NRZI tone state (true = mark, false = space)
     nrzi_state: bool,
+    /// Fractional bit timing accumulator (Bresenham-style)
+    bit_phase: u32,
 }
 
 impl AfskModulator {
@@ -32,6 +34,7 @@ impl AfskModulator {
             mark_step: mark_step as u32,
             space_step: space_step as u32,
             nrzi_state: false,
+            bit_phase: 0,
         }
     }
 
@@ -39,6 +42,7 @@ impl AfskModulator {
     pub fn reset(&mut self) {
         self.phase = 0;
         self.nrzi_state = false;
+        self.bit_phase = 0;
     }
 
     /// Generate audio for one data bit.
@@ -53,7 +57,12 @@ impl AfskModulator {
         }
 
         let step = if self.nrzi_state { self.mark_step } else { self.space_step };
-        let count = self.samples_per_symbol().min(out.len());
+        // Bresenham-style fractional timing: accumulate sample_rate,
+        // divide by baud_rate, keep remainder. This produces symbol lengths
+        // of floor(sr/br) or ceil(sr/br) samples that average exactly sr/br.
+        self.bit_phase += self.config.sample_rate;
+        let count = ((self.bit_phase / self.config.baud_rate) as usize).min(out.len());
+        self.bit_phase %= self.config.baud_rate;
 
         for sample in out[..count].iter_mut() {
             let idx = (self.phase >> 24) as usize; // Top 8 bits → table index
@@ -67,26 +76,17 @@ impl AfskModulator {
 
     /// Generate a flag byte (0x7E = 01111110) for preamble/postamble.
     ///
-    /// Unlike `modulate_bit`, this does NOT apply NRZI encoding or bit
-    /// stuffing — the flag pattern is sent raw.
+    /// Flags go through NRZI encoding just like data bits. The HDLC
+    /// receiver detects flags after NRZI decoding based on the resulting
+    /// tone pattern. 0x7E sent LSB first = 0,1,1,1,1,1,1,0.
     pub fn modulate_flag(&mut self, out: &mut [i16]) -> usize {
+        // 0x7E = 01111110, sent LSB first
         let flag_bits: [bool; 8] = [false, true, true, true, true, true, true, false];
-        let sps = self.samples_per_symbol();
         let mut total = 0;
 
         for &bit in &flag_bits {
-            // For flags, we bypass NRZI and send the raw bit pattern
-            // 0 = space (2200 Hz), 1 = mark (1200 Hz)
-            let step = if bit { self.mark_step } else { self.space_step };
-            let count = sps.min(out.len() - total);
-
-            for sample in out[total..total + count].iter_mut() {
-                let idx = (self.phase >> 24) as usize;
-                let sin_val = SIN_TABLE_Q15[idx];
-                *sample = ((sin_val as i32 * self.config.amplitude as i32) >> 15) as i16;
-                self.phase = self.phase.wrapping_add(step);
-            }
-            total += count;
+            let n = self.modulate_bit(bit, &mut out[total..]);
+            total += n;
         }
 
         total
@@ -189,5 +189,48 @@ mod tests {
         m.reset();
         assert_eq!(m.phase, 0);
         assert!(!m.nrzi_state());
+    }
+
+    #[test]
+    fn test_modulate_flag_equals_individual_bits() {
+        // modulate_flag must produce the same output as calling modulate_bit
+        // for each bit of 0x7E (LSB first: 0,1,1,1,1,1,1,0)
+        let flag_bits: [bool; 8] = [false, true, true, true, true, true, true, false];
+
+        // Generate via modulate_flag
+        let mut m1 = default_mod();
+        let mut buf_flag = [0i16; 256];
+        let n_flag = m1.modulate_flag(&mut buf_flag);
+
+        // Generate via individual modulate_bit calls
+        let mut m2 = default_mod();
+        let mut buf_bits = [0i16; 256];
+        let mut n_bits = 0;
+        for &bit in &flag_bits {
+            let n = m2.modulate_bit(bit, &mut buf_bits[n_bits..]);
+            n_bits += n;
+        }
+
+        assert_eq!(n_flag, n_bits, "Flag and individual bit counts differ");
+        assert_eq!(&buf_flag[..n_flag], &buf_bits[..n_bits],
+            "Flag output differs from individual bit output");
+        assert_eq!(m1.nrzi_state(), m2.nrzi_state(),
+            "NRZI state differs after flag vs individual bits");
+        assert_eq!(m1.phase, m2.phase,
+            "Phase differs after flag vs individual bits");
+    }
+
+    #[test]
+    fn test_modulate_flag_applies_nrzi() {
+        // Verify that modulate_flag changes NRZI state (the flag byte
+        // 0x7E has two 0-bits which toggle NRZI)
+        let mut m = default_mod();
+        let initial = m.nrzi_state();
+        let mut buf = [0i16; 256];
+        m.modulate_flag(&mut buf);
+        // 0x7E LSB first: 0,1,1,1,1,1,1,0
+        // Two 0-bits toggle NRZI, net effect: no change (toggled twice)
+        assert_eq!(m.nrzi_state(), initial,
+            "Two toggles in flag should return to original NRZI state");
     }
 }
