@@ -4,6 +4,7 @@ members = [
     "desktop",
     "esp32",
     "shared",
+    "tests/benchmark",
 ]
 resolver = "2"
 

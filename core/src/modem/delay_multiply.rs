@@ -1,11 +1,9 @@
-//! Delay-and-Multiply Frequency Discriminator (Embedded Fast Path)
+//! Delay-and-Multiply Frequency Discriminator — **experimental, not integrated**.
 //!
-//! A lightweight frequency detector that multiplies the signal by a delayed
-//! copy of itself. After lowpass filtering, the output polarity indicates
-//! whether the input frequency is closer to mark (1200 Hz) or space (2200 Hz).
-//!
-//! This requires only **one multiply per sample** versus four for a correlator,
-//! making it ideal for resource-constrained embedded targets (RP2040, Cortex-M0).
+//! This module implements a lightweight frequency detector but is NOT used by
+//! the active demodulators (`FastDemodulator`/`QualityDemodulator`), which use
+//! Goertzel tone detection instead. Kept as reference for potential future use
+//! on extremely constrained targets where Goertzel is too expensive.
 //!
 //! See docs/MODEM_DESIGN.md for the mathematical derivation.
 

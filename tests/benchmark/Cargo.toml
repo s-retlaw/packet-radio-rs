@@ -1,0 +1,13 @@
+[package]
+name = "benchmark"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "WA8LMF TNC Test CD benchmark runner"
+
+[[bin]]
+name = "benchmark"
+path = "main.rs"
+
+[dependencies]
+packet-radio-core = { path = "../../core", features = ["std", "multi-decoder"] }

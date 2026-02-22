@@ -8,14 +8,14 @@ description = "no_std core library for packet radio: AFSK modem, AX.25, APRS, KI
 [features]
 default = []
 alloc = []          # Enable Vec/String in APRS parser
-std = ["alloc"]     # Full standard library support
+std = ["alloc", "dep:libm"]  # Full standard library support
 float = []          # Use f32 for DSP (vs fixed-point i16)
 multi-decoder = []  # Multiple parallel demodulators
 9600-baud = []      # G3RUH/GMSK modem support
 fx25 = []           # FX.25 forward error correction
 
 [dependencies]
-# No dependencies by default — this is a no_std crate
+libm = { version = "0.2", optional = true }
 
 [dev-dependencies]
 # Test dependencies (only used on host)

@@ -144,7 +144,7 @@ impl SoftHdlcDecoder {
     fn process_bit(&mut self, bit: bool) -> Option<FrameResult<'_>> {
         // Track consecutive ones for flag/abort detection
         if bit {
-            self.ones_count += 1;
+            self.ones_count = self.ones_count.saturating_add(1);
         } else {
             // Check for flag pattern: 01111110
             if self.ones_count == 6 {

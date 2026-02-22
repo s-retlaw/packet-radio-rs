@@ -10,17 +10,21 @@ packet-radio-core = { path = "../core", features = ["std", "float", "multi-decod
 packet-radio-shared = { path = "../shared" }
 
 # Audio I/O
-# cpal = "0.15"
+cpal = "0.15"
+hound = "3"
 
 # Async runtime
-# tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
 
 # CLI argument parsing
-# clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 
 # Logging
-# tracing = "0.1"
-# tracing-subscriber = "0.3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Lock-free channel for audio thread -> processing thread
+crossbeam-channel = "0.5"
 
 # Serial port (for KISS serial TNC)
 # serialport = "4"

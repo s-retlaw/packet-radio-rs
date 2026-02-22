@@ -58,19 +58,17 @@ cargo build -p packet-radio-core --no-default-features
 Most modules are scaffolded with documented stubs and TODOs. The recommended
 implementation order (from docs/GETTING_STARTED.md):
 
-1. ✅ AX.25 address parser (scaffolded, needs tests)
-2. ✅ HDLC framing (scaffolded, needs implementation)
-3. ✅ KISS protocol (scaffolded with working encode/decode)
-4. 🔲 AFSK demodulator — DUAL PATH ARCHITECTURE:
-      - **Fast path**: Delay-multiply discriminator → LPF → PLL → hard bits
-        (for RP2040, Cortex-M0, resource-constrained targets)
-      - **Quality path**: Hilbert transform → instantaneous frequency →
-        adaptive tracker → PLL → soft bits → bit-flip recovery
-        (for desktop, ESP32 — significantly better decode performance)
-      - See docs/MODEM_DESIGN.md for complete design
-5. 🔲 AFSK modulator (NCO phase accumulator, sin table)
-6. 🔲 APRS parser (stub — position and Mic-E parsing needed)
-7. 🔲 Desktop audio I/O
+1. ✅ AX.25 address parser
+2. ✅ HDLC framing (hard + soft/bit-flip recovery)
+3. ✅ KISS protocol (working encode/decode)
+4. ✅ AFSK demodulator — THREE DECODE MODES:
+      - **Fast path**: BPF → Goertzel tone detection → Bresenham timing → hard bits
+      - **Quality path**: Same + Hilbert LLR → SoftHdlcDecoder (1-2 bit recovery)
+      - **Multi-decoder**: 9× parallel fast decoders with filter/timing diversity
+      - delay_multiply.rs and pll.rs are experimental/unused reference code
+5. ✅ AFSK modulator (NCO phase accumulator, sin table)
+6. ✅ APRS parser (position, Mic-E, message parsing)
+7. ✅ Desktop TNC (cpal audio, WAV decode, KISS TCP, --quality/--multi modes)
 8. 🔲 APRS-IS client
 9. 🔲 ESP32 firmware
 

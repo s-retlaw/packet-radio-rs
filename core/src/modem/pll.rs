@@ -1,13 +1,11 @@
-//! Clock Recovery PLL
+//! Clock Recovery PLL — **experimental, not integrated**.
 //!
-//! A digital phase-locked loop that synchronizes with the transmitter's
-//! baud rate clock by tracking symbol transitions (sign changes in the
-//! discriminator output).
+//! This module implements a digital phase-locked loop but is NOT used by the
+//! active demodulators, which use Bresenham fixed-rate symbol timing instead.
+//! Kept as reference for potential future use with adaptive symbol timing.
 //!
-//! At each symbol boundary, the PLL outputs the discriminator value at
-//! the optimal sampling instant. This value can be:
-//! - **Thresholded** for a hard bit (fast path)
-//! - **Used as-is** for a soft bit / LLR (quality path)
+//! The Bresenham approach was chosen over PLL because it exactly matches the
+//! modulator's timing, avoiding PLL lock/jitter issues on noisy signals.
 
 /// Digital PLL for clock recovery.
 pub struct ClockRecoveryPll {

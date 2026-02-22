@@ -1,16 +1,17 @@
 //! AFSK Demodulator — Bell 202 audio to bit stream.
 //!
-//! Dual-path architecture:
+//! Dual-path architecture using Goertzel tone detection + Bresenham symbol timing:
 //!
-//! **Fast path**: Bandpass → Delay-multiply discriminator → PLL → hard bits.
-//! Minimal CPU and memory for embedded targets.
+//! **Fast path**: Bandpass → Goertzel mark/space energy → Bresenham timing →
+//! NRZI decode → hard bits. Minimal CPU and memory for embedded targets.
 //!
-//! **Quality path**: Bandpass → Hilbert → instantaneous frequency →
-//! adaptive tracker → PLL → soft bits → bit-flip recovery.
-//! Better decode performance for desktop and ESP32.
+//! **Quality path**: Same Goertzel+Bresenham core, plus Hilbert transform →
+//! instantaneous frequency → adaptive tracker for LLR confidence values.
+//! Feeds `SoftHdlcDecoder` for bit-flip error recovery (1-2 bit corrections).
 //!
 //! Both paths produce NRZI-decoded bits that feed into the HDLC decoder.
-//! See docs/MODEM_DESIGN.md for the full design rationale.
+//! The multi-decoder (`multi.rs`) runs multiple fast-path instances with
+//! filter and timing diversity for maximum decode performance.
 
 use super::DemodConfig;
 use super::filter::BiquadFilter;
@@ -57,9 +58,18 @@ pub struct FastDemodulator {
 }
 
 impl FastDemodulator {
+    /// Select the appropriate BPF for a given sample rate.
+    fn select_bpf(sample_rate: u32) -> BiquadFilter {
+        match sample_rate {
+            22050 => super::filter::afsk_bandpass_22050(),
+            44100 => super::filter::afsk_bandpass_44100(),
+            _ => super::filter::afsk_bandpass_11025(),
+        }
+    }
+
     /// Create a new fast-path demodulator.
     pub fn new(config: DemodConfig) -> Self {
-        let bpf = super::filter::afsk_bandpass_11025();
+        let bpf = Self::select_bpf(config.sample_rate);
 
         let mark_coeff = goertzel_coeff(config.mark_freq, config.sample_rate);
         let space_coeff = goertzel_coeff(config.space_freq, config.sample_rate);
@@ -76,6 +86,62 @@ impl FastDemodulator {
             mark_coeff,
             space_coeff,
             bit_phase: 0,
+        }
+    }
+
+    /// Create with a custom bandpass filter.
+    pub fn with_filter(config: DemodConfig, bpf: BiquadFilter) -> Self {
+        let mark_coeff = goertzel_coeff(config.mark_freq, config.sample_rate);
+        let space_coeff = goertzel_coeff(config.space_freq, config.sample_rate);
+
+        Self {
+            config,
+            bpf,
+            prev_nrzi_bit: false,
+            samples_processed: 0,
+            mark_s1: 0,
+            mark_s2: 0,
+            space_s1: 0,
+            space_s2: 0,
+            mark_coeff,
+            space_coeff,
+            bit_phase: 0,
+        }
+    }
+
+    /// Create with custom filter and initial timing offset.
+    pub fn with_filter_and_offset(config: DemodConfig, bpf: BiquadFilter, phase_offset: u32) -> Self {
+        let mut d = Self::with_filter(config, bpf);
+        d.bit_phase = phase_offset;
+        d
+    }
+
+    /// Create with custom filter, timing offset, and frequency offset.
+    ///
+    /// The mark/space frequencies are shifted by `freq_offset` Hz, allowing
+    /// the decoder to handle transmitters with crystal frequency error.
+    pub fn with_filter_freq_and_offset(
+        config: DemodConfig,
+        bpf: BiquadFilter,
+        phase_offset: u32,
+        mark_freq: u32,
+        space_freq: u32,
+    ) -> Self {
+        let mark_coeff = goertzel_coeff(mark_freq, config.sample_rate);
+        let space_coeff = goertzel_coeff(space_freq, config.sample_rate);
+
+        Self {
+            config,
+            bpf,
+            prev_nrzi_bit: false,
+            samples_processed: 0,
+            mark_s1: 0,
+            mark_s2: 0,
+            space_s1: 0,
+            space_s2: 0,
+            mark_coeff,
+            space_coeff,
+            bit_phase: phase_offset,
         }
     }
 
@@ -165,8 +231,12 @@ fn goertzel_coeff(freq: u32, sample_rate: u32) -> i32 {
     // floating-point at runtime.
     // For other frequencies, we precompute at initialization time.
     match (freq, sample_rate) {
-        (1200, 11025) => 25328, // 2·cos(2π·1200/11025) × 16384
-        (2200, 11025) => 10126, // 2·cos(2π·2200/11025) × 16384
+        (1200, 11025) => 25328,  // 2·cos(2π·1200/11025) × 16384
+        (2200, 11025) => 10126,  // 2·cos(2π·2200/11025) × 16384
+        (1200, 22050) => 30870,  // 2·cos(2π·1200/22050) × 16384
+        (2200, 22050) => 26537,  // 2·cos(2π·2200/22050) × 16384
+        (1200, 44100) => 32290,  // 2·cos(2π·1200/44100) × 16384
+        (2200, 44100) => 31171,  // 2·cos(2π·2200/44100) × 16384
         _ => {
             // Approximate using integer arithmetic.
             // For unsupported rates, fall back to a rough calculation.
@@ -175,7 +245,7 @@ fn goertzel_coeff(freq: u32, sample_rate: u32) -> i32 {
             #[cfg(feature = "std")]
             {
                 let w = 2.0 * core::f64::consts::PI * freq as f64 / sample_rate as f64;
-                (2.0 * w.cos() * 16384.0) as i32
+                (2.0 * libm::cos(w) * 16384.0) as i32
             }
             #[cfg(not(feature = "std"))]
             {
@@ -219,7 +289,11 @@ pub struct QualityDemodulator {
 impl QualityDemodulator {
     /// Create a new quality-path demodulator.
     pub fn new(config: DemodConfig) -> Self {
-        let bpf = super::filter::afsk_bandpass_11025();
+        let bpf = match config.sample_rate {
+            22050 => super::filter::afsk_bandpass_22050(),
+            44100 => super::filter::afsk_bandpass_44100(),
+            _ => super::filter::afsk_bandpass_11025(),
+        };
         let hilbert = hilbert_31();
         let inst_freq = InstFreqDetector::new(config.sample_rate);
         let tracker = AdaptiveTracker::new(config.sample_rate);
@@ -329,7 +403,8 @@ impl QualityDemodulator {
                 let decoded_bit = raw_bit == self.prev_nrzi_bit;
                 self.prev_nrzi_bit = raw_bit;
 
-                let decoded_llr = if decoded_bit { llr.abs() } else { -(llr.abs()) };
+                let confidence = (llr.abs() as i8).max(1);
+                let decoded_llr = if decoded_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
                     symbols_out[sym_count] = DemodSymbol {
@@ -346,6 +421,7 @@ impl QualityDemodulator {
                 self.space_s2 = 0;
                 self.freq_accum = 0;
                 self.freq_count = 0;
+
             }
         }
 

@@ -1,20 +1,24 @@
 //! AFSK Modem — Bell 202 modulation and demodulation
 //!
 //! This module provides the core DSP for 1200 baud AFSK as used in APRS and
-//! packet radio. Two demodulation paths are available:
+//! packet radio. Three demodulation modes are available:
 //!
-//! **Fast path** (`fast-demod` feature): Delay-and-multiply discriminator with
-//! hard-decision decoding. Minimal CPU/RAM — suitable for Cortex-M0, RP2040.
+//! **Fast path**: Goertzel tone detection with Bresenham symbol timing.
+//! Hard-decision decoding. Minimal CPU/RAM — suitable for Cortex-M0, RP2040.
 //!
-//! **Quality path** (`quality-demod` feature, default): Hilbert transform for
-//! instantaneous frequency estimation, adaptive preamble training, and soft-
-//! decision HDLC decoding with bit-flip error correction.
+//! **Quality path**: Same Goertzel+Bresenham core, plus Hilbert transform for
+//! LLR confidence values. Feeds SoftHdlcDecoder for 1-2 bit error recovery.
+//!
+//! **Multi-decoder** (`multi-decoder` feature): 17 parallel fast-path decoders
+//! with filter bandwidth, timing offset, and frequency offset diversity.
+//! 95% of Dire Wolf on WA8LMF benchmark.
 //!
 //! # Architecture
 //!
 //! ```text
-//! Fast:    Samples → BPF → Delay-Multiply → LPF → PLL → NRZI → HDLC
-//! Quality: Samples → BPF → Hilbert → InstFreq → Adaptive → SoftPLL → SoftHDLC
+//! Fast:    Samples → BPF → Goertzel → Bresenham → NRZI → HDLC
+//! Quality: Samples → BPF → Goertzel+Hilbert → Bresenham → NRZI → SoftHDLC
+//! Multi:   Samples → [17× (shifted BPF → shifted Goertzel → offset Bresenham → HDLC)] → Dedup
 //! Mod:     Bits → NRZI Encode → Phase Accumulator (NCO) → Samples
 //! ```
 //!
@@ -22,12 +26,14 @@
 
 pub mod afsk;
 pub mod demod;
-pub mod delay_multiply;
+pub mod delay_multiply; // experimental — not integrated into active demodulators
 pub mod filter;
 pub mod hilbert;
 pub mod adaptive;
-pub mod pll;
+pub mod pll; // experimental — not integrated into active demodulators
 pub mod soft_hdlc;
+#[cfg(feature = "multi-decoder")]
+pub mod multi;
 
 /// Standard Bell 202 mark frequency (Hz)
 pub const MARK_FREQ: u32 = 1200;

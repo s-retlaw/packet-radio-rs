@@ -10,6 +10,7 @@
 ///
 /// Transfer function:
 ///   H(z) = (b0 + b1·z⁻¹ + b2·z⁻²) / (1 + a1·z⁻¹ + a2·z⁻²)
+#[derive(Clone, Copy)]
 pub struct BiquadFilter {
     pub b0: i32,
     pub b1: i32,
@@ -72,13 +73,13 @@ pub fn bandpass_coeffs(sample_rate: u32, center_freq: f64, bandwidth: f64) -> Bi
     let fs = sample_rate as f64;
     let w0 = 2.0 * PI * center_freq / fs;
     let q = center_freq / bandwidth;
-    let alpha = w0.sin() / (2.0 * q);
+    let alpha = libm::sin(w0) / (2.0 * q);
 
     let b0 = alpha;
     let b1 = 0.0;
     let b2 = -alpha;
     let a0 = 1.0 + alpha;
-    let a1 = -2.0 * w0.cos();
+    let a1 = -2.0 * libm::cos(w0);
     let a2 = 1.0 - alpha;
 
     // Normalize by a0 and convert to Q15
@@ -103,9 +104,9 @@ pub fn lowpass_coeffs(sample_rate: u32, cutoff: f64, q: f64) -> BiquadFilter {
 
     let fs = sample_rate as f64;
     let w0 = 2.0 * PI * cutoff / fs;
-    let alpha = w0.sin() / (2.0 * q);
+    let alpha = libm::sin(w0) / (2.0 * q);
 
-    let cos_w0 = w0.cos();
+    let cos_w0 = libm::cos(w0);
     let b0 = (1.0 - cos_w0) / 2.0;
     let b1 = 1.0 - cos_w0;
     let b2 = (1.0 - cos_w0) / 2.0;
@@ -130,6 +131,30 @@ pub fn lowpass_coeffs(sample_rate: u32, cutoff: f64, q: f64) -> BiquadFilter {
 /// center=1700 Hz, BW=1600 Hz (Q=1.0625), Fs=11025 Hz.
 pub const fn afsk_bandpass_11025() -> BiquadFilter {
     BiquadFilter::new(9158, 0, -9158, -26739, 14453)
+}
+
+/// Precomputed bandpass filter for AFSK passband at 22050 Hz sample rate.
+/// center=1700 Hz, BW=1600 Hz.
+pub const fn afsk_bandpass_22050() -> BiquadFilter {
+    BiquadFilter::new(5890, 0, -5890, -47570, 20987)
+}
+
+/// Precomputed bandpass filter for AFSK passband at 44100 Hz sample rate.
+/// center=1700 Hz, BW=1600 Hz.
+pub const fn afsk_bandpass_44100() -> BiquadFilter {
+    BiquadFilter::new(3323, 0, -3323, -57170, 26121)
+}
+
+/// Narrow bandpass filter at 11025 Hz — better noise rejection.
+/// center=1700 Hz, BW=1200 Hz (Q=1.417).
+pub const fn afsk_bandpass_narrow_11025() -> BiquadFilter {
+    BiquadFilter::new(7384, 0, -7384, -28747, 17999)
+}
+
+/// Wide bandpass filter at 11025 Hz — tolerates frequency drift.
+/// center=1700 Hz, BW=2000 Hz (Q=0.85).
+pub const fn afsk_bandpass_wide_11025() -> BiquadFilter {
+    BiquadFilter::new(10699, 0, -10699, -24992, 11368)
 }
 
 /// Precomputed lowpass filter for post-detection at 11025 Hz.

@@ -148,23 +148,52 @@ pub fn scale_amplitude(samples: &[i16], factor: f64) -> Vec<i16> {
         .collect()
 }
 
-/// Apply a frequency offset to simulate transmitter drift.
-/// Shifts all frequencies by `offset_hz`.
+/// Apply a frequency offset to simulate transmitter crystal drift.
+///
+/// Uses SSB (single-sideband) shift via Hilbert transform so each tone
+/// shifts to a single new frequency without image artifacts.
 pub fn apply_frequency_offset(
     samples: &[i16],
     offset_hz: f64,
     sample_rate: u32,
 ) -> Vec<i16> {
+    // Hilbert transform via windowed FIR (length 31)
+    const HALF_LEN: usize = 15;
+    const HILBERT_LEN: usize = 2 * HALF_LEN + 1;
+    let mut hilbert_coeffs = [0.0f64; HILBERT_LEN];
+    for i in 0..HILBERT_LEN {
+        let n = i as isize - HALF_LEN as isize;
+        if n != 0 && n % 2 != 0 {
+            let hamming = 0.54 - 0.46 * f64::cos(TAU * i as f64 / (HILBERT_LEN - 1) as f64);
+            hilbert_coeffs[i] = (2.0 / (std::f64::consts::PI * n as f64)) * hamming;
+        }
+    }
+
     let phase_step = TAU * offset_hz / sample_rate as f64;
+    let mut delay_line = vec![0.0f64; HILBERT_LEN];
+    let mut write_idx = 0;
     let mut phase = 0.0;
 
     samples.iter()
         .map(|&s| {
-            // Frequency shift by multiplying with complex exponential
-            // For real signal: multiply by cos (loses some info but adequate for testing)
-            let shifted = s as f64 * f64::cos(phase);
+            let x = s as f64;
+            delay_line[write_idx] = x;
+            write_idx = (write_idx + 1) % HILBERT_LEN;
+
+            let mut q = 0.0;
+            for k in 0..HILBERT_LEN {
+                let idx = (write_idx + k) % HILBERT_LEN;
+                q += delay_line[idx] * hilbert_coeffs[k];
+            }
+            let i_delayed = delay_line[(write_idx + HALF_LEN) % HILBERT_LEN];
+
+            let cos_p = f64::cos(phase);
+            let sin_p = f64::sin(phase);
+            let shifted = i_delayed * cos_p - q * sin_p;
+
             phase += phase_step;
             if phase > TAU { phase -= TAU; }
+
             shifted.clamp(-32768.0, 32767.0) as i16
         })
         .collect()
