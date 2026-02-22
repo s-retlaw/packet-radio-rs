@@ -55,6 +55,10 @@ pub struct FastDemodulator {
     space_coeff: i32,
     /// Bresenham fractional bit timing
     bit_phase: u32,
+    /// Space energy gain in Q8 (256 = 0 dB, 512 = +3 dB energy).
+    /// Models Dire Wolf's multi-slicer: different gain levels on space
+    /// tone compensate for de-emphasis and varying audio paths.
+    space_gain_q8: u16,
 }
 
 impl FastDemodulator {
@@ -86,6 +90,7 @@ impl FastDemodulator {
             mark_coeff,
             space_coeff,
             bit_phase: 0,
+            space_gain_q8: 256,
         }
     }
 
@@ -106,6 +111,7 @@ impl FastDemodulator {
             mark_coeff,
             space_coeff,
             bit_phase: 0,
+            space_gain_q8: 256,
         }
     }
 
@@ -142,7 +148,18 @@ impl FastDemodulator {
             mark_coeff,
             space_coeff,
             bit_phase: phase_offset,
+            space_gain_q8: 256,
         }
+    }
+
+    /// Set space energy gain for multi-slicer diversity.
+    ///
+    /// Q8 format: 256 = 0 dB (no gain), higher values boost space energy
+    /// relative to mark. Used to handle de-emphasized audio where the
+    /// space tone (2200 Hz) is weaker than mark (1200 Hz).
+    pub fn with_space_gain(mut self, gain_q8: u16) -> Self {
+        self.space_gain_q8 = gain_q8;
+        self
     }
 
     /// Reset demodulator state.
@@ -199,7 +216,8 @@ impl FastDemodulator {
                     + self.space_s2 * self.space_s2
                     - ((self.space_coeff as i64 * self.space_s1 * self.space_s2) >> 14);
 
-                let raw_bit = mark_energy > space_energy;
+                // Apply space gain (multi-slicer): compare mark×256 vs space×gain
+                let raw_bit = mark_energy * 256 > space_energy * (self.space_gain_q8 as i64);
 
                 // 5. NRZI decode
                 let decoded_bit = raw_bit == self.prev_nrzi_bit;
@@ -391,20 +409,24 @@ impl QualityDemodulator {
 
                 let raw_bit = mark_energy > space_energy;
 
-                // 6. Generate LLR from average frequency over symbol period
-                let avg_freq = if self.freq_count > 0 {
-                    (self.freq_accum / self.freq_count as i64) as i32
+                // 6. Generate LLR from Goertzel energy ratio
+                // This provides natural confidence variation: symbols where
+                // mark and space energies are similar get low confidence,
+                // enabling SoftHdlcDecoder to identify bits to flip.
+                let total = mark_energy + space_energy;
+                let energy_llr = if total > 0 {
+                    let ratio = ((mark_energy - space_energy) * 127) / total;
+                    ratio.clamp(-127, 127) as i8
                 } else {
-                    self.tracker.threshold
+                    0i8
                 };
-                let llr = self.tracker.freq_to_llr(avg_freq);
 
                 // 7. NRZI decode
                 let decoded_bit = raw_bit == self.prev_nrzi_bit;
                 self.prev_nrzi_bit = raw_bit;
 
-                let confidence = (llr.abs() as i8).max(1);
-                let decoded_llr = if decoded_bit { confidence } else { -confidence };
+                let confidence = energy_llr.unsigned_abs().max(1);
+                let decoded_llr = if decoded_bit { confidence as i8 } else { -(confidence as i8) };
 
                 if sym_count < symbols_out.len() {
                     symbols_out[sym_count] = DemodSymbol {

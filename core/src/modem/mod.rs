@@ -9,9 +9,10 @@
 //! **Quality path**: Same Goertzel+Bresenham core, plus Hilbert transform for
 //! LLR confidence values. Feeds SoftHdlcDecoder for 1-2 bit error recovery.
 //!
-//! **Multi-decoder** (`multi-decoder` feature): 17 parallel fast-path decoders
-//! with filter bandwidth, timing offset, and frequency offset diversity.
-//! 95% of Dire Wolf on WA8LMF benchmark.
+//! **Multi-decoder** (`multi-decoder` feature): 30 parallel fast-path decoders
+//! with filter bandwidth, timing offset, frequency offset, and gain diversity.
+//! Gain diversity (Dire Wolf multi-slicer approach) handles de-emphasized audio.
+//! Cross-product decoders handle combined freq offset + de-emphasis.
 //!
 //! # Architecture
 //!

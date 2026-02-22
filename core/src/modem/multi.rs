@@ -8,7 +8,9 @@
 //! - 3 BPF variants × 3 timing offsets = 9 base decoders
 //! - ±50 Hz offset × 3 timing = 6 frequency-shifted decoders
 //! - ±100 Hz offset × 1 timing = 2 frequency-shifted decoders
-//! - Total: 17 parallel decoders
+//! - 9 space gain levels (-6 to +12 dB) = 9 gain-diverse decoders
+//! - 4 cross-product (freq offset + gain) decoders
+//! - Total: 30 parallel decoders
 
 use super::demod::{DemodSymbol, FastDemodulator};
 use super::filter::BiquadFilter;
@@ -16,8 +18,8 @@ use super::DemodConfig;
 use crate::ax25::frame::HdlcDecoder;
 
 /// Maximum number of parallel decoders.
-/// 9 base (3 BPF × 3 timing) + up to 8 frequency-shifted = 17.
-const MAX_DECODERS: usize = 18;
+/// 9 base (3 BPF × 3 timing) + 8 frequency-shifted + 9 gain-diverse = 26.
+const MAX_DECODERS: usize = 32;
 
 /// Maximum unique frames tracked for deduplication.
 const DEDUP_RING_SIZE: usize = 64;
@@ -82,11 +84,12 @@ pub struct MultiDecoder {
 }
 
 impl MultiDecoder {
-    /// Create a multi-decoder with default filter/timing/frequency diversity.
+    /// Create a multi-decoder with default filter/timing/frequency/gain diversity.
     ///
     /// Uses 3 bandpass filters (narrow, standard, wide) × 3 timing offsets
-    /// = 9 base decoders, plus 4 frequency-shifted decoders (±50 Hz, ±25 Hz)
-    /// using the wide BPF for frequency offset tolerance.
+    /// = 9 base decoders, plus frequency-shifted decoders for crystal offset
+    /// tolerance, plus gain-diverse decoders (Dire Wolf multi-slicer approach)
+    /// for de-emphasis and varying audio paths.
     pub fn new(config: DemodConfig) -> Self {
         let std_bpf = match config.sample_rate {
             22050 => super::filter::afsk_bandpass_22050(),
@@ -156,6 +159,57 @@ impl MultiDecoder {
                     decoders[idx] = FastDemodulator::with_filter_freq_and_offset(
                         config, wide_bpf, 0, mark, space,
                     );
+                    idx += 1;
+                }
+            }
+        }
+
+        // Gain diversity decoders (Dire Wolf multi-slicer approach).
+        // Different space energy gains handle de-emphasis and varying audio paths.
+        // Q8 format: 256 = 0 dB. Values are 10^(dB/10) × 256 for amplitude dB:
+        //   -6.0, -3.8, -1.5, +0.8, +3.0, +5.3, +7.5, +9.8, +12.0 dB
+        // These match Dire Wolf's 9-level multi-slicer gain set.
+        #[cfg(feature = "std")]
+        {
+            let gains_q8: [u16; 9] = [64, 107, 181, 308, 511, 868, 1440, 2445, 4057];
+            for &gain in &gains_q8 {
+                if idx < MAX_DECODERS {
+                    decoders[idx] = FastDemodulator::new(config).with_space_gain(gain);
+                    idx += 1;
+                }
+            }
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            // Fewer gain levels on embedded to save RAM/CPU
+            let gains_q8: [u16; 4] = [181, 511, 1440, 4057];
+            for &gain in &gains_q8 {
+                if idx < MAX_DECODERS {
+                    decoders[idx] = FastDemodulator::new(config).with_space_gain(gain);
+                    idx += 1;
+                }
+            }
+        }
+
+        // Cross-product decoders: freq offset + gain for transmitters with
+        // both crystal offset AND de-emphasized audio (common in practice).
+        #[cfg(feature = "std")]
+        {
+            let cross_combos: [(i32, u16); 4] = [
+                (-50, 868),   // -50 Hz, +5.3 dB
+                (50, 868),    // +50 Hz, +5.3 dB
+                (-50, 1440),  // -50 Hz, +7.5 dB
+                (50, 1440),   // +50 Hz, +7.5 dB
+            ];
+            for &(offset, gain) in &cross_combos {
+                if idx < MAX_DECODERS {
+                    let mark = (config.mark_freq as i32 + offset) as u32;
+                    let space = (config.space_freq as i32 + offset) as u32;
+                    let center = (super::MID_FREQ as i32 + offset) as f64;
+                    let bpf = super::filter::bandpass_coeffs(config.sample_rate, center, 2000.0);
+                    decoders[idx] = FastDemodulator::with_filter_freq_and_offset(
+                        config, bpf, 0, mark, space,
+                    ).with_space_gain(gain);
                     idx += 1;
                 }
             }
@@ -308,12 +362,12 @@ mod tests {
     fn test_multi_decoder_creation() {
         let config = DemodConfig::default_1200();
         let multi = MultiDecoder::new(config);
-        // 9 base + 6 (±50Hz×3timing) + 2 (±100Hz×1timing) = 17 (std)
-        // 9 base + 2 (±50Hz no_std) = 11
+        // 9 base + 8 freq + 9 gain + 4 cross = 30 (std)
+        // 9 base + 2 freq + 4 gain = 15 (no_std)
         #[cfg(feature = "std")]
-        assert_eq!(multi.num_decoders(), 17);
+        assert_eq!(multi.num_decoders(), 30);
         #[cfg(not(feature = "std"))]
-        assert_eq!(multi.num_decoders(), 11);
+        assert_eq!(multi.num_decoders(), 15);
         assert_eq!(multi.total_decoded, 0);
         assert_eq!(multi.total_unique, 0);
     }
