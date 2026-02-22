@@ -52,7 +52,7 @@ pub const MAX_FRAME_BITS: usize = 4096;
 pub const MAX_FLIP_CANDIDATES: usize = 8;
 
 /// Demodulator configuration
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct DemodConfig {
     /// Audio sample rate in Hz
     pub sample_rate: u32,

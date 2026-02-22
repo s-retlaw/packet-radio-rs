@@ -169,7 +169,7 @@ mod tests {
         let mut buf2 = [0i16; 64];
 
         let n1 = m.modulate_bit(false, &mut buf1); // Toggle to space
-        let n2 = m.modulate_bit(false, &mut buf2); // Toggle to mark
+        let _n2 = m.modulate_bit(false, &mut buf2); // Toggle to mark
 
         // The last sample of buf1 and first sample of buf2 should be
         // reasonably close (no large jump)

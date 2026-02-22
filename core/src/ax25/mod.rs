@@ -9,7 +9,7 @@ pub mod frame;
 pub const MAX_CALLSIGN_LEN: usize = 6;
 
 /// AX.25 address: callsign + SSID
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Address {
     /// Callsign, up to 6 ASCII characters, space-padded
     pub callsign: [u8; MAX_CALLSIGN_LEN],

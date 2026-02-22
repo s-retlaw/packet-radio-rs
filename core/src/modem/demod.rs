@@ -37,6 +37,7 @@ pub struct DemodSymbol {
 /// Suitable for Cortex-M0, RP2040, and other resource-constrained targets.
 /// Uses ~180 bytes of RAM and ~30-50 cycles per sample.
 pub struct FastDemodulator {
+    #[allow(dead_code)]
     config: DemodConfig,
     bpf: BiquadFilter,
     detector: DelayMultiplyDetector,
@@ -126,6 +127,7 @@ impl FastDemodulator {
 /// ~100-200 cycles per sample, but produces significantly better decode
 /// performance through adaptive tracking and soft-decision information.
 pub struct QualityDemodulator {
+    #[allow(dead_code)]
     config: DemodConfig,
     bpf: BiquadFilter,
     hilbert: HilbertTransform<31>,

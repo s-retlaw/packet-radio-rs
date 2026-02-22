@@ -207,10 +207,10 @@ mod tests {
         let encoded_len = encode_frame(0, original_data, &mut encoded).unwrap();
 
         let mut decoder = KissDecoder::new();
-        let mut result = None;
+        let mut _result = None;
         for &byte in &encoded[..encoded_len] {
             if let Some(r) = decoder.feed_byte(byte) {
-                result = Some((r.0, r.1, r.2.to_vec()));
+                _result = Some((r.0, r.1, r.2.to_vec()));
             }
         }
 

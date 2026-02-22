@@ -156,6 +156,15 @@ impl SoftHdlcDecoder {
                 self.state = HdlcState::Hunting;
                 self.bit_count = 0;
             }
+
+            // Bit unstuffing: after 5 consecutive ones, the next 0 is
+            // a stuffed bit and should be discarded. Must check BEFORE
+            // resetting ones_count.
+            if self.ones_count == 5 && self.state == HdlcState::Receiving {
+                self.ones_count = 0;
+                return None;
+            }
+
             self.ones_count = 0;
         }
 
@@ -165,14 +174,6 @@ impl SoftHdlcDecoder {
                 None
             }
             HdlcState::Receiving => {
-                // Bit unstuffing: after 5 consecutive ones, the next 0 is
-                // a stuffed bit and should be discarded
-                if self.ones_count == 5 && !bit {
-                    // This zero was stuffed — discard it
-                    // (ones_count was already reset to 0 above)
-                    return None;
-                }
-
                 // Accumulate data bit (LSB first)
                 if bit {
                     self.current_byte |= 1 << self.byte_bit_count;
@@ -194,33 +195,50 @@ impl SoftHdlcDecoder {
     }
 
     fn handle_flag(&mut self) -> Option<FrameResult<'_>> {
-        let result = if self.state == HdlcState::Receiving && self.frame_len >= 17 {
-            // End of frame — check CRC
-            // Last 2 bytes are CRC-16
+        // Compute result info without borrowing self for the return value yet.
+        // We need to: check CRC, try recovery, then reset state, then return
+        // a reference into frame_buf (which survives the reset since we only
+        // zero counters, not buffer contents).
+        let frame_result_info = if self.state == HdlcState::Receiving && self.frame_len >= 17 {
             let data_len = self.frame_len - 2;
             let crc_valid = self.check_frame_crc(data_len);
 
             if crc_valid {
                 self.stats_hard_decode += 1;
-                self.frame_len = data_len;
-                Some(FrameResult::Valid(&self.frame_buf[..data_len]))
+                Some((data_len, false, 0u8)) // (len, is_recovered, flips)
             } else {
                 // CRC failed — try soft recovery
-                self.try_bit_flip_recovery(data_len)
+                // try_bit_flip_recovery may update frame_buf and frame_len
+                match self.try_bit_flip_recovery_info() {
+                    Some((len, flips)) => Some((len, true, flips)),
+                    None => None,
+                }
             }
         } else {
             None
         };
 
-        // Start new frame after flag
+        // Reset state for next frame (this mutates self freely since
+        // we haven't yet created the borrow for the return value)
         self.state = HdlcState::Receiving;
         self.frame_len = 0;
         self.current_byte = 0;
         self.byte_bit_count = 0;
         self.ones_count = 0;
-        // Keep bit_count — we'll reset on next frame start
 
-        result
+        // Now construct the return value borrowing from frame_buf
+        match frame_result_info {
+            Some((data_len, false, _)) => {
+                Some(FrameResult::Valid(&self.frame_buf[..data_len]))
+            }
+            Some((data_len, true, flips)) => {
+                Some(FrameResult::Recovered {
+                    data: &self.frame_buf[..data_len],
+                    flips,
+                })
+            }
+            None => None,
+        }
     }
 
     fn check_frame_crc(&self, data_len: usize) -> bool {
@@ -233,8 +251,9 @@ impl SoftHdlcDecoder {
         crc == 0x0F47
     }
 
-    fn try_bit_flip_recovery(&mut self, _data_len: usize) -> Option<FrameResult<'_>> {
-        // Find the least-confident bits
+    /// Try bit-flip recovery. Returns `(data_len, flips)` on success, updating
+    /// `frame_buf` and `frame_len` in place. Returns `None` on failure.
+    fn try_bit_flip_recovery_info(&mut self) -> Option<(usize, u8)> {
         let count = self.bit_count.min(MAX_FRAME_BITS);
         if count == 0 {
             self.stats_crc_failures += 1;
@@ -245,7 +264,6 @@ impl SoftHdlcDecoder {
         let mut candidates = [(0usize, 128u8); MAX_FLIP_CANDIDATES];
         for i in 0..count {
             let confidence = self.soft_bits[i].unsigned_abs();
-            // Check if weaker than current weakest candidate
             if confidence < candidates[MAX_FLIP_CANDIDATES - 1].1 {
                 candidates[MAX_FLIP_CANDIDATES - 1] = (i, confidence);
                 // Insertion sort
@@ -261,23 +279,19 @@ impl SoftHdlcDecoder {
         let num_candidates = MAX_FLIP_CANDIDATES.min(count);
         for k in 0..num_candidates {
             if candidates[k].1 >= 128 {
-                break; // No more weak bits
+                break;
             }
             let bit_idx = candidates[k].0;
             self.hard_bits[bit_idx] ^= 1;
 
             if self.reassemble_and_check_crc() {
-                // Recovered!
-                self.hard_bits[bit_idx] ^= 1; // Restore for clean state
+                self.hard_bits[bit_idx] ^= 1;
                 self.stats_soft_recovered += 1;
                 let data_len = self.frame_len - 2;
-                return Some(FrameResult::Recovered {
-                    data: &self.frame_buf[..data_len],
-                    flips: 1,
-                });
+                return Some((data_len, 1));
             }
 
-            self.hard_bits[bit_idx] ^= 1; // Restore
+            self.hard_bits[bit_idx] ^= 1;
         }
 
         // Try flipping pairs of bits
@@ -295,10 +309,7 @@ impl SoftHdlcDecoder {
                     self.hard_bits[candidates[j].0] ^= 1;
                     self.stats_soft_recovered += 1;
                     let data_len = self.frame_len - 2;
-                    return Some(FrameResult::Recovered {
-                        data: &self.frame_buf[..data_len],
-                        flips: 2,
-                    });
+                    return Some((data_len, 2));
                 }
 
                 self.hard_bits[candidates[i].0] ^= 1;

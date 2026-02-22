@@ -166,11 +166,12 @@ impl InstFreqDetector {
 
 /// Fast atan2 approximation.
 ///
-/// Returns angle in Q15 format: −32768..+32767 maps to −π..+π.
-/// Maximum error approximately 0.07 degrees.
+/// Returns angle where −32768..+32767 maps to −π..+π.
+/// (Equivalently: 1 radian ≈ 32768/π ≈ 10430 units.)
+/// Maximum error approximately 0.3 degrees.
 ///
-/// Uses the identity atan(x) ≈ x − x³/3 for |x| ≤ 1, with octant
-/// decomposition for the full atan2.
+/// Uses the identity atan(x) ≈ x·(π/4 + 0.273·(1−x)) for |x| ≤ 1,
+/// with octant decomposition for the full atan2.
 pub fn fast_atan2(y: i32, x: i32) -> i16 {
     if x == 0 && y == 0 {
         return 0;
@@ -186,30 +187,29 @@ pub fn fast_atan2(y: i32, x: i32) -> i16 {
         (abs_x, abs_y)
     };
 
-    // ratio in Q15
+    // ratio in Q15 (0..32768 represents 0.0..1.0)
     let ratio = ((numer as i64) << 15) / denom as i64;
     let r = ratio as i32;
 
-    // atan(r) ≈ r − r³/3 (in Q15)
-    let r_sq = ((r as i64 * r as i64) >> 15) as i32;
-    let r_cu = ((r_sq as i64 * r as i64) >> 15) as i32;
-    let mut angle = r - r_cu / 3;
+    // atan(x) ≈ x · (π/4 + 0.273 · (1 − x))
+    // Scaled directly to output format (32768 = π):
+    //   atan(x)/π ≈ x · (0.25 + 0.0869 − 0.0869·x) = x · (0.3369 − 0.0869·x)
+    // In Q15 arithmetic: output = r × (11039 − (2848 × r >> 15)) >> 15
+    let term = 11039 - ((2848i64 * r as i64) >> 15) as i32;
+    let mut angle = ((r as i64 * term as i64) >> 15) as i32;
 
     // Adjust for octant: if |y| > |x|, atan = π/2 − atan(x/y)
     if abs_x < abs_y {
-        angle = 25736 - angle; // π/2 in Q15 ≈ 25736
+        angle = 16384 - angle; // π/2 in output format
     }
     // Adjust for quadrant
     if x < 0 {
-        // π in Q15 ≈ 51472, but we need to stay in i16 range
-        // Use: angle = sign(y) × π − angle
-        angle = 51472 - angle;
+        angle = 32768 - angle; // π in output format
     }
     if y < 0 {
         angle = -angle;
     }
 
-    // Wrap to i16 range (−π to +π)
     angle.clamp(-32768, 32767) as i16
 }
 
@@ -228,29 +228,28 @@ mod tests {
         let angle = fast_atan2(0, 1000);
         assert!(angle.abs() < 200, "Expected ~0, got {}", angle);
 
-        // Positive y-axis: angle ≈ π/2 ≈ 25736
+        // Positive y-axis: angle ≈ π/2 ≈ 16384
         let angle = fast_atan2(1000, 0);
-        assert!((angle - 25736_i16).abs() < 500,
-            "Expected ~25736 (π/2), got {}", angle);
+        assert!((angle - 16384_i16).abs() < 500,
+            "Expected ~16384 (π/2), got {}", angle);
 
         // Negative x-axis: angle ≈ ±π ≈ ±32768
         let angle = fast_atan2(0, -1000);
-        // Should be near π or −π
         assert!(angle.abs() > 30000,
             "Expected ~±32768 (π), got {}", angle);
 
-        // Negative y-axis: angle ≈ −π/2 ≈ −25736
+        // Negative y-axis: angle ≈ −π/2 ≈ −16384
         let angle = fast_atan2(-1000, 0);
-        assert!((angle + 25736_i16).abs() < 500,
-            "Expected ~-25736 (-π/2), got {}", angle);
+        assert!((angle + 16384_i16).abs() < 500,
+            "Expected ~-16384 (-π/2), got {}", angle);
     }
 
     #[test]
     fn test_fast_atan2_45_degrees() {
-        // 45 degrees: atan2(1, 1) ≈ π/4 ≈ 12868 in Q15
+        // 45 degrees: atan2(1, 1) ≈ π/4 ≈ 8192
         let angle = fast_atan2(1000, 1000);
-        assert!((angle - 12868_i16).abs() < 500,
-            "Expected ~12868 (π/4), got {}", angle);
+        assert!((angle - 8192_i16).abs() < 500,
+            "Expected ~8192 (π/4), got {}", angle);
     }
 
     #[test]
@@ -258,7 +257,7 @@ mod tests {
         // For a constant tone, the phase difference between successive
         // analytic samples should give the frequency.
         // This is a simplified test — real Hilbert output needed for full test.
-        let det = InstFreqDetector::new(11025);
+        let _det = InstFreqDetector::new(11025);
         // With proper analytic signal input, frequency should track the tone.
         // Full integration test needed with HilbertTransform + InstFreqDetector.
     }

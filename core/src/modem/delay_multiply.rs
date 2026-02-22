@@ -129,9 +129,10 @@ pub fn optimal_delay(sample_rate: u32) -> usize {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+    use alloc::vec::Vec;
     use super::*;
     use super::super::filter::BiquadFilter;
-    use super::super::SIN_TABLE_Q15;
 
     /// Generate a sine wave at a given frequency.
     fn generate_tone(freq_hz: f64, sample_rate: u32, num_samples: usize) -> Vec<i16> {
@@ -155,7 +156,6 @@ mod tests {
     #[test]
     fn test_mark_space_separation() {
         // Verify that mark and space tones produce opposite-polarity outputs
-        let lpf = BiquadFilter::passthrough(); // Skip filtering for unit test
         let sample_rate = 11025;
         let delay = optimal_delay(sample_rate);
 

@@ -66,12 +66,12 @@ impl ClockRecoveryPll {
     pub fn update(&mut self, disc_out: i16) -> Option<i16> {
         let mut symbol_sample = None;
 
-        // Advance phase
-        self.phase += self.freq;
+        // Advance phase by one sample step
+        self.phase += PLL_SCALE;
 
-        // Symbol boundary: phase exceeds one symbol period
-        if self.phase >= self.nominal_freq {
-            self.phase -= self.nominal_freq;
+        // Symbol boundary: phase exceeds the current symbol period
+        if self.phase >= self.freq {
+            self.phase -= self.freq;
             symbol_sample = Some(disc_out);
         }
 
