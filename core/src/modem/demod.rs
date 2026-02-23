@@ -444,9 +444,8 @@ impl FastDemodulator {
                 let decoded_bit = raw_bit == self.prev_nrzi_bit;
                 self.prev_nrzi_bit = raw_bit;
 
-                // 5b. Adaptive preamble gain: measure mark/space energy ratio
-                // during HDLC flag preamble and set space_gain_q8 automatically.
-                if self.adaptive_gain_enabled && !self.agc_enabled {
+                // 5b. Flag detection for adaptive gain
+                if self.adaptive_gain_enabled {
                     self.demod_shift_reg = (self.demod_shift_reg << 1) | (decoded_bit as u8);
 
                     if self.demod_shift_reg == 0x7E {
@@ -455,10 +454,11 @@ impl FastDemodulator {
                     } else {
                         self.symbols_since_last_flag = self.symbols_since_last_flag.saturating_add(1);
                     }
+                }
 
-                    // Accumulate energy while in preamble region
+                // 5c. Adaptive preamble gain accumulation
+                if self.adaptive_gain_enabled && !self.agc_enabled {
                     if self.preamble_flag_count >= 1 && self.symbols_since_last_flag <= 8 {
-                        // Classify by raw energy comparison (no gain applied)
                         if mark_energy > space_energy {
                             self.preamble_mark_energy += mark_energy >> AGC_ENERGY_SHIFT;
                             self.preamble_mark_count += 1;
@@ -468,7 +468,6 @@ impl FastDemodulator {
                         }
                     }
 
-                    // Preamble ended: compute and apply gain
                     if self.symbols_since_last_flag > 8
                         && self.preamble_flag_count >= 2
                         && self.preamble_mark_count > 0
@@ -478,15 +477,12 @@ impl FastDemodulator {
                         let space_avg = self.preamble_space_energy / self.preamble_space_count as i64;
                         if space_avg > 0 {
                             let measured = (mark_avg * 256) / space_avg;
-                            // Apply only 25% of the correction — Goertzel filter
-                            // response already partially compensates for de-emphasis.
                             // Only increase gain (compensate de-emphasis), never decrease.
                             // Apply 25% of measured excess above unity.
                             let excess = (measured - 256).max(0);
                             let gain = 256 + (excess >> 2);
                             self.space_gain_q8 = (gain as u16).min(512);
                         }
-                        // Reset accumulators for next preamble
                         self.preamble_mark_energy = 0;
                         self.preamble_space_energy = 0;
                         self.preamble_mark_count = 0;
