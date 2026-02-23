@@ -124,6 +124,41 @@ pub fn lowpass_coeffs(sample_rate: u32, cutoff: f64, q: f64) -> BiquadFilter {
     )
 }
 
+/// Cascaded (4th-order) biquad filter — two identical biquad stages in series.
+///
+/// Provides -12 dB/octave rolloff instead of -6 dB/octave from a single biquad.
+/// Significantly better out-of-band rejection for AFSK bandpass filtering.
+/// Cost: one extra biquad per sample (~5 ops/sample).
+#[derive(Clone, Copy)]
+pub struct CascadedBpf {
+    stage1: BiquadFilter,
+    stage2: BiquadFilter,
+}
+
+impl CascadedBpf {
+    /// Create a cascaded filter from two identical biquad stages.
+    pub const fn new(bpf: BiquadFilter) -> Self {
+        // Clone the coefficients for stage2 (state is zeroed)
+        Self {
+            stage1: bpf,
+            stage2: BiquadFilter::new(bpf.b0, bpf.b1, bpf.b2, bpf.a1, bpf.a2),
+        }
+    }
+
+    /// Reset both stages.
+    pub fn reset(&mut self) {
+        self.stage1.reset();
+        self.stage2.reset();
+    }
+
+    /// Process a single sample through both stages.
+    #[inline]
+    pub fn process(&mut self, input: i16) -> i16 {
+        let mid = self.stage1.process(input);
+        self.stage2.process(mid)
+    }
+}
+
 /// Precomputed bandpass filter for AFSK passband (900-2500 Hz) at 11025 Hz.
 /// Passes mark (1200 Hz) and space (2200 Hz), rejects out-of-band noise.
 ///
@@ -188,6 +223,38 @@ pub fn post_detect_lpf(sample_rate: u32) -> BiquadFilter {
         _ => lowpass_coeffs(sample_rate, 1200.0, 0.707),
         #[cfg(not(feature = "std"))]
         _ => post_detect_lpf_11025(), // fallback
+    }
+}
+
+/// Precomputed lowpass filter for correlation demodulator at 11025 Hz.
+/// Cutoff at 600 Hz (half baud rate) to reject cross-tone beat at 1000 Hz.
+///
+/// At 1000 Hz: -9.4 dB attenuation → cross-tone energy -18.8 dB below on-tone.
+/// Computed from Audio EQ Cookbook LPF: cutoff=600 Hz, Q=0.707, Fs=11025 Hz.
+pub const fn corr_lpf_11025() -> BiquadFilter {
+    BiquadFilter::new(766, 1533, 766, -49906, 20205)
+}
+
+/// Precomputed correlation LPF at 22050 Hz. Cutoff 600 Hz, Q=0.707.
+pub const fn corr_lpf_22050() -> BiquadFilter {
+    BiquadFilter::new(213, 426, 213, -57644, 25729)
+}
+
+/// Precomputed correlation LPF at 44100 Hz. Cutoff 600 Hz, Q=0.707.
+pub const fn corr_lpf_44100() -> BiquadFilter {
+    BiquadFilter::new(56, 112, 56, -61578, 29036)
+}
+
+/// Select the correlation demodulator LPF for a given sample rate.
+pub fn corr_lpf(sample_rate: u32) -> BiquadFilter {
+    match sample_rate {
+        11025 => corr_lpf_11025(),
+        22050 => corr_lpf_22050(),
+        44100 => corr_lpf_44100(),
+        #[cfg(feature = "std")]
+        _ => lowpass_coeffs(sample_rate, 600.0, 0.707),
+        #[cfg(not(feature = "std"))]
+        _ => corr_lpf_11025(), // fallback
     }
 }
 

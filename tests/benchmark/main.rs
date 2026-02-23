@@ -12,7 +12,7 @@
 use std::time::{Duration, Instant};
 
 use packet_radio_core::ax25::frame::HdlcDecoder;
-use packet_radio_core::modem::demod::{DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
+use packet_radio_core::modem::demod::{CorrelationDemodulator, DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
 use packet_radio_core::modem::multi::{MiniDecoder, MultiDecoder};
 use packet_radio_core::modem::soft_hdlc::{FrameResult, SoftHdlcDecoder};
 use packet_radio_core::modem::DemodConfig;
@@ -125,6 +125,13 @@ fn main() {
             }
             run_soft_diag(&args[2]);
         }
+        "--corr" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --corr <file.wav>");
+                return;
+            }
+            run_corr(&args[2]);
+        }
         "--help" | "-h" => print_usage(),
         _ => {
             eprintln!("Unknown argument: {}", args[1]);
@@ -148,6 +155,7 @@ fn print_usage() {
     println!("  benchmark --attribution <file.wav>     Per-decoder attribution analysis (multi-decoder)");
     println!("  benchmark --smart3 <file.wav>          Decode using Smart3 mini-decoder (3 optimal decoders)");
     println!("  benchmark --soft-diag <file.wav>       Soft decode diagnostics (per-frame LLR analysis)");
+    println!("  benchmark --corr <file.wav>            Decode using correlation (mixer) demodulator");
     println!("  benchmark --suite <directory>           Decode all WAV files, compare with Dire Wolf");
     println!("  benchmark --compare-approaches <wav>    Compare fast vs. quality path frame-by-frame");
     println!("  benchmark --synthetic                   Run synthetic signal benchmark");
@@ -483,7 +491,257 @@ fn decode_dm(samples: &[i16], sample_rate: u32) -> DecodeResult {
     }
 }
 
-/// Decode audio samples using DM at 22050 Hz (upsampled if needed).
+/// Decode audio samples using the correlation (mixer) demodulator + hard HDLC.
+fn decode_corr(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut demod = CorrelationDemodulator::new(config).with_adaptive_gain();
+    let mut hdlc = HdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                frames.push(frame.to_vec());
+            }
+        }
+    }
+
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
+}
+
+/// Decode using correlation demod + energy LLR + soft HDLC.
+fn decode_corr_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut demod = CorrelationDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_energy_llr();
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                let data = match &result {
+                    FrameResult::Valid(d) => d,
+                    FrameResult::Recovered { data, .. } => data,
+                };
+                frames.push(data.to_vec());
+            }
+        }
+    }
+
+    let soft_recovered = soft_hdlc.stats_total_soft_recovered();
+    (
+        DecodeResult {
+            frames,
+            elapsed: start.elapsed(),
+        },
+        soft_recovered,
+    )
+}
+
+/// Decode using correlation demod with 3 timing phases (mini multi-decoder).
+///
+/// Runs 3 correlation demodulators at different Bresenham phases (0, 1/3, 2/3)
+/// and deduplicates results using FNV-1a hash. This is the "poor man's multi"
+/// approach — 3× compute instead of 38× but captures timing diversity.
+fn decode_corr_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
+
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let offsets = [0, sample_rate / 3, 2 * sample_rate / 3];
+
+    // Phase 1: decode each timing phase independently
+    let mut phase_frames: Vec<Vec<(u64, usize, Vec<u8>)>> = Vec::new(); // (hash, sample_pos, data)
+
+    let start = Instant::now();
+
+    for &offset in &offsets {
+        let mut demod = CorrelationDemodulator::new(config).with_adaptive_gain();
+        demod.set_bit_phase(offset);
+        let mut hdlc = HdlcDecoder::new();
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        let mut frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
+        let mut sample_pos: usize = 0;
+
+        for chunk in samples.chunks(1024) {
+            let n = demod.process_samples(chunk, &mut symbols);
+            for i in 0..n {
+                if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                    let hash = fnv1a_hash(frame);
+                    frames.push((hash, sample_pos, frame.to_vec()));
+                }
+            }
+            sample_pos += chunk.len();
+        }
+        phase_frames.push(frames);
+    }
+
+    // Phase 2: merge — phase[0] is primary, add unique frames from other phases
+    // A frame is "duplicate" if same hash appears within ±2000 samples (~180ms)
+    let mut all_frames: Vec<Vec<u8>> = Vec::new();
+    let mut seen: Vec<(u64, usize)> = Vec::new(); // (hash, sample_pos)
+    let dedup_window = sample_rate as usize * 2; // ±2 seconds (generous window)
+
+    for phase in &phase_frames {
+        for (hash, pos, data) in phase {
+            let is_dup = seen.iter().any(|(h, p)| {
+                *h == *hash && (*pos as i64 - *p as i64).unsigned_abs() < dedup_window as u64
+            });
+            if !is_dup {
+                seen.push((*hash, *pos));
+                all_frames.push(data.clone());
+            }
+        }
+    }
+
+    DecodeResult {
+        frames: all_frames,
+        elapsed: start.elapsed(),
+    }
+}
+
+/// Decode using correlation demod with 3 timing phases + energy LLR + soft HDLC.
+/// Uses time-windowed dedup (hash + sample position) to handle repeated identical packets.
+fn decode_corr_3phase_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let offsets = [0, sample_rate / 3, 2 * sample_rate / 3];
+
+    // Phase 1: decode each timing phase independently
+    let mut phase_frames: Vec<Vec<(u64, usize, Vec<u8>)>> = Vec::new();
+    let mut total_soft: u32 = 0;
+
+    let start = Instant::now();
+
+    for &offset in &offsets {
+        let mut demod = CorrelationDemodulator::with_filter_and_offset(
+            config,
+            packet_radio_core::modem::filter::afsk_bandpass_11025(),
+            offset,
+        ).with_adaptive_gain().with_energy_llr();
+        let mut soft_hdlc = SoftHdlcDecoder::new();
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        let mut frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
+        let mut sample_pos: usize = 0;
+
+        for chunk in samples.chunks(1024) {
+            let n = demod.process_samples(chunk, &mut symbols);
+            for i in 0..n {
+                if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                    let data = match &result {
+                        FrameResult::Valid(d) => d,
+                        FrameResult::Recovered { data, .. } => data,
+                    };
+                    let hash = fnv1a_hash(data);
+                    frames.push((hash, sample_pos, data.to_vec()));
+                }
+            }
+            sample_pos += chunk.len();
+        }
+        total_soft += soft_hdlc.stats_total_soft_recovered();
+        phase_frames.push(frames);
+    }
+
+    // Phase 2: merge with time-windowed dedup
+    let mut all_frames: Vec<Vec<u8>> = Vec::new();
+    let mut seen: Vec<(u64, usize)> = Vec::new();
+    let dedup_window = sample_rate as usize * 2;
+
+    for phase in &phase_frames {
+        for (hash, pos, data) in phase {
+            let is_dup = seen.iter().any(|(h, p)| {
+                *h == *hash && (*pos as i64 - *p as i64).unsigned_abs() < dedup_window as u64
+            });
+            if !is_dup {
+                seen.push((*hash, *pos));
+                all_frames.push(data.clone());
+            }
+        }
+    }
+
+    (DecodeResult {
+        frames: all_frames,
+        elapsed: start.elapsed(),
+    }, total_soft)
+}
+
+/// FNV-1a hash for frame deduplication.
+fn fnv1a_hash(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in data {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Decode using fast demod with cascaded BPF.
+fn decode_fast_cascade(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut demod = FastDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_cascade_bpf();
+    let mut hdlc = HdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                frames.push(frame.to_vec());
+            }
+        }
+    }
+    DecodeResult { frames, elapsed: start.elapsed() }
+}
+
+/// Decode using correlation demod with cascaded BPF.
+fn decode_corr_cascade(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut demod = CorrelationDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_cascade_bpf();
+    let mut hdlc = HdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                frames.push(frame.to_vec());
+            }
+        }
+    }
+    DecodeResult { frames, elapsed: start.elapsed() }
+}
+
+/// Decode using DM at 22050 Hz (upsampled if needed).
 fn decode_dm_22k(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let (effective_rate, owned);
     let work_samples: &[i16] = if sample_rate <= 11025 {
@@ -625,6 +883,64 @@ fn run_smart3(path: &str) {
 }
 
 // ─── Soft Decode Diagnostics ─────────────────────────────────────────────
+
+fn run_corr(path: &str) {
+    println!("═══ Correlation (Mixer) Demodulator ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    println!(
+        "Duration: {:.1}s, {} samples at {} Hz",
+        duration_secs, samples.len(), sample_rate
+    );
+    println!();
+
+    let corr = decode_corr(&samples, sample_rate);
+    let (corr_q, corr_soft) = decode_corr_quality(&samples, sample_rate);
+    let corr_3p = decode_corr_3phase(&samples, sample_rate);
+    let (corr_3pq, corr_3p_soft) = decode_corr_3phase_quality(&samples, sample_rate);
+    let fast = decode_fast(&samples, sample_rate);
+    let (quality, qual_soft) = decode_quality(&samples, sample_rate);
+    let (multi, multi_soft) = decode_multi(&samples, sample_rate);
+
+    println!("  Corr hard:    {:>4} packets in {:.2}s ({:.0}x real-time)",
+        corr.frames.len(),
+        corr.elapsed.as_secs_f64(),
+        duration_secs / corr.elapsed.as_secs_f64());
+    println!("  Corr quality: {:>4} packets in {:.2}s ({:.0}x real-time, {} soft saves)",
+        corr_q.frames.len(),
+        corr_q.elapsed.as_secs_f64(),
+        duration_secs / corr_q.elapsed.as_secs_f64(),
+        corr_soft);
+    println!("  Corr×3 hard:  {:>4} packets in {:.2}s ({:.0}x real-time)",
+        corr_3p.frames.len(),
+        corr_3p.elapsed.as_secs_f64(),
+        duration_secs / corr_3p.elapsed.as_secs_f64());
+    println!("  Corr×3 qual:  {:>4} packets in {:.2}s ({:.0}x real-time, {} soft saves)",
+        corr_3pq.frames.len(),
+        corr_3pq.elapsed.as_secs_f64(),
+        duration_secs / corr_3pq.elapsed.as_secs_f64(),
+        corr_3p_soft);
+    println!("  Fast:         {:>4} packets (Goertzel baseline)",
+        fast.frames.len());
+    println!("  Quality:      {:>4} packets ({} soft saves, Goertzel+Hilbert baseline)",
+        quality.frames.len(), qual_soft);
+    println!("  Multi (38×):  {:>4} packets ({} soft saves)",
+        multi.frames.len(), multi_soft);
+    let gain_hard = corr.frames.len() as i64 - fast.frames.len() as i64;
+    let gain_3p = corr_3pq.frames.len() as i64 - quality.frames.len() as i64;
+    println!("  Gain (single): {:>+4} packets vs fast", gain_hard);
+    println!("  Gain (3-ph):   {:>+4} packets vs quality", gain_3p);
+    println!();
+}
 
 fn run_soft_diag(path: &str) {
     println!("═══ Soft Decode Diagnostics ═══");

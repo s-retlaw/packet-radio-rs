@@ -9,7 +9,7 @@ mod cli;
 mod kiss_server;
 
 use clap::Parser;
-use packet_radio_core::modem::demod::{DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
+use packet_radio_core::modem::demod::{CorrelationDemodulator, DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
 use packet_radio_core::modem::multi::{MiniDecoder, MultiDecoder};
 use packet_radio_core::modem::soft_hdlc::{SoftHdlcDecoder, FrameResult};
 use packet_radio_core::modem::DemodConfig;
@@ -83,6 +83,7 @@ fn main() {
         cli.multi,
         cli.dm,
         cli.smart3,
+        cli.corr,
         cli.sample_rate,
     );
 }
@@ -99,6 +100,7 @@ fn process_loop(
     use_multi: bool,
     use_dm: bool,
     use_smart3: bool,
+    use_corr: bool,
     sample_rate: u32,
 ) {
     let config = match sample_rate {
@@ -116,6 +118,9 @@ fn process_loop(
     } else if use_smart3 {
         tracing::info!("using smart3 mini-decoder (3 parallel decoders)");
         process_loop_smart3(source, frame_tx, is_wav, config);
+    } else if use_corr {
+        tracing::info!("using correlation (mixer) demodulator");
+        process_loop_corr(source, frame_tx, is_wav, config);
     } else if use_dm {
         tracing::info!("using delay-multiply demodulator");
         process_loop_dm(source, frame_tx, is_wav, config);
@@ -213,6 +218,62 @@ fn process_loop_dm(
     let mut soft_saves: u32 = 0;
 
     tracing::info!("processing audio at {} Hz (delay-multiply + Gardner PLL + soft HDLC)", config.sample_rate);
+
+    loop {
+        let n = source.read_samples(&mut audio_buf);
+        if n == 0 {
+            if is_wav {
+                if soft_saves > 0 {
+                    tracing::info!("WAV file complete, decoded {frame_count} frames ({soft_saves} soft recoveries)");
+                } else {
+                    tracing::info!("WAV file complete, decoded {frame_count} frames");
+                }
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        let num_symbols = demod.process_samples(&audio_buf[..n], &mut symbols);
+        for i in 0..num_symbols {
+            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                match &result {
+                    FrameResult::Recovered { flips, .. } => {
+                        soft_saves += 1;
+                        tracing::debug!("soft recovery: {} bit(s) corrected", flips);
+                    }
+                    _ => {}
+                }
+                let data = match &result {
+                    FrameResult::Valid(d) => *d,
+                    FrameResult::Recovered { data, .. } => *data,
+                };
+                frame_count += 1;
+                let frame_data = data.to_vec();
+                print_frame(frame_count, &frame_data);
+                let _ = frame_tx.send(frame_data);
+            }
+        }
+    }
+}
+
+/// Correlation (mixer) demodulator processing loop + soft HDLC.
+fn process_loop_corr(
+    mut source: Box<dyn SampleSource>,
+    frame_tx: broadcast::Sender<Vec<u8>>,
+    is_wav: bool,
+    config: DemodConfig,
+) {
+    let mut demod = CorrelationDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_energy_llr();
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut audio_buf = [0i16; 1024];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut frame_count: u64 = 0;
+    let mut soft_saves: u32 = 0;
+
+    tracing::info!("processing audio at {} Hz (correlation mixer + soft HDLC)", config.sample_rate);
 
     loop {
         let n = source.read_samples(&mut audio_buf);

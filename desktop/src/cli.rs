@@ -42,6 +42,10 @@ pub struct Cli {
     #[arg(long)]
     pub smart3: bool,
 
+    /// Use correlation (mixer) demodulator (DireWolf-style tone detection)
+    #[arg(long)]
+    pub corr: bool,
+
     /// Verbose output (repeat for more: -v, -vv, -vvv)
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,

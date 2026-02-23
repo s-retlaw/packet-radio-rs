@@ -73,6 +73,8 @@ pub struct FastDemodulator {
     #[allow(dead_code)]
     config: DemodConfig,
     bpf: BiquadFilter,
+    /// Optional second BPF stage for -12 dB/octave cascaded filtering.
+    bpf2: Option<BiquadFilter>,
     prev_nrzi_bit: bool,
     samples_processed: u64,
     /// Goertzel state for mark tone (1200 Hz)
@@ -140,6 +142,7 @@ impl FastDemodulator {
         Self {
             config,
             bpf,
+            bpf2: None,
             prev_nrzi_bit: false,
             samples_processed: 0,
             mark_s1: 0,
@@ -174,6 +177,7 @@ impl FastDemodulator {
         Self {
             config,
             bpf,
+            bpf2: None,
             prev_nrzi_bit: false,
             samples_processed: 0,
             mark_s1: 0,
@@ -224,6 +228,7 @@ impl FastDemodulator {
         Self {
             config,
             bpf,
+            bpf2: None,
             prev_nrzi_bit: false,
             samples_processed: 0,
             mark_s1: 0,
@@ -280,6 +285,16 @@ impl FastDemodulator {
         self
     }
 
+    /// Enable cascaded (4th-order) bandpass filtering.
+    ///
+    /// Adds a second BPF stage in series with the first, doubling the
+    /// rolloff to -12 dB/octave. Improves out-of-band noise rejection.
+    /// Cost: ~5 extra ops/sample.
+    pub fn with_cascade_bpf(mut self) -> Self {
+        self.bpf2 = Some(self.bpf);
+        self
+    }
+
     /// Enable adaptive Goertzel re-tuning from preamble measurements.
     ///
     /// Runs Hilbert transform + instantaneous frequency estimation during
@@ -314,6 +329,9 @@ impl FastDemodulator {
     /// Reset demodulator state.
     pub fn reset(&mut self) {
         self.bpf.reset();
+        if let Some(ref mut bpf2) = self.bpf2 {
+            bpf2.reset();
+        }
         self.prev_nrzi_bit = false;
         self.samples_processed = 0;
         self.mark_s1 = 0;
@@ -362,8 +380,13 @@ impl FastDemodulator {
         for &sample in samples {
             self.samples_processed += 1;
 
-            // 1. Bandpass filter
-            let filtered = self.bpf.process(sample);
+            // 1. Bandpass filter (optionally cascaded for -12 dB/oct rolloff)
+            let bpf1_out = self.bpf.process(sample);
+            let filtered = if let Some(ref mut bpf2) = self.bpf2 {
+                bpf2.process(bpf1_out)
+            } else {
+                bpf1_out
+            };
             let s = filtered as i64;
 
             // 1b. Adaptive: feed Hilbert+InstFreq into tracker (only until lock)
@@ -1424,6 +1447,321 @@ impl DmDemodulator {
     }
 }
 
+/// Correlation (mixer) demodulator — DireWolf-style tone detection.
+///
+/// Pipeline: [BPF →] Mix with mark sin/cos + space sin/cos → 4× LPF →
+///           envelope (I²+Q²) → Bresenham timing → NRZI → HDLC
+///
+/// This is fundamentally different from Goertzel: instead of computing
+/// energy over a rectangular window that resets every symbol, we multiply
+/// the input by local oscillators and lowpass filter to extract continuous
+/// envelopes. The LPF acts as a matched filter whose bandwidth determines
+/// selectivity (not a window length).
+///
+/// Advantages over Goertzel:
+/// - Continuous integration (no window reset artifacts at symbol boundaries)
+/// - LPF response is independent of tone frequency (handles de-emphasis gracefully)
+/// - I/Q output provides phase information
+///
+/// Cost: ~24 ops/sample (4 multiplies + 4 LPF updates) vs Goertzel's ~10.
+/// Memory: ~180 bytes (4 biquad states + NCO + Bresenham).
+pub struct CorrelationDemodulator {
+    #[allow(dead_code)]
+    config: DemodConfig,
+    bpf: BiquadFilter,
+    /// Optional second BPF stage for cascaded filtering.
+    bpf2: Option<BiquadFilter>,
+    /// NCO phase accumulators for mark and space local oscillators.
+    /// Phase is in Q24 format: 0..16777216 maps to 0..2π.
+    mark_phase: u32,
+    space_phase: u32,
+    /// NCO phase increment per sample (Q24): freq * 2^24 / sample_rate
+    mark_phase_inc: u32,
+    space_phase_inc: u32,
+    /// Lowpass filters for the 4 mixer output channels
+    mark_i_lpf: BiquadFilter,
+    mark_q_lpf: BiquadFilter,
+    space_i_lpf: BiquadFilter,
+    space_q_lpf: BiquadFilter,
+    /// Bresenham fractional bit timing
+    bit_phase: u32,
+    prev_nrzi_bit: bool,
+    samples_processed: u64,
+    /// Space energy gain in Q8 (256 = unity)
+    space_gain_q8: u16,
+    /// Whether to produce energy-based LLR
+    energy_llr: bool,
+    /// Whether adaptive preamble gain measurement is enabled
+    adaptive_gain_enabled: bool,
+    /// Shift register for NRZI-decoded bits (flag detection)
+    demod_shift_reg: u8,
+    /// Accumulated mark energy during preamble
+    preamble_mark_energy: i64,
+    /// Accumulated space energy during preamble
+    preamble_space_energy: i64,
+    /// Number of mark-tone symbols accumulated during preamble
+    preamble_mark_count: u16,
+    /// Number of space-tone symbols accumulated during preamble
+    preamble_space_count: u16,
+    /// Number of HDLC flags detected in current preamble
+    preamble_flag_count: u8,
+    /// Symbols since last flag detection
+    symbols_since_last_flag: u8,
+}
+
+impl CorrelationDemodulator {
+    /// Compute NCO phase increment for a given frequency.
+    /// Returns freq * 2^24 / sample_rate.
+    fn phase_inc(freq: u32, sample_rate: u32) -> u32 {
+        ((freq as u64 * (1u64 << 24)) / sample_rate as u64) as u32
+    }
+
+    /// Select the appropriate BPF for a given sample rate.
+    fn select_bpf(sample_rate: u32) -> BiquadFilter {
+        match sample_rate {
+            22050 => super::filter::afsk_bandpass_22050(),
+            44100 => super::filter::afsk_bandpass_44100(),
+            _ => super::filter::afsk_bandpass_11025(),
+        }
+    }
+
+    /// Create a new correlation demodulator.
+    pub fn new(config: DemodConfig) -> Self {
+        let bpf = Self::select_bpf(config.sample_rate);
+        let lpf = super::filter::corr_lpf(config.sample_rate);
+
+        Self {
+            config,
+            bpf,
+            bpf2: None,
+            mark_phase: 0,
+            space_phase: 0,
+            mark_phase_inc: Self::phase_inc(config.mark_freq, config.sample_rate),
+            space_phase_inc: Self::phase_inc(config.space_freq, config.sample_rate),
+            mark_i_lpf: lpf,
+            mark_q_lpf: lpf,
+            space_i_lpf: lpf,
+            space_q_lpf: lpf,
+            bit_phase: 0,
+            prev_nrzi_bit: false,
+            samples_processed: 0,
+            space_gain_q8: 256,
+            energy_llr: false,
+            adaptive_gain_enabled: false,
+            demod_shift_reg: 0,
+            preamble_mark_energy: 0,
+            preamble_space_energy: 0,
+            preamble_mark_count: 0,
+            preamble_space_count: 0,
+            preamble_flag_count: 0,
+            symbols_since_last_flag: 255,
+        }
+    }
+
+    /// Create with a custom bandpass filter and initial timing offset.
+    pub fn with_filter_and_offset(config: DemodConfig, bpf: BiquadFilter, phase_offset: u32) -> Self {
+        let mut d = Self::new(config);
+        d.bpf = bpf;
+        d.bit_phase = phase_offset;
+        d
+    }
+
+    /// Set space energy gain for multi-slicer diversity (Q8 format).
+    pub fn with_space_gain(mut self, gain_q8: u16) -> Self {
+        self.space_gain_q8 = gain_q8;
+        self
+    }
+
+    /// Set the initial Bresenham timing phase.
+    pub fn set_bit_phase(&mut self, phase: u32) {
+        self.bit_phase = phase;
+    }
+
+    /// Enable cascaded (4th-order) bandpass filtering.
+    pub fn with_cascade_bpf(mut self) -> Self {
+        self.bpf2 = Some(self.bpf);
+        self
+    }
+
+    /// Enable energy-based LLR output.
+    pub fn with_energy_llr(mut self) -> Self {
+        self.energy_llr = true;
+        self
+    }
+
+    /// Enable adaptive mark/space gain from preamble measurement.
+    pub fn with_adaptive_gain(mut self) -> Self {
+        self.adaptive_gain_enabled = true;
+        self
+    }
+
+    /// Reset demodulator state.
+    pub fn reset(&mut self) {
+        self.bpf.reset();
+        if let Some(ref mut bpf2) = self.bpf2 {
+            bpf2.reset();
+        }
+        self.mark_phase = 0;
+        self.space_phase = 0;
+        self.mark_i_lpf.reset();
+        self.mark_q_lpf.reset();
+        self.space_i_lpf.reset();
+        self.space_q_lpf.reset();
+        self.bit_phase = 0;
+        self.prev_nrzi_bit = false;
+        self.samples_processed = 0;
+        if self.adaptive_gain_enabled {
+            self.space_gain_q8 = 256;
+            self.demod_shift_reg = 0;
+            self.preamble_mark_energy = 0;
+            self.preamble_space_energy = 0;
+            self.preamble_mark_count = 0;
+            self.preamble_space_count = 0;
+            self.preamble_flag_count = 0;
+            self.symbols_since_last_flag = 255;
+        }
+    }
+
+    /// Process a buffer of audio samples.
+    ///
+    /// Decoded symbols are written to `symbols_out`. Returns the number
+    /// of symbols produced.
+    pub fn process_samples(
+        &mut self,
+        samples: &[i16],
+        symbols_out: &mut [DemodSymbol],
+    ) -> usize {
+        let mut sym_count = 0;
+        let sample_rate = self.config.sample_rate;
+        let baud_rate = self.config.baud_rate;
+
+        for &sample in samples {
+            self.samples_processed += 1;
+
+            // 1. Bandpass filter (optionally cascaded)
+            let bpf1_out = self.bpf.process(sample);
+            let filtered = if let Some(ref mut bpf2) = self.bpf2 {
+                bpf2.process(bpf1_out)
+            } else {
+                bpf1_out
+            };
+            let x = filtered as i32;
+
+            // 2. Mix with local oscillators (NCO)
+            // Phase is Q24: top 8 bits index into 256-entry sin table
+            let mark_sin_idx = (self.mark_phase >> 16) as u8;
+            let mark_cos_idx = mark_sin_idx.wrapping_add(64); // cos = sin + π/2
+            let space_sin_idx = (self.space_phase >> 16) as u8;
+            let space_cos_idx = space_sin_idx.wrapping_add(64);
+
+            // Mixer outputs (Q15 × Q15 → Q30, shift to Q15)
+            let mark_i_raw = (x * super::SIN_TABLE_Q15[mark_sin_idx as usize] as i32) >> 15;
+            let mark_q_raw = (x * super::SIN_TABLE_Q15[mark_cos_idx as usize] as i32) >> 15;
+            let space_i_raw = (x * super::SIN_TABLE_Q15[space_sin_idx as usize] as i32) >> 15;
+            let space_q_raw = (x * super::SIN_TABLE_Q15[space_cos_idx as usize] as i32) >> 15;
+
+            // Advance NCO phase
+            self.mark_phase = self.mark_phase.wrapping_add(self.mark_phase_inc);
+            self.space_phase = self.space_phase.wrapping_add(self.space_phase_inc);
+
+            // 3. Lowpass filter each channel
+            let mark_i = self.mark_i_lpf.process(mark_i_raw as i16);
+            let mark_q = self.mark_q_lpf.process(mark_q_raw as i16);
+            let space_i = self.space_i_lpf.process(space_i_raw as i16);
+            let space_q = self.space_q_lpf.process(space_q_raw as i16);
+
+            // 4. Bresenham symbol timing
+            self.bit_phase += baud_rate;
+            if self.bit_phase >= sample_rate {
+                self.bit_phase -= sample_rate;
+
+                // 5. Envelope detection: I² + Q²
+                let mark_energy = (mark_i as i64) * (mark_i as i64)
+                    + (mark_q as i64) * (mark_q as i64);
+                let space_energy = (space_i as i64) * (space_i as i64)
+                    + (space_q as i64) * (space_q as i64);
+
+                // 6. Hard bit decision with space gain
+                let raw_bit = mark_energy * 256 > space_energy * (self.space_gain_q8 as i64);
+
+                // 7. NRZI decode
+                let decoded_bit = raw_bit == self.prev_nrzi_bit;
+                self.prev_nrzi_bit = raw_bit;
+
+                // 7b. Adaptive preamble gain
+                if self.adaptive_gain_enabled {
+                    self.demod_shift_reg = (self.demod_shift_reg << 1) | (decoded_bit as u8);
+
+                    if self.demod_shift_reg == 0x7E {
+                        self.preamble_flag_count = self.preamble_flag_count.saturating_add(1);
+                        self.symbols_since_last_flag = 0;
+                    } else {
+                        self.symbols_since_last_flag = self.symbols_since_last_flag.saturating_add(1);
+                    }
+
+                    if self.preamble_flag_count >= 1 && self.symbols_since_last_flag <= 8 {
+                        if mark_energy > space_energy {
+                            self.preamble_mark_energy += mark_energy >> AGC_ENERGY_SHIFT;
+                            self.preamble_mark_count += 1;
+                        } else {
+                            self.preamble_space_energy += space_energy >> AGC_ENERGY_SHIFT;
+                            self.preamble_space_count += 1;
+                        }
+                    }
+
+                    if self.symbols_since_last_flag > 8
+                        && self.preamble_flag_count >= 2
+                        && self.preamble_mark_count > 0
+                        && self.preamble_space_count > 0
+                    {
+                        let mark_avg = self.preamble_mark_energy / self.preamble_mark_count as i64;
+                        let space_avg = self.preamble_space_energy / self.preamble_space_count as i64;
+                        if space_avg > 0 {
+                            let measured = (mark_avg * 256) / space_avg;
+                            let excess = (measured - 256).max(0);
+                            let gain = 256 + (excess >> 2);
+                            self.space_gain_q8 = (gain as u16).min(512);
+                        }
+                        self.preamble_mark_energy = 0;
+                        self.preamble_space_energy = 0;
+                        self.preamble_mark_count = 0;
+                        self.preamble_space_count = 0;
+                        self.preamble_flag_count = 0;
+                    }
+                }
+
+                // 8. LLR
+                let llr = if self.energy_llr {
+                    let total = mark_energy + space_energy;
+                    if total > 0 {
+                        let energy_ratio = ((mark_energy - space_energy) * 127) / total;
+                        let mut confidence = energy_ratio.unsigned_abs().max(1).min(127) as i8;
+                        if !decoded_bit {
+                            confidence >>= 1;
+                            if confidence == 0 { confidence = 1; }
+                        }
+                        if decoded_bit { confidence } else { -confidence }
+                    } else {
+                        0
+                    }
+                } else {
+                    if decoded_bit { 64 } else { -64 }
+                };
+
+                if sym_count < symbols_out.len() {
+                    symbols_out[sym_count] = DemodSymbol {
+                        bit: decoded_bit,
+                        llr,
+                    };
+                    sym_count += 1;
+                }
+            }
+        }
+
+        sym_count
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1471,6 +1809,36 @@ mod tests {
     fn test_fast_demod_reset() {
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
+        let noise = [1000i16; 100];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 50];
+
+        demod.process_samples(&noise, &mut symbols);
+        demod.reset();
+        assert_eq!(demod.samples_processed, 0);
+    }
+
+    #[test]
+    fn test_corr_demod_creation() {
+        let config = DemodConfig::default_1200();
+        let demod = CorrelationDemodulator::new(config);
+        assert_eq!(demod.samples_processed, 0);
+    }
+
+    #[test]
+    fn test_corr_demod_processes_silence() {
+        let config = DemodConfig::default_1200();
+        let mut demod = CorrelationDemodulator::new(config);
+        let silence = [0i16; 1000];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 200];
+
+        let n = demod.process_samples(&silence, &mut symbols);
+        assert!(n < 200);
+    }
+
+    #[test]
+    fn test_corr_demod_reset() {
+        let config = DemodConfig::default_1200();
+        let mut demod = CorrelationDemodulator::new(config);
         let noise = [1000i16; 100];
         let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 50];
 
@@ -2201,6 +2569,51 @@ mod tests {
         let (dec_buf, dec_len) = decoded.unwrap();
         assert_eq!(&dec_buf[..dec_len], raw,
             "DM path decoded frame doesn't match original");
+    }
+
+    #[test]
+    fn test_loopback_corr_clean() {
+        use crate::ax25::frame::{build_test_frame, hdlc_encode, HdlcDecoder};
+        use crate::modem::afsk::AfskModulator;
+        use crate::modem::ModConfig;
+
+        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Corr");
+        let raw = &frame_data[..frame_len];
+        let encoded = hdlc_encode(raw);
+
+        let mut modulator = AfskModulator::new(ModConfig::default_1200());
+        let mut audio = [0i16; 65536];
+        let mut audio_len = 0;
+
+        for _ in 0..50 {
+            let n = modulator.modulate_flag(&mut audio[audio_len..]);
+            audio_len += n;
+        }
+        for i in 0..encoded.bit_count {
+            let n = modulator.modulate_bit(encoded.bits[i] != 0, &mut audio[audio_len..]);
+            audio_len += n;
+        }
+        audio_len += 200;
+
+        let config = DemodConfig::default_1200();
+        let mut demod = CorrelationDemodulator::new(config);
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 8192];
+        let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
+
+        let mut decoder = HdlcDecoder::new();
+        let mut decoded: Option<([u8; 330], usize)> = None;
+        for i in 0..num_symbols {
+            if let Some(frame) = decoder.feed_bit(symbols[i].bit) {
+                let mut buf = [0u8; 330];
+                let len = frame.len();
+                buf[..len].copy_from_slice(frame);
+                decoded = Some((buf, len));
+            }
+        }
+
+        let (dec_buf, dec_len) = decoded.expect("Correlation demod should decode clean signal");
+        assert_eq!(&dec_buf[..dec_len], raw,
+            "Correlation demod decoded frame doesn't match original");
     }
 
     #[test]
