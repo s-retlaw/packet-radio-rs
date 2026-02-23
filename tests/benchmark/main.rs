@@ -1064,6 +1064,82 @@ fn decode_corr_slicer_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult 
     }
 }
 
+/// Decode using corr slicer with phase scoring enabled.
+fn decode_corr_slicer_phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut decoder = CorrSlicerDecoder::new(config)
+        .with_adaptive_gain()
+        .with_phase_scoring();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+
+    let start = Instant::now();
+
+    for chunk in samples.chunks(1024) {
+        let output = decoder.process_samples(chunk);
+        for i in 0..output.len() {
+            frames.push(output.frame(i).to_vec());
+        }
+    }
+
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
+}
+
+/// Decode using corr slicer with adaptive retune enabled.
+fn decode_corr_slicer_retune(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut decoder = CorrSlicerDecoder::new(config)
+        .with_adaptive_gain()
+        .with_adaptive_retune();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+
+    let start = Instant::now();
+
+    for chunk in samples.chunks(1024) {
+        let output = decoder.process_samples(chunk);
+        for i in 0..output.len() {
+            frames.push(output.frame(i).to_vec());
+        }
+    }
+
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
+}
+
+/// Decode using corr slicer with both phase scoring and adaptive retune.
+fn decode_corr_slicer_both(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut decoder = CorrSlicerDecoder::new(config)
+        .with_adaptive_gain()
+        .with_phase_scoring()
+        .with_adaptive_retune();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+
+    let start = Instant::now();
+
+    for chunk in samples.chunks(1024) {
+        let output = decoder.process_samples(chunk);
+        for i in 0..output.len() {
+            frames.push(output.frame(i).to_vec());
+        }
+    }
+
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
+}
+
 fn run_corr_slicer(path: &str) {
     println!("═══ Correlation Multi-Slicer Demodulator ═══");
     println!("File: {}", path);
@@ -1085,32 +1161,39 @@ fn run_corr_slicer(path: &str) {
 
     let slicer = decode_corr_slicer(&samples, sample_rate);
     let slicer_3p = decode_corr_slicer_3phase(&samples, sample_rate);
-    let corr = decode_corr(&samples, sample_rate);
-    let corr_3p = decode_corr_3phase(&samples, sample_rate);
+    let slicer_phase = decode_corr_slicer_phase(&samples, sample_rate);
+    let slicer_retune = decode_corr_slicer_retune(&samples, sample_rate);
+    let slicer_both = decode_corr_slicer_both(&samples, sample_rate);
     let fast = decode_fast(&samples, sample_rate);
     let (multi, multi_soft) = decode_multi(&samples, sample_rate);
 
-    println!("  Slicer 8×:       {:>4} packets in {:.2}s ({:.0}x real-time)",
+    println!("  Slicer 8× (base):    {:>4} packets in {:.2}s ({:.0}x RT)",
         slicer.frames.len(),
         slicer.elapsed.as_secs_f64(),
         duration_secs / slicer.elapsed.as_secs_f64());
-    println!("  Slicer 8×+3ph:   {:>4} packets in {:.2}s ({:.0}x real-time)",
+    println!("  Slicer +phase:       {:>4} packets in {:.2}s ({:.0}x RT)  {:>+4}",
+        slicer_phase.frames.len(),
+        slicer_phase.elapsed.as_secs_f64(),
+        duration_secs / slicer_phase.elapsed.as_secs_f64(),
+        slicer_phase.frames.len() as i64 - slicer.frames.len() as i64);
+    println!("  Slicer +retune:      {:>4} packets in {:.2}s ({:.0}x RT)  {:>+4}",
+        slicer_retune.frames.len(),
+        slicer_retune.elapsed.as_secs_f64(),
+        duration_secs / slicer_retune.elapsed.as_secs_f64(),
+        slicer_retune.frames.len() as i64 - slicer.frames.len() as i64);
+    println!("  Slicer +both:        {:>4} packets in {:.2}s ({:.0}x RT)  {:>+4}",
+        slicer_both.frames.len(),
+        slicer_both.elapsed.as_secs_f64(),
+        duration_secs / slicer_both.elapsed.as_secs_f64(),
+        slicer_both.frames.len() as i64 - slicer.frames.len() as i64);
+    println!("  Slicer 8×+3ph:       {:>4} packets in {:.2}s ({:.0}x RT)",
         slicer_3p.frames.len(),
         slicer_3p.elapsed.as_secs_f64(),
         duration_secs / slicer_3p.elapsed.as_secs_f64());
-    println!("  Corr single:     {:>4} packets (baseline)",
-        corr.frames.len());
-    println!("  Corr×3:          {:>4} packets (3-phase baseline)",
-        corr_3p.frames.len());
-    println!("  Fast (Goertzel): {:>4} packets",
+    println!("  Fast (Goertzel):     {:>4} packets",
         fast.frames.len());
-    println!("  Multi (38×):     {:>4} packets ({} soft saves)",
+    println!("  Multi (38×):         {:>4} packets ({} soft saves)",
         multi.frames.len(), multi_soft);
-    let gain_single = slicer.frames.len() as i64 - corr.frames.len() as i64;
-    let gain_3ph = slicer_3p.frames.len() as i64 - corr_3p.frames.len() as i64;
-    println!();
-    println!("  Gain (slicer vs corr single): {:>+4} packets", gain_single);
-    println!("  Gain (slicer×3 vs corr×3):    {:>+4} packets", gain_3ph);
     println!();
 }
 

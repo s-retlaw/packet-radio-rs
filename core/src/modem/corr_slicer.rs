@@ -18,6 +18,8 @@
 use super::filter::BiquadFilter;
 use super::DemodConfig;
 use super::SIN_TABLE_Q15;
+use super::hilbert::{HilbertTransform, InstFreqDetector, hilbert_31};
+use super::adaptive::AdaptiveTracker;
 
 #[cfg(feature = "std")]
 use super::soft_hdlc::{FrameResult, SoftHdlcDecoder};
@@ -57,6 +59,24 @@ const MAX_OUTPUT_FRAMES: usize = 16;
 
 /// Right-shift for energies before preamble gain tracking.
 const AGC_ENERGY_SHIFT: u32 = 8;
+
+/// Number of candidate Bresenham phases to try during preamble.
+const NUM_PHASE_CANDIDATES: usize = 3;
+
+/// Minimum flags a phase candidate must see before committing.
+const PHASE_COMMIT_MIN_FLAGS: u8 = 3;
+
+/// Non-flag symbols after last flag before committing the best phase.
+const PHASE_COMMIT_GAP: u8 = 8;
+
+/// Adaptive state for preamble frequency retune (Hilbert + InstFreq + Tracker).
+struct CorrAdaptiveState {
+    hilbert: HilbertTransform<31>,
+    inst_freq: InstFreqDetector,
+    tracker: AdaptiveTracker,
+    retuned: bool,
+    sample_index: u32,
+}
 
 /// A decoded frame with its content.
 pub struct DecodedFrame {
@@ -153,6 +173,18 @@ struct FreqChannel {
     preamble_space_count: u16,
     preamble_flag_count: u8,
     symbols_since_last_flag: u8,
+    /// Preamble phase scoring: whether the best phase has been committed.
+    phase_committed: bool,
+    /// Bresenham counters for candidate timing phases.
+    candidate_phases: [u32; NUM_PHASE_CANDIDATES],
+    /// Shift registers for flag detection per candidate.
+    candidate_shift_regs: [u8; NUM_PHASE_CANDIDATES],
+    /// NRZI previous bit state per candidate.
+    candidate_prev_nrzi: [bool; NUM_PHASE_CANDIDATES],
+    /// Flags detected per candidate phase.
+    candidate_flag_counts: [u8; NUM_PHASE_CANDIDATES],
+    /// Consecutive non-flag symbols per candidate (for commit detection).
+    candidate_nonflag_run: [u8; NUM_PHASE_CANDIDATES],
 }
 
 impl FreqChannel {
@@ -180,10 +212,16 @@ impl FreqChannel {
             preamble_space_count: 0,
             preamble_flag_count: 0,
             symbols_since_last_flag: 255,
+            phase_committed: true, // Default: disabled; enabled by with_phase_scoring()
+            candidate_phases: [0, sample_rate / 3, sample_rate * 2 / 3],
+            candidate_shift_regs: [0; NUM_PHASE_CANDIDATES],
+            candidate_prev_nrzi: [false; NUM_PHASE_CANDIDATES],
+            candidate_flag_counts: [0; NUM_PHASE_CANDIDATES],
+            candidate_nonflag_run: [0; NUM_PHASE_CANDIDATES],
         }
     }
 
-    fn reset(&mut self) {
+    fn reset(&mut self, sample_rate: u32, phase_scoring: bool) {
         self.mark_phase = 0;
         self.space_phase = 0;
         self.mark_i_lpf.reset();
@@ -201,6 +239,12 @@ impl FreqChannel {
         self.preamble_space_count = 0;
         self.preamble_flag_count = 0;
         self.symbols_since_last_flag = 255;
+        self.phase_committed = !phase_scoring;
+        self.candidate_phases = [0, sample_rate / 3, sample_rate * 2 / 3];
+        self.candidate_shift_regs = [0; NUM_PHASE_CANDIDATES];
+        self.candidate_prev_nrzi = [false; NUM_PHASE_CANDIDATES];
+        self.candidate_flag_counts = [0; NUM_PHASE_CANDIDATES];
+        self.candidate_nonflag_run = [0; NUM_PHASE_CANDIDATES];
     }
 }
 
@@ -220,6 +264,10 @@ pub struct CorrSlicerDecoder {
     adaptive_gain_enabled: bool,
     /// Whether to produce energy-based LLR.
     energy_llr: bool,
+    /// Optional adaptive frequency retune from preamble measurements.
+    adaptive: Option<CorrAdaptiveState>,
+    /// Whether preamble phase scoring is enabled.
+    phase_scoring: bool,
     /// Ring buffer of (hash, generation) for deduplication.
     recent_hashes: [(u32, u32); DEDUP_RING_SIZE],
     recent_write: usize,
@@ -262,6 +310,8 @@ impl CorrSlicerDecoder {
             samples_processed: 0,
             adaptive_gain_enabled: false,
             energy_llr: true,
+            adaptive: None,
+            phase_scoring: false,
             recent_hashes: [(0u32, 0u32); DEDUP_RING_SIZE],
             recent_write: 0,
             recent_count: 0,
@@ -284,6 +334,38 @@ impl CorrSlicerDecoder {
         self
     }
 
+    /// Enable preamble phase scoring.
+    ///
+    /// During the preamble, runs 3 candidate Bresenham phases in parallel.
+    /// Commits the best phase (most flag detections) when data starts.
+    /// Cost: ~30 ops/sample during preamble only; zero after commit.
+    pub fn with_phase_scoring(mut self) -> Self {
+        self.phase_scoring = true;
+        for ch in &mut self.channels[..self.num_channels] {
+            ch.phase_committed = false;
+        }
+        self
+    }
+
+    /// Enable adaptive NCO frequency retune from preamble measurements.
+    ///
+    /// Runs Hilbert transform + instantaneous frequency estimation on the
+    /// shared BPF output during preamble. When the AdaptiveTracker locks,
+    /// retunes all channels' NCO phase increments to match the transmitter's
+    /// actual mark/space frequencies.
+    ///
+    /// Cost: ~46 ops/sample during preamble; zero after lock.
+    pub fn with_adaptive_retune(mut self) -> Self {
+        self.adaptive = Some(CorrAdaptiveState {
+            hilbert: hilbert_31(),
+            inst_freq: InstFreqDetector::new(self.config.sample_rate),
+            tracker: AdaptiveTracker::new(self.config.sample_rate),
+            retuned: false,
+            sample_index: 0,
+        });
+        self
+    }
+
     /// Number of active gain slicers per channel.
     pub fn num_slicers(&self) -> usize {
         self.num_slicers
@@ -297,14 +379,23 @@ impl CorrSlicerDecoder {
     /// Reset all state for a new audio stream.
     pub fn reset(&mut self) {
         self.bpf.reset();
+        let sample_rate = self.config.sample_rate;
+        let phase_scoring = self.phase_scoring;
         for ch in &mut self.channels[..self.num_channels] {
-            ch.reset();
+            ch.reset(sample_rate, phase_scoring);
         }
         self.samples_processed = 0;
         self.recent_hashes = [(0u32, 0u32); DEDUP_RING_SIZE];
         self.recent_write = 0;
         self.recent_count = 0;
         self.generation = 0;
+        if let Some(ref mut adaptive) = self.adaptive {
+            adaptive.hilbert.reset();
+            adaptive.inst_freq.reset();
+            adaptive.tracker.reset();
+            adaptive.retuned = false;
+            adaptive.sample_index = 0;
+        }
     }
 
     /// Total soft-recovered frames across all channels and slicers (std only).
@@ -333,6 +424,9 @@ impl CorrSlicerDecoder {
         #[cfg(feature = "std")]
         let energy_llr = _energy_llr;
         let adaptive_gain = self.adaptive_gain_enabled;
+        let phase_scoring = self.phase_scoring;
+        let mark_freq = self.config.mark_freq;
+        let space_freq = self.config.space_freq;
 
         // Dedup state borrowed separately to avoid borrow conflicts with channels.
         let recent_hashes = &mut self.recent_hashes;
@@ -348,6 +442,46 @@ impl CorrSlicerDecoder {
             // 1. Shared bandpass filter
             let filtered = self.bpf.process(sample);
             let x = filtered as i32;
+
+            // 1b. Adaptive retune: Hilbert → InstFreq → Tracker (only until lock)
+            let retune_freqs = if let Some(ref mut adaptive) = self.adaptive {
+                if !adaptive.retuned {
+                    adaptive.sample_index = adaptive.sample_index.wrapping_add(1);
+                    let (real, imag) = adaptive.hilbert.process(filtered);
+                    let freq_fp = adaptive.inst_freq.process(real, imag);
+                    adaptive.tracker.feed(freq_fp, adaptive.sample_index);
+
+                    if adaptive.tracker.is_locked() {
+                        let mhz = (adaptive.tracker.mark_freq_est >> 8) as u32;
+                        let shz = (adaptive.tracker.space_freq_est >> 8) as u32;
+                        adaptive.retuned = true;
+                        Some((mhz, shz))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Apply frequency retune to all channels' NCO phase increments
+            if let Some((mark_hz, space_hz)) = retune_freqs {
+                let mark_delta = (mark_hz as i32 - mark_freq as i32).unsigned_abs();
+                let space_delta = (space_hz as i32 - space_freq as i32).unsigned_abs();
+                if mark_delta < 200 && space_delta < 200 && mark_hz > 0 && space_hz > 0 {
+                    for i in 0..num_channels {
+                        let offset = FREQ_OFFSETS[i];
+                        let ch_mark = (mark_hz as i32 + offset) as u32;
+                        let ch_space = (space_hz as i32 + offset) as u32;
+                        self.channels[i].mark_phase_inc =
+                            ((ch_mark as u64 * (1u64 << 24)) / sample_rate as u64) as u32;
+                        self.channels[i].space_phase_inc =
+                            ((ch_space as u64 * (1u64 << 24)) / sample_rate as u64) as u32;
+                    }
+                }
+            }
 
             // 2. Process each frequency channel
             for ch_idx in 0..num_channels {
@@ -373,7 +507,58 @@ impl CorrSlicerDecoder {
                 let space_i = ch.space_i_lpf.process(space_i_raw as i16);
                 let space_q = ch.space_q_lpf.process(space_q_raw as i16);
 
-                // 2c. Bresenham symbol timing (per-channel)
+                // 2c. Preamble phase scoring (3 candidate Bresenham timings)
+                if phase_scoring && !ch.phase_committed {
+                    for c in 0..NUM_PHASE_CANDIDATES {
+                        ch.candidate_phases[c] += baud_rate;
+                        if ch.candidate_phases[c] >= sample_rate {
+                            ch.candidate_phases[c] -= sample_rate;
+                            // Symbol boundary for candidate c — compute energy
+                            let me = (mark_i as i64) * (mark_i as i64)
+                                + (mark_q as i64) * (mark_q as i64);
+                            let se = (space_i as i64) * (space_i as i64)
+                                + (space_q as i64) * (space_q as i64);
+                            let raw_bit = me > se;
+                            let decoded_bit = raw_bit == ch.candidate_prev_nrzi[c];
+                            ch.candidate_prev_nrzi[c] = raw_bit;
+                            ch.candidate_shift_regs[c] =
+                                (ch.candidate_shift_regs[c] << 1) | (decoded_bit as u8);
+                            if ch.candidate_shift_regs[c] == 0x7E {
+                                ch.candidate_flag_counts[c] =
+                                    ch.candidate_flag_counts[c].saturating_add(1);
+                                ch.candidate_nonflag_run[c] = 0;
+                            } else {
+                                ch.candidate_nonflag_run[c] =
+                                    ch.candidate_nonflag_run[c].saturating_add(1);
+                            }
+                        }
+                    }
+                    // Check if any candidate is ready to commit
+                    let mut best_c: usize = 0;
+                    let mut best_flags: u8 = 0;
+                    let mut ready = false;
+                    for c in 0..NUM_PHASE_CANDIDATES {
+                        if ch.candidate_flag_counts[c] >= PHASE_COMMIT_MIN_FLAGS
+                            && ch.candidate_nonflag_run[c] > PHASE_COMMIT_GAP
+                        {
+                            if ch.candidate_flag_counts[c] > best_flags {
+                                best_flags = ch.candidate_flag_counts[c];
+                                best_c = c;
+                            }
+                            ready = true;
+                        }
+                    }
+                    if ready {
+                        ch.bit_phase = ch.candidate_phases[best_c];
+                        // Sync all slicer NRZI states from the winning candidate
+                        for s in ch.slicers[..num_slicers].iter_mut() {
+                            s.prev_nrzi_bit = ch.candidate_prev_nrzi[best_c];
+                        }
+                        ch.phase_committed = true;
+                    }
+                }
+
+                // 2d. Bresenham symbol timing (per-channel)
                 ch.bit_phase += baud_rate;
                 if ch.bit_phase < sample_rate {
                     continue;
@@ -604,5 +789,91 @@ mod tests {
         let ch0 = &decoder.channels[0];
         let expected_mark_inc = ((config.mark_freq as u64 * (1u64 << 24)) / config.sample_rate as u64) as u32;
         assert_eq!(ch0.mark_phase_inc, expected_mark_inc);
+    }
+
+    #[test]
+    fn test_phase_scoring_builder() {
+        let config = DemodConfig::default_1200();
+        let decoder = CorrSlicerDecoder::new(config).with_phase_scoring();
+        assert!(decoder.phase_scoring);
+        // All channels should have phase_committed = false (scoring enabled)
+        for ch in &decoder.channels[..decoder.num_channels()] {
+            assert!(!ch.phase_committed);
+            assert_eq!(ch.candidate_flag_counts, [0; NUM_PHASE_CANDIDATES]);
+            // Candidate phases should be spaced at 0, SR/3, 2*SR/3
+            assert_eq!(ch.candidate_phases[0], 0);
+            assert_eq!(ch.candidate_phases[1], config.sample_rate / 3);
+            assert_eq!(ch.candidate_phases[2], config.sample_rate * 2 / 3);
+        }
+    }
+
+    #[test]
+    fn test_phase_scoring_disabled_by_default() {
+        let config = DemodConfig::default_1200();
+        let decoder = CorrSlicerDecoder::new(config);
+        assert!(!decoder.phase_scoring);
+        for ch in &decoder.channels[..decoder.num_channels()] {
+            assert!(ch.phase_committed); // Scoring disabled
+        }
+    }
+
+    #[test]
+    fn test_phase_scoring_processes_silence() {
+        let config = DemodConfig::default_1200();
+        let mut decoder = CorrSlicerDecoder::new(config).with_phase_scoring();
+        let silence = [0i16; 1000];
+        let output = decoder.process_samples(&silence);
+        assert!(output.is_empty());
+        // Phase should NOT be committed with silence (no flags)
+        assert!(!decoder.channels[0].phase_committed);
+    }
+
+    #[test]
+    fn test_adaptive_retune_builder() {
+        let config = DemodConfig::default_1200();
+        let decoder = CorrSlicerDecoder::new(config).with_adaptive_retune();
+        assert!(decoder.adaptive.is_some());
+        let adaptive = decoder.adaptive.as_ref().unwrap();
+        assert!(!adaptive.retuned);
+        assert_eq!(adaptive.sample_index, 0);
+    }
+
+    #[test]
+    fn test_adaptive_retune_reset() {
+        let config = DemodConfig::default_1200();
+        let mut decoder = CorrSlicerDecoder::new(config).with_adaptive_retune();
+        let noise = [1000i16; 100];
+        decoder.process_samples(&noise);
+        decoder.reset();
+        let adaptive = decoder.adaptive.as_ref().unwrap();
+        assert!(!adaptive.retuned);
+        assert_eq!(adaptive.sample_index, 0);
+    }
+
+    #[test]
+    fn test_phase_scoring_reset() {
+        let config = DemodConfig::default_1200();
+        let mut decoder = CorrSlicerDecoder::new(config).with_phase_scoring();
+        let noise = [1000i16; 500];
+        decoder.process_samples(&noise);
+        decoder.reset();
+        // Phase scoring should be re-enabled after reset
+        for ch in &decoder.channels[..decoder.num_channels()] {
+            assert!(!ch.phase_committed);
+            assert_eq!(ch.candidate_flag_counts, [0; NUM_PHASE_CANDIDATES]);
+            assert_eq!(ch.candidate_phases[0], 0);
+        }
+    }
+
+    #[test]
+    fn test_combined_builders() {
+        let config = DemodConfig::default_1200();
+        let decoder = CorrSlicerDecoder::new(config)
+            .with_phase_scoring()
+            .with_adaptive_retune()
+            .with_adaptive_gain();
+        assert!(decoder.phase_scoring);
+        assert!(decoder.adaptive.is_some());
+        assert!(decoder.adaptive_gain_enabled);
     }
 }
