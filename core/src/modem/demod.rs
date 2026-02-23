@@ -321,6 +321,9 @@ impl FastDemodulator {
                         if mark_delta < 200 && space_delta < 200 && mark_hz > 0 && space_hz > 0 {
                             self.mark_coeff = goertzel_coeff(mark_hz, sample_rate);
                             self.space_coeff = goertzel_coeff(space_hz, sample_rate);
+                            // Reset Goertzel accumulators — old state is invalid under new coefficients
+                            self.mark_s1 = 0; self.mark_s2 = 0;
+                            self.space_s1 = 0; self.space_s2 = 0;
                         }
                         adaptive.retuned = true;
                     }
@@ -436,9 +439,21 @@ pub fn goertzel_coeff(freq: u32, sample_rate: u32) -> i32 {
             }
             #[cfg(not(feature = "std"))]
             {
-                // Rough approximation; add more entries to the match above
-                // for production use on no_std targets.
-                0
+                // Integer cosine via 3rd-order polynomial: cos(x) ≈ 1 - x²/2 + x⁴/24
+                // where x = 2π·f/Fs, computed in Q20 fixed-point.
+                // Accuracy: <0.5% for x in [0, π], sufficient for Goertzel.
+                // pi_q20 = π × 2^20 ≈ 3294199
+                const PI_Q20: i64 = 3_294_199;
+                let w_q20 = 2 * PI_Q20 * freq as i64 / sample_rate as i64; // 2π·f/Fs in Q20
+                // w² in Q20 (shift down 20 to stay in Q20)
+                let w2 = (w_q20 * w_q20) >> 20;
+                // w⁴ in Q20
+                let w4 = (w2 * w2) >> 20;
+                // cos(w) ≈ 1 - w²/2 + w⁴/24 in Q20
+                let one_q20: i64 = 1 << 20;
+                let cos_q20 = one_q20 - (w2 >> 1) + w4 / 24;
+                // 2·cos(w) in Q14 = 2·cos_q20 >> 6
+                ((2 * cos_q20) >> 6) as i32
             }
         }
     }
@@ -471,6 +486,8 @@ pub struct QualityDemodulator {
     /// Accumulated frequency estimate over symbol period
     freq_accum: i64,
     freq_count: u32,
+    /// Whether Goertzel coefficients have been re-tuned from tracker estimates.
+    retuned: bool,
 }
 
 impl QualityDemodulator {
@@ -505,6 +522,7 @@ impl QualityDemodulator {
             bit_phase: 0,
             freq_accum: 0,
             freq_count: 0,
+            retuned: false,
         }
     }
 
@@ -524,6 +542,12 @@ impl QualityDemodulator {
         self.bit_phase = 0;
         self.freq_accum = 0;
         self.freq_count = 0;
+        // Restore original Goertzel coefficients if they were retuned
+        if self.retuned {
+            self.mark_coeff = goertzel_coeff(self.config.mark_freq, self.config.sample_rate);
+            self.space_coeff = goertzel_coeff(self.config.space_freq, self.config.sample_rate);
+            self.retuned = false;
+        }
     }
 
     /// Process a buffer of audio samples.
@@ -563,6 +587,22 @@ impl QualityDemodulator {
             self.freq_accum += freq_fp as i64;
             self.freq_count += 1;
 
+            // 3b. Re-tune Goertzel coefficients when tracker locks
+            if !self.retuned && self.tracker.is_locked() {
+                let mark_hz = (self.tracker.mark_freq_est >> 8) as u32;
+                let space_hz = (self.tracker.space_freq_est >> 8) as u32;
+                let mark_delta = (mark_hz as i32 - self.config.mark_freq as i32).unsigned_abs();
+                let space_delta = (space_hz as i32 - self.config.space_freq as i32).unsigned_abs();
+                if mark_delta < 200 && space_delta < 200 && mark_hz > 0 && space_hz > 0 {
+                    self.mark_coeff = goertzel_coeff(mark_hz, sample_rate);
+                    self.space_coeff = goertzel_coeff(space_hz, sample_rate);
+                    // Reset Goertzel accumulators — old state is invalid under new coefficients
+                    self.mark_s1 = 0; self.mark_s2 = 0;
+                    self.space_s1 = 0; self.space_s2 = 0;
+                }
+                self.retuned = true;
+            }
+
             // 4. Bresenham symbol timing
             self.bit_phase += baud_rate;
             if self.bit_phase >= sample_rate {
@@ -578,24 +618,32 @@ impl QualityDemodulator {
 
                 let raw_bit = mark_energy > space_energy;
 
-                // 6. Generate LLR from Goertzel energy ratio
-                // This provides natural confidence variation: symbols where
-                // mark and space energies are similar get low confidence,
-                // enabling SoftHdlcDecoder to identify bits to flip.
+                // 6. Hybrid LLR: combine energy-based and frequency-based confidence
+                // Energy confidence from Goertzel ratio
                 let total = mark_energy + space_energy;
-                let energy_llr = if total > 0 {
+                let energy_conf = if total > 0 {
                     let ratio = ((mark_energy - space_energy) * 127) / total;
-                    ratio.clamp(-127, 127) as i8
+                    ratio.unsigned_abs().max(1).min(127) as u8
                 } else {
-                    0i8
+                    1u8
+                };
+
+                // Frequency confidence from per-symbol average instantaneous frequency.
+                // Only use after tracker lock — before lock, Hilbert estimates are noisy.
+                let hybrid_conf = if self.retuned && self.freq_count > 0 {
+                    let avg_freq = (self.freq_accum / self.freq_count as i64) as i32;
+                    let freq_conf = self.tracker.freq_to_llr(avg_freq).unsigned_abs().max(1);
+                    // Use minimum confidence: if either domain shows uncertainty, bit is suspect
+                    energy_conf.min(freq_conf).max(1)
+                } else {
+                    energy_conf
                 };
 
                 // 7. NRZI decode
                 let decoded_bit = raw_bit == self.prev_nrzi_bit;
                 self.prev_nrzi_bit = raw_bit;
 
-                let confidence = energy_llr.unsigned_abs().max(1);
-                let decoded_llr = if decoded_bit { confidence as i8 } else { -(confidence as i8) };
+                let decoded_llr = if decoded_bit { hybrid_conf as i8 } else { -(hybrid_conf as i8) };
 
                 if sym_count < symbols_out.len() {
                     symbols_out[sym_count] = DemodSymbol {

@@ -265,7 +265,7 @@ fn decode_smart3(samples: &[i16], sample_rate: u32) -> DecodeResult {
 }
 
 /// Decode using the fast demodulator with adaptive Goertzel re-tuning.
-fn decode_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
+fn decode_fast_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let mut config = DemodConfig::default_1200();
     config.sample_rate = sample_rate;
 
@@ -276,6 +276,82 @@ fn decode_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
     let start = Instant::now();
 
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                let data = match &result {
+                    FrameResult::Valid(d) => d,
+                    FrameResult::Recovered { data, .. } => data,
+                };
+                frames.push(data.to_vec());
+            }
+        }
+    }
+
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
+}
+
+/// Decode using the quality demodulator (with retune + hybrid LLR) + soft HDLC.
+fn decode_quality_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut demod = QualityDemodulator::new(config);
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                let data = match &result {
+                    FrameResult::Valid(d) => d,
+                    FrameResult::Recovered { data, .. } => data,
+                };
+                frames.push(data.to_vec());
+            }
+        }
+    }
+
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
+}
+
+/// Decode using the best single-decoder config from attribution analysis:
+/// freq-50 Hz offset, timing phase t2 (2/3 symbol), narrow BPF,
+/// adaptive retune + energy LLR + SoftHdlcDecoder.
+fn decode_best_single(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    use packet_radio_core::modem::filter;
+
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let freq_offset: i32 = -50;
+    let phase_offset = 2 * sample_rate / 3; // t2
+    let mark = (config.mark_freq as i32 + freq_offset) as u32;
+    let space = (config.space_freq as i32 + freq_offset) as u32;
+
+    // Use freq-shifted BPF to match the offset
+    let center = (1700i32 + freq_offset) as f64;
+    let bpf = filter::bandpass_coeffs(sample_rate, center, 2000.0);
+
+    let mut demod = FastDemodulator::with_filter_freq_and_offset(
+        config, bpf, phase_offset, mark, space,
+    ).with_adaptive_retune().with_energy_llr();
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
         for i in 0..n {
@@ -2304,7 +2380,9 @@ fn run_diff(wav_path: &str, reference: Option<&str>) {
 
     let fast = decode_fast(&samples, sample_rate);
     let (quality, _) = decode_quality(&samples, sample_rate);
-    let adaptive = decode_adaptive(&samples, sample_rate);
+    let fast_adapt = decode_fast_adaptive(&samples, sample_rate);
+    let qual_adapt = decode_quality_adaptive(&samples, sample_rate);
+    let best_single = decode_best_single(&samples, sample_rate);
     let smart3 = decode_smart3(&samples, sample_rate);
     let multi = decode_multi(&samples, sample_rate);
     let dm = decode_dm(&samples, sample_rate);
@@ -2316,7 +2394,9 @@ fn run_diff(wav_path: &str, reference: Option<&str>) {
     let modes = vec![
         ModeResult { name: "fast", tnc2_frames: frames_to_tnc2(&fast.frames) },
         ModeResult { name: "quality", tnc2_frames: frames_to_tnc2(&quality.frames) },
-        ModeResult { name: "adaptive", tnc2_frames: frames_to_tnc2(&adaptive.frames) },
+        ModeResult { name: "fast+adapt", tnc2_frames: frames_to_tnc2(&fast_adapt.frames) },
+        ModeResult { name: "qual+adapt", tnc2_frames: frames_to_tnc2(&qual_adapt.frames) },
+        ModeResult { name: "best-single", tnc2_frames: frames_to_tnc2(&best_single.frames) },
         ModeResult { name: "dm", tnc2_frames: frames_to_tnc2(&dm.frames) },
         ModeResult { name: "freq-50/t2", tnc2_frames: frames_to_tnc2(&best1.frames) },
         ModeResult { name: "narrow/t0", tnc2_frames: frames_to_tnc2(&best2.frames) },
