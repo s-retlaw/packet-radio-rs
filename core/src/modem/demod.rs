@@ -386,7 +386,14 @@ impl FastDemodulator {
                     let total = mark_energy + space_energy;
                     if total > 0 {
                         let energy_ratio = ((mark_energy - space_energy) * 127) / total;
-                        let confidence = energy_ratio.unsigned_abs().max(1).min(127) as i8;
+                        let mut confidence = energy_ratio.unsigned_abs().max(1).min(127) as i8;
+                        // At NRZI transitions the Goertzel window spans both tones,
+                        // making the energy ratio unreliable. Halve confidence so
+                        // SoftHdlcDecoder targets genuinely uncertain bits.
+                        if !decoded_bit {
+                            confidence >>= 1;
+                            if confidence == 0 { confidence = 1; }
+                        }
                         if decoded_bit { confidence } else { -confidence }
                     } else {
                         0
@@ -643,7 +650,15 @@ impl QualityDemodulator {
                 let decoded_bit = raw_bit == self.prev_nrzi_bit;
                 self.prev_nrzi_bit = raw_bit;
 
-                let decoded_llr = if decoded_bit { hybrid_conf as i8 } else { -(hybrid_conf as i8) };
+                // At NRZI transitions the Goertzel window spans both tones,
+                // making the energy ratio unreliable. Halve confidence.
+                let adj_conf = if !decoded_bit {
+                    (hybrid_conf >> 1).max(1)
+                } else {
+                    hybrid_conf
+                };
+
+                let decoded_llr = if decoded_bit { adj_conf as i8 } else { -(adj_conf as i8) };
 
                 if sym_count < symbols_out.len() {
                     symbols_out[sym_count] = DemodSymbol {
