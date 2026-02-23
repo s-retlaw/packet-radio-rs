@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use packet_radio_core::ax25::frame::HdlcDecoder;
 use packet_radio_core::modem::demod::{CorrelationDemodulator, DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
+use packet_radio_core::modem::corr_slicer::CorrSlicerDecoder;
 use packet_radio_core::modem::multi::{MiniDecoder, MultiDecoder};
 use packet_radio_core::modem::soft_hdlc::{FrameResult, SoftHdlcDecoder};
 use packet_radio_core::modem::DemodConfig;
@@ -139,6 +140,13 @@ fn main() {
             }
             run_corr_lpf_sweep(&args[2]);
         }
+        "--corr-slicer" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --corr-slicer <file.wav>");
+                return;
+            }
+            run_corr_slicer(&args[2]);
+        }
         "--corr-pll" => {
             if args.len() < 3 {
                 eprintln!("Usage: benchmark --corr-pll <file.wav>");
@@ -177,6 +185,7 @@ fn print_usage() {
     println!("  benchmark --smart3 <file.wav>          Decode using Smart3 mini-decoder (3 optimal decoders)");
     println!("  benchmark --soft-diag <file.wav>       Soft decode diagnostics (per-frame LLR analysis)");
     println!("  benchmark --corr <file.wav>            Decode using correlation (mixer) demodulator");
+    println!("  benchmark --corr-slicer <file.wav>    Decode using correlation multi-slicer (8 gain levels)");
     println!("  benchmark --corr-lpf-sweep <file.wav>  Sweep correlation LPF cutoff (400-1000 Hz, 50 Hz steps)");
     println!("  benchmark --corr-pll <file.wav>        Correlation + Gardner PLL timing recovery");
     println!("  benchmark --corr-pll-sweep <file.wav>  Sweep Corr+PLL alpha/error_shift parameters");
@@ -931,6 +940,8 @@ fn run_corr(path: &str) {
     let (corr_q, corr_soft) = decode_corr_quality(&samples, sample_rate);
     let corr_3p = decode_corr_3phase(&samples, sample_rate);
     let (corr_3pq, corr_3p_soft) = decode_corr_3phase_quality(&samples, sample_rate);
+    let slicer = decode_corr_slicer(&samples, sample_rate);
+    let slicer_3p = decode_corr_slicer_3phase(&samples, sample_rate);
     let fast = decode_fast(&samples, sample_rate);
     let (quality, qual_soft) = decode_quality(&samples, sample_rate);
     let (multi, multi_soft) = decode_multi(&samples, sample_rate);
@@ -953,6 +964,14 @@ fn run_corr(path: &str) {
         corr_3pq.elapsed.as_secs_f64(),
         duration_secs / corr_3pq.elapsed.as_secs_f64(),
         corr_3p_soft);
+    println!("  Slicer 8×:    {:>4} packets in {:.2}s ({:.0}x real-time)",
+        slicer.frames.len(),
+        slicer.elapsed.as_secs_f64(),
+        duration_secs / slicer.elapsed.as_secs_f64());
+    println!("  Slicer×3:     {:>4} packets in {:.2}s ({:.0}x real-time)",
+        slicer_3p.frames.len(),
+        slicer_3p.elapsed.as_secs_f64(),
+        duration_secs / slicer_3p.elapsed.as_secs_f64());
     println!("  Fast:         {:>4} packets (Goertzel baseline)",
         fast.frames.len());
     println!("  Quality:      {:>4} packets ({} soft saves, Goertzel+Hilbert baseline)",
@@ -961,8 +980,137 @@ fn run_corr(path: &str) {
         multi.frames.len(), multi_soft);
     let gain_hard = corr.frames.len() as i64 - fast.frames.len() as i64;
     let gain_3p = corr_3pq.frames.len() as i64 - quality.frames.len() as i64;
+    let gain_slicer = slicer.frames.len() as i64 - corr.frames.len() as i64;
     println!("  Gain (single): {:>+4} packets vs fast", gain_hard);
     println!("  Gain (3-ph):   {:>+4} packets vs quality", gain_3p);
+    println!("  Gain (slicer): {:>+4} packets vs corr single", gain_slicer);
+    println!();
+}
+
+// ─── Correlation Multi-Slicer ───────────────────────────────────────────
+
+/// Decode using correlation multi-slicer (single demod, N gain slicers).
+fn decode_corr_slicer(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut decoder = CorrSlicerDecoder::new(config).with_adaptive_gain();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+
+    let start = Instant::now();
+
+    for chunk in samples.chunks(1024) {
+        let output = decoder.process_samples(chunk);
+        for i in 0..output.len() {
+            frames.push(output.frame(i).to_vec());
+        }
+    }
+
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
+}
+
+/// Decode using correlation multi-slicer with 3 timing phases.
+fn decode_corr_slicer_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let offsets = [0, sample_rate / 3, 2 * sample_rate / 3];
+
+    let mut phase_frames: Vec<Vec<(u64, usize, Vec<u8>)>> = Vec::new();
+
+    let start = Instant::now();
+
+    for &offset in &offsets {
+        let mut decoder = CorrSlicerDecoder::new(config).with_adaptive_gain();
+        decoder.set_bit_phase(offset);
+        let mut frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
+        let mut sample_pos: usize = 0;
+
+        for chunk in samples.chunks(1024) {
+            let output = decoder.process_samples(chunk);
+            for i in 0..output.len() {
+                let data = output.frame(i).to_vec();
+                let hash = fnv1a_hash(&data);
+                frames.push((hash, sample_pos, data));
+            }
+            sample_pos += chunk.len();
+        }
+        phase_frames.push(frames);
+    }
+
+    // Merge with time-windowed dedup
+    let mut all_frames: Vec<Vec<u8>> = Vec::new();
+    let mut seen: Vec<(u64, usize)> = Vec::new();
+    let dedup_window = sample_rate as usize * 2;
+
+    for phase in &phase_frames {
+        for (hash, pos, data) in phase {
+            let is_dup = seen.iter().any(|(h, p)| {
+                *h == *hash && (*pos as i64 - *p as i64).unsigned_abs() < dedup_window as u64
+            });
+            if !is_dup {
+                seen.push((*hash, *pos));
+                all_frames.push(data.clone());
+            }
+        }
+    }
+
+    DecodeResult {
+        frames: all_frames,
+        elapsed: start.elapsed(),
+    }
+}
+
+fn run_corr_slicer(path: &str) {
+    println!("═══ Correlation Multi-Slicer Demodulator ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    println!(
+        "Duration: {:.1}s, {} samples at {} Hz",
+        duration_secs, samples.len(), sample_rate
+    );
+    println!();
+
+    let slicer = decode_corr_slicer(&samples, sample_rate);
+    let slicer_3p = decode_corr_slicer_3phase(&samples, sample_rate);
+    let corr = decode_corr(&samples, sample_rate);
+    let corr_3p = decode_corr_3phase(&samples, sample_rate);
+    let fast = decode_fast(&samples, sample_rate);
+    let (multi, multi_soft) = decode_multi(&samples, sample_rate);
+
+    println!("  Slicer 8×:       {:>4} packets in {:.2}s ({:.0}x real-time)",
+        slicer.frames.len(),
+        slicer.elapsed.as_secs_f64(),
+        duration_secs / slicer.elapsed.as_secs_f64());
+    println!("  Slicer 8×+3ph:   {:>4} packets in {:.2}s ({:.0}x real-time)",
+        slicer_3p.frames.len(),
+        slicer_3p.elapsed.as_secs_f64(),
+        duration_secs / slicer_3p.elapsed.as_secs_f64());
+    println!("  Corr single:     {:>4} packets (baseline)",
+        corr.frames.len());
+    println!("  Corr×3:          {:>4} packets (3-phase baseline)",
+        corr_3p.frames.len());
+    println!("  Fast (Goertzel): {:>4} packets",
+        fast.frames.len());
+    println!("  Multi (38×):     {:>4} packets ({} soft saves)",
+        multi.frames.len(), multi_soft);
+    let gain_single = slicer.frames.len() as i64 - corr.frames.len() as i64;
+    let gain_3ph = slicer_3p.frames.len() as i64 - corr_3p.frames.len() as i64;
+    println!();
+    println!("  Gain (slicer vs corr single): {:>+4} packets", gain_single);
+    println!("  Gain (slicer×3 vs corr×3):    {:>+4} packets", gain_3ph);
     println!();
 }
 

@@ -10,6 +10,7 @@ mod kiss_server;
 
 use clap::Parser;
 use packet_radio_core::modem::demod::{CorrelationDemodulator, DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
+use packet_radio_core::modem::corr_slicer::CorrSlicerDecoder;
 use packet_radio_core::modem::multi::{MiniDecoder, MultiDecoder};
 use packet_radio_core::modem::soft_hdlc::{SoftHdlcDecoder, FrameResult};
 use packet_radio_core::modem::DemodConfig;
@@ -84,6 +85,7 @@ fn main() {
         cli.dm,
         cli.smart3,
         cli.corr,
+        cli.corr_slicer,
         cli.corr_pll,
         cli.sample_rate,
     );
@@ -102,6 +104,7 @@ fn process_loop(
     use_dm: bool,
     use_smart3: bool,
     use_corr: bool,
+    use_corr_slicer: bool,
     use_corr_pll: bool,
     sample_rate: u32,
 ) {
@@ -120,6 +123,12 @@ fn process_loop(
     } else if use_smart3 {
         tracing::info!("using smart3 mini-decoder (3 parallel decoders)");
         process_loop_smart3(source, frame_tx, is_wav, config);
+    } else if use_corr_slicer {
+        tracing::info!("using correlation multi-slicer demodulator ({} slicers)", {
+            let d = CorrSlicerDecoder::new(config);
+            d.num_slicers()
+        });
+        process_loop_corr_slicer(source, frame_tx, is_wav, config);
     } else if use_corr_pll {
         tracing::info!("using correlation demodulator + Gardner PLL");
         process_loop_corr_pll(source, frame_tx, is_wav, config);
@@ -258,6 +267,44 @@ fn process_loop_dm(
                 print_frame(frame_count, &frame_data);
                 let _ = frame_tx.send(frame_data);
             }
+        }
+    }
+}
+
+/// Correlation multi-slicer demodulator processing loop.
+fn process_loop_corr_slicer(
+    mut source: Box<dyn SampleSource>,
+    frame_tx: broadcast::Sender<Vec<u8>>,
+    is_wav: bool,
+    config: DemodConfig,
+) {
+    let mut decoder = CorrSlicerDecoder::new(config).with_adaptive_gain();
+    let mut audio_buf = [0i16; 1024];
+    let mut frame_count: u64 = 0;
+
+    tracing::info!("processing audio at {} Hz (correlation multi-slicer, {} slicers)",
+        config.sample_rate, decoder.num_slicers());
+
+    loop {
+        let n = source.read_samples(&mut audio_buf);
+        if n == 0 {
+            if is_wav {
+                tracing::info!(
+                    "WAV file complete, decoded {} unique frames ({} total from {} slicers)",
+                    decoder.total_unique, decoder.total_decoded, decoder.num_slicers()
+                );
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        let output = decoder.process_samples(&audio_buf[..n]);
+        for i in 0..output.len() {
+            frame_count += 1;
+            let frame_data = output.frame(i).to_vec();
+            print_frame(frame_count, &frame_data);
+            let _ = frame_tx.send(frame_data);
         }
     }
 }

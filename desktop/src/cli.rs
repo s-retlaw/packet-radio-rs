@@ -46,6 +46,10 @@ pub struct Cli {
     #[arg(long)]
     pub corr: bool,
 
+    /// Use correlation demodulator + multi-slicer (8 gain levels, single demod)
+    #[arg(long)]
+    pub corr_slicer: bool,
+
     /// Use correlation demodulator + Gardner PLL timing recovery
     #[arg(long)]
     pub corr_pll: bool,
