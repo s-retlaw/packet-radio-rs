@@ -10,4 +10,4 @@ name = "benchmark"
 path = "main.rs"
 
 [dependencies]
-packet-radio-core = { path = "../../core", features = ["std", "multi-decoder"] }
+packet-radio-core = { path = "../../core", features = ["std", "multi-decoder", "attribution"] }

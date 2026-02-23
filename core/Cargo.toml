@@ -11,6 +11,7 @@ alloc = []          # Enable Vec/String in APRS parser
 std = ["alloc", "dep:libm"]  # Full standard library support
 float = []          # Use f32 for DSP (vs fixed-point i16)
 multi-decoder = []  # Multiple parallel demodulators
+attribution = ["std", "multi-decoder"]  # Per-decoder frame attribution tracking
 9600-baud = []      # G3RUH/GMSK modem support
 fx25 = []           # FX.25 forward error correction
 

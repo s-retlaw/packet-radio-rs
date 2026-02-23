@@ -10,7 +10,7 @@ mod kiss_server;
 
 use clap::Parser;
 use packet_radio_core::modem::demod::{DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
-use packet_radio_core::modem::multi::MultiDecoder;
+use packet_radio_core::modem::multi::{MiniDecoder, MultiDecoder};
 use packet_radio_core::modem::soft_hdlc::{SoftHdlcDecoder, FrameResult};
 use packet_radio_core::modem::DemodConfig;
 use packet_radio_core::ax25::frame::HdlcDecoder;
@@ -82,6 +82,7 @@ fn main() {
         cli.quality,
         cli.multi,
         cli.dm,
+        cli.smart3,
         cli.sample_rate,
     );
 }
@@ -97,6 +98,7 @@ fn process_loop(
     use_quality: bool,
     use_multi: bool,
     use_dm: bool,
+    use_smart3: bool,
     sample_rate: u32,
 ) {
     let config = match sample_rate {
@@ -111,6 +113,9 @@ fn process_loop(
             m.num_decoders()
         });
         process_loop_multi(source, frame_tx, is_wav, config);
+    } else if use_smart3 {
+        tracing::info!("using smart3 mini-decoder (3 parallel decoders)");
+        process_loop_smart3(source, frame_tx, is_wav, config);
     } else if use_dm {
         tracing::info!("using delay-multiply demodulator");
         process_loop_dm(source, frame_tx, is_wav, config);
@@ -156,26 +161,68 @@ fn process_loop_multi(
     }
 }
 
-/// Delay-multiply demodulator processing loop.
+/// Smart3 mini-decoder processing loop (3 attribution-optimal decoders).
+fn process_loop_smart3(
+    mut source: Box<dyn SampleSource>,
+    frame_tx: broadcast::Sender<Vec<u8>>,
+    is_wav: bool,
+    config: DemodConfig,
+) {
+    let mut mini = MiniDecoder::new(config);
+    let mut audio_buf = [0i16; 1024];
+    let mut frame_count: u64 = 0;
+
+    tracing::info!("processing audio at {} Hz", config.sample_rate);
+
+    loop {
+        let n = source.read_samples(&mut audio_buf);
+        if n == 0 {
+            if is_wav {
+                tracing::info!(
+                    "WAV file complete, decoded {} unique frames ({} total from {} decoders)",
+                    mini.total_unique, mini.total_decoded, mini.num_decoders()
+                );
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        let output = mini.process_samples(&audio_buf[..n]);
+        for i in 0..output.len() {
+            frame_count += 1;
+            let frame_data = output.frame(i).to_vec();
+            print_frame(frame_count, &frame_data);
+            let _ = frame_tx.send(frame_data);
+        }
+    }
+}
+
+/// Delay-multiply demodulator processing loop (Gardner PLL + soft HDLC).
 fn process_loop_dm(
     mut source: Box<dyn SampleSource>,
     frame_tx: broadcast::Sender<Vec<u8>>,
     is_wav: bool,
     config: DemodConfig,
 ) {
-    let mut demod = DmDemodulator::with_bpf(config);
-    let mut hdlc = HdlcDecoder::new();
+    let mut demod = DmDemodulator::with_bpf_pll(config);
+    let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut audio_buf = [0i16; 1024];
     let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
     let mut frame_count: u64 = 0;
+    let mut soft_saves: u32 = 0;
 
-    tracing::info!("processing audio at {} Hz (delay-multiply)", config.sample_rate);
+    tracing::info!("processing audio at {} Hz (delay-multiply + Gardner PLL + soft HDLC)", config.sample_rate);
 
     loop {
         let n = source.read_samples(&mut audio_buf);
         if n == 0 {
             if is_wav {
-                tracing::info!("WAV file complete, decoded {frame_count} frames");
+                if soft_saves > 0 {
+                    tracing::info!("WAV file complete, decoded {frame_count} frames ({soft_saves} soft recoveries)");
+                } else {
+                    tracing::info!("WAV file complete, decoded {frame_count} frames");
+                }
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -184,9 +231,20 @@ fn process_loop_dm(
 
         let num_symbols = demod.process_samples(&audio_buf[..n], &mut symbols);
         for i in 0..num_symbols {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                match &result {
+                    FrameResult::Recovered { flips, .. } => {
+                        soft_saves += 1;
+                        tracing::debug!("soft recovery: {} bit(s) corrected", flips);
+                    }
+                    _ => {}
+                }
+                let data = match &result {
+                    FrameResult::Valid(d) => *d,
+                    FrameResult::Recovered { data, .. } => *data,
+                };
                 frame_count += 1;
-                let frame_data = frame.to_vec();
+                let frame_data = data.to_vec();
                 print_frame(frame_count, &frame_data);
                 let _ = frame_tx.send(frame_data);
             }

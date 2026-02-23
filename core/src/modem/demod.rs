@@ -54,6 +54,21 @@ const AGC_DECAY_SHIFT: u32 = 6;
 /// Optional AGC mode (`.with_agc()`) tracks exponential moving averages of
 /// mark and space energies and normalizes the decision threshold, compensating
 /// for frequency-dependent gain differences such as de-emphasis.
+/// Optional adaptive state for FastDemodulator Goertzel re-tuning.
+///
+/// Runs Hilbert transform + instantaneous frequency estimation during
+/// preamble to measure actual mark/space frequencies, then re-tunes
+/// the Goertzel coefficients to match the transmitter.
+struct AdaptiveState {
+    hilbert: HilbertTransform<31>,
+    inst_freq: InstFreqDetector,
+    tracker: AdaptiveTracker,
+    /// Whether Goertzel coefficients have been re-tuned for this packet.
+    retuned: bool,
+    /// Sample index counter for the tracker.
+    sample_index: u32,
+}
+
 pub struct FastDemodulator {
     #[allow(dead_code)]
     config: DemodConfig,
@@ -83,6 +98,10 @@ pub struct FastDemodulator {
     /// Leaky-max peak tracker for space energy (right-shifted by AGC_ENERGY_SHIFT).
     /// Tracks the on-tone energy level for the space frequency.
     space_energy_peak: i64,
+    /// Whether to produce energy-based LLR (default: fixed ±64).
+    energy_llr: bool,
+    /// Optional adaptive Goertzel re-tuning from preamble measurements.
+    adaptive: Option<AdaptiveState>,
 }
 
 impl FastDemodulator {
@@ -118,6 +137,8 @@ impl FastDemodulator {
             agc_enabled: false,
             mark_energy_peak: 1,
             space_energy_peak: 1,
+            energy_llr: false,
+            adaptive: None,
         }
     }
 
@@ -142,6 +163,8 @@ impl FastDemodulator {
             agc_enabled: false,
             mark_energy_peak: 1,
             space_energy_peak: 1,
+            energy_llr: false,
+            adaptive: None,
         }
     }
 
@@ -182,6 +205,8 @@ impl FastDemodulator {
             agc_enabled: false,
             mark_energy_peak: 1,
             space_energy_peak: 1,
+            energy_llr: false,
+            adaptive: None,
         }
     }
 
@@ -206,6 +231,34 @@ impl FastDemodulator {
         self
     }
 
+    /// Enable energy-based LLR output.
+    ///
+    /// Replaces the fixed ±64 LLR with actual mark/space energy ratio,
+    /// enabling SoftHdlcDecoder bit-flip recovery on the fast path.
+    pub fn with_energy_llr(mut self) -> Self {
+        self.energy_llr = true;
+        self
+    }
+
+    /// Enable adaptive Goertzel re-tuning from preamble measurements.
+    ///
+    /// Runs Hilbert transform + instantaneous frequency estimation during
+    /// the preamble. When the AdaptiveTracker locks, re-computes Goertzel
+    /// coefficients to match the transmitter's actual mark/space frequencies.
+    ///
+    /// Additional cost: ~46 ops/sample during preamble (~920 samples at 11025 Hz).
+    /// After lock, the adaptive path is bypassed (just retuned Goertzel runs).
+    pub fn with_adaptive_retune(mut self) -> Self {
+        self.adaptive = Some(AdaptiveState {
+            hilbert: hilbert_31(),
+            inst_freq: InstFreqDetector::new(self.config.sample_rate),
+            tracker: AdaptiveTracker::new(self.config.sample_rate),
+            retuned: false,
+            sample_index: 0,
+        });
+        self
+    }
+
     /// Reset demodulator state.
     pub fn reset(&mut self) {
         self.bpf.reset();
@@ -218,6 +271,16 @@ impl FastDemodulator {
         self.bit_phase = 0;
         self.mark_energy_peak = 1;
         self.space_energy_peak = 1;
+        // Reset adaptive state and restore original Goertzel coefficients
+        if let Some(ref mut adaptive) = self.adaptive {
+            adaptive.hilbert.reset();
+            adaptive.inst_freq.reset();
+            adaptive.tracker.reset();
+            adaptive.retuned = false;
+            adaptive.sample_index = 0;
+            self.mark_coeff = goertzel_coeff(self.config.mark_freq, self.config.sample_rate);
+            self.space_coeff = goertzel_coeff(self.config.space_freq, self.config.sample_rate);
+        }
     }
 
     /// Process a buffer of audio samples.
@@ -239,6 +302,30 @@ impl FastDemodulator {
             // 1. Bandpass filter
             let filtered = self.bpf.process(sample);
             let s = filtered as i64;
+
+            // 1b. Adaptive: feed Hilbert+InstFreq into tracker (only until lock)
+            if let Some(ref mut adaptive) = self.adaptive {
+                if !adaptive.retuned {
+                    adaptive.sample_index = adaptive.sample_index.wrapping_add(1);
+                    let (real, imag) = adaptive.hilbert.process(filtered);
+                    let freq_fp = adaptive.inst_freq.process(real, imag);
+                    adaptive.tracker.feed(freq_fp, adaptive.sample_index);
+
+                    // Re-tune Goertzel coefficients when tracker locks
+                    if adaptive.tracker.is_locked() {
+                        let mark_hz = (adaptive.tracker.mark_freq_est >> 8) as u32;
+                        let space_hz = (adaptive.tracker.space_freq_est >> 8) as u32;
+                        // Only retune if estimates are reasonable (within ±200 Hz of nominal)
+                        let mark_delta = (mark_hz as i32 - self.config.mark_freq as i32).unsigned_abs();
+                        let space_delta = (space_hz as i32 - self.config.space_freq as i32).unsigned_abs();
+                        if mark_delta < 200 && space_delta < 200 && mark_hz > 0 && space_hz > 0 {
+                            self.mark_coeff = goertzel_coeff(mark_hz, sample_rate);
+                            self.space_coeff = goertzel_coeff(space_hz, sample_rate);
+                        }
+                        adaptive.retuned = true;
+                    }
+                }
+            }
 
             // 2. Goertzel iteration for mark and space
             let mark_s0 = s + ((self.mark_coeff as i64 * self.mark_s1) >> 14) - self.mark_s2;
@@ -291,10 +378,24 @@ impl FastDemodulator {
                 let decoded_bit = raw_bit == self.prev_nrzi_bit;
                 self.prev_nrzi_bit = raw_bit;
 
+                // 6. LLR: energy-based or fixed
+                let llr = if self.energy_llr {
+                    let total = mark_energy + space_energy;
+                    if total > 0 {
+                        let energy_ratio = ((mark_energy - space_energy) * 127) / total;
+                        let confidence = energy_ratio.unsigned_abs().max(1).min(127) as i8;
+                        if decoded_bit { confidence } else { -confidence }
+                    } else {
+                        0
+                    }
+                } else {
+                    if decoded_bit { 64 } else { -64 }
+                };
+
                 if sym_count < symbols_out.len() {
                     symbols_out[sym_count] = DemodSymbol {
                         bit: decoded_bit,
-                        llr: if decoded_bit { 64 } else { -64 },
+                        llr,
                     };
                     sym_count += 1;
                 }
@@ -312,7 +413,7 @@ impl FastDemodulator {
 }
 
 /// Compute Goertzel coefficient for a given frequency: 2·cos(2π·f/Fs) in Q14.
-fn goertzel_coeff(freq: u32, sample_rate: u32) -> i32 {
+pub fn goertzel_coeff(freq: u32, sample_rate: u32) -> i32 {
     // Using the lookup-based approach for common frequencies to avoid
     // floating-point at runtime.
     // For other frequencies, we precompute at initialization time.
@@ -580,11 +681,13 @@ pub struct DmDemodulator {
     preemph_alpha_q15: i16,
     /// Previous sample for pre-emphasis filter
     preemph_prev: i16,
-    /// Leaky integrator for PLL input — smooths per-sample disc_out so the
-    /// PLL's transition detector sees clean mark↔space crossings instead of
-    /// noisy per-sample values. Decay shift of 3 gives ~8 sample window
-    /// (≈1 symbol at 11025/1200).
-    pll_leaky: i64,
+    /// Leaky integrator state for optional PLL input smoothing.
+    pll_smooth: i64,
+    /// Right-shift for PLL input smoothing. 0 = disabled, 3 = moderate (~7 sample group delay).
+    pll_smooth_shift: u8,
+    /// Right-shift for LLR confidence mapping from accumulator magnitude.
+    /// Default 6. Larger shift → lower confidence → more targeted soft recovery.
+    llr_shift: u8,
 }
 
 impl DmDemodulator {
@@ -706,18 +809,19 @@ impl DmDemodulator {
             symbol_count: 0,
             preemph_alpha_q15: 0,
             preemph_prev: 0,
-            pll_leaky: 0,
+            pll_smooth: 0,
+            pll_smooth_shift: 0,
+            llr_shift: 6,
         }
     }
 
     /// Create with BPF + PLL clock recovery for real-world signals.
     ///
     /// Uses the filtered delay (d=8 at 11025 Hz) with BPF+LPF preprocessing
-    /// for clean discriminator output, and PLL for adaptive symbol timing.
-    /// Uses alpha-only phase correction (beta=0) because the leaky integrator's
-    /// group delay biases frequency correction.
+    /// for clean discriminator output, and Gardner TED PLL for adaptive symbol
+    /// timing with both phase and frequency correction.
     pub fn with_bpf_pll(config: DemodConfig) -> Self {
-        Self::make_pll(config, config.pll_alpha, 0, 0)
+        Self::make_pll(config, config.pll_alpha, config.pll_beta, 0)
     }
 
     /// Create with BPF + PLL and custom loop bandwidth.
@@ -749,7 +853,7 @@ impl DmDemodulator {
             _ => super::filter::afsk_bandpass_11025(),
         });
         let mark_is_negative = Self::is_mark_negative(delay, config.sample_rate);
-        let pll = ClockRecoveryPll::new(config.sample_rate, config.baud_rate, alpha, beta)
+        let pll = ClockRecoveryPll::new_gardner(config.sample_rate, config.baud_rate, alpha, beta)
             .with_hysteresis(hysteresis);
 
         Self {
@@ -770,7 +874,9 @@ impl DmDemodulator {
             symbol_count: 0,
             preemph_alpha_q15: 0,
             preemph_prev: 0,
-            pll_leaky: 0,
+            pll_smooth: 0,
+            pll_smooth_shift: 0,
+            llr_shift: 6,
         }
     }
 
@@ -794,6 +900,37 @@ impl DmDemodulator {
     /// - 0: disabled (default)
     pub fn with_preemph(mut self, alpha_q15: i16) -> Self {
         self.preemph_alpha_q15 = alpha_q15;
+        self
+    }
+
+    /// Enable PLL input smoothing with a leaky integrator (builder pattern).
+    ///
+    /// `shift` controls the smoothing time constant: `smooth -= smooth >> shift; smooth += disc_out`.
+    /// 0 = disabled (default), 3 = moderate (~7 sample group delay), 5 = heavy smoothing.
+    /// With Gardner TED (immune to group delay), smoothing may help de-emphasized signals.
+    pub fn with_pll_smoothing(mut self, shift: u8) -> Self {
+        self.pll_smooth_shift = shift;
+        self
+    }
+
+    /// Set the LLR confidence right-shift (builder pattern).
+    ///
+    /// Maps accumulator magnitude to [1,127] confidence: `abs(accumulator) >> shift`.
+    /// Default 6. At 11025 Hz, accumulators ~9000 → shift=6 gives ~140 (clamped to 127).
+    /// Larger shift → lower confidence → more targeted soft recovery on weak symbols.
+    pub fn with_llr_shift(mut self, shift: u8) -> Self {
+        self.llr_shift = shift;
+        self
+    }
+
+    /// Set the PLL Gardner error right-shift (builder pattern).
+    ///
+    /// Forwarded to the underlying `ClockRecoveryPll::with_error_shift()`.
+    /// Only effective when PLL is enabled (via `with_bpf_pll` constructors).
+    pub fn with_pll_error_shift(mut self, shift: u8) -> Self {
+        if let Some(ref mut pll) = self.pll {
+            pll.set_error_shift(shift);
+        }
         self
     }
 
@@ -846,7 +983,9 @@ impl DmDemodulator {
             symbol_count: 0,
             preemph_alpha_q15: 0,
             preemph_prev: 0,
-            pll_leaky: 0,
+            pll_smooth: 0,
+            pll_smooth_shift: 0,
+            llr_shift: 6,
         }
     }
 
@@ -869,7 +1008,7 @@ impl DmDemodulator {
         self.adaptive_threshold = 0;
         self.symbol_count = 0;
         self.preemph_prev = 0;
-        self.pll_leaky = 0;
+        self.pll_smooth = 0;
     }
 
     /// Process a buffer of audio samples.
@@ -914,16 +1053,16 @@ impl DmDemodulator {
 
             // 3. Timing recovery: Bresenham (fixed-rate) or PLL (adaptive)
             let symbol_boundary = if use_pll {
-                // Leaky integrator smooths per-sample disc_out for PLL.
-                // Raw disc_out noise causes false transitions; the leaky
-                // integrator provides ~1 symbol window of smoothing for
-                // clean transition detection.
-                // NOTE: The group delay from this filter biases the PLL's
-                // frequency (beta) correction. Use beta=0 (alpha-only).
-                const PLL_LEAK_SHIFT: u32 = 3; // Decay by 1/8 per sample
-                self.pll_leaky -= self.pll_leaky >> PLL_LEAK_SHIFT;
-                self.pll_leaky += disc_out as i64;
-                let pll_input = self.pll_leaky.clamp(-32000, 32000) as i16;
+                // Optional leaky integrator smoothing before PLL input.
+                // With Gardner TED (immune to group delay), smoothing may
+                // help de-emphasized signals without breaking beta correction.
+                let pll_input = if self.pll_smooth_shift > 0 {
+                    self.pll_smooth -= self.pll_smooth >> self.pll_smooth_shift;
+                    self.pll_smooth += disc_out as i64;
+                    (self.pll_smooth >> self.pll_smooth_shift).clamp(-32768, 32767) as i16
+                } else {
+                    disc_out
+                };
                 self.pll.as_mut().unwrap().update(pll_input).is_some()
             } else {
                 self.bit_phase += baud_rate;
@@ -1003,9 +1142,13 @@ impl DmDemodulator {
                 self.prev_nrzi_bit = raw_bit;
 
                 if sym_count < symbols_out.len() {
+                    // LLR from accumulator magnitude: large |accumulator| =
+                    // consistent tone = high confidence; small = transition/noise.
+                    let confidence = (self.accumulator.abs() >> self.llr_shift).min(127).max(1) as i8;
+                    let llr = if decoded_bit { confidence } else { -confidence };
                     symbols_out[sym_count] = DemodSymbol {
                         bit: decoded_bit,
-                        llr: if decoded_bit { 64 } else { -64 },
+                        llr,
                     };
                     sym_count += 1;
                 }

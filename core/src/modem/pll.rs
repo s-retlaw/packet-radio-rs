@@ -5,6 +5,14 @@
 //! The fast/quality paths use Bresenham fixed-rate timing instead.
 
 /// Digital PLL for clock recovery.
+///
+/// Supports two timing error detector (TED) modes:
+/// - **Zero-crossing** (`new()`): Detects sign changes in the discriminator
+///   and corrects phase toward the mid-symbol transition point. Simple but
+///   sensitive to group delay from input smoothing filters.
+/// - **Gardner** (`new_gardner()`): Uses `(x[n] - x[n-1]) × x[n-½]` — a
+///   differential measurement comparing boundary samples against mid-symbol.
+///   Immune to group delay, enabling stable frequency (beta) correction.
 pub struct ClockRecoveryPll {
     /// Phase accumulator (wraps at nominal_freq)
     pub phase: i32,
@@ -26,6 +34,18 @@ pub struct ClockRecoveryPll {
     /// When > 0, both samples must exceed ±hysteresis to register a transition.
     /// Prevents false transitions from noise near zero crossing.
     hysteresis: i16,
+    /// Whether to use Gardner TED instead of zero-crossing detection.
+    use_gardner: bool,
+    /// Previous boundary sample (Gardner TED state).
+    prev_boundary: i16,
+    /// Mid-symbol sample captured at phase ≈ freq/2 (Gardner TED state).
+    mid_sample: i16,
+    /// Whether mid_sample has been captured for the current symbol.
+    mid_captured: bool,
+    /// Right-shift applied to Gardner error before loop filter.
+    /// Controls error magnitude: smaller shift → larger error → more aggressive.
+    /// Default 8. Tunable via `with_error_shift()`.
+    error_shift: u8,
 }
 
 /// PLL scaling factor. We multiply samples_per_symbol by this to get
@@ -52,7 +72,54 @@ impl ClockRecoveryPll {
             locked: false,
             lock_count: 0,
             hysteresis: 0,
+            use_gardner: false,
+            prev_boundary: 0,
+            mid_sample: 0,
+            mid_captured: false,
+            error_shift: 8,
         }
+    }
+
+    /// Create a PLL using the Gardner timing error detector.
+    ///
+    /// Gardner TED computes `error = (x[n] - x[n-1]) × x[n-½]` at each
+    /// symbol boundary. This is a differential measurement that compares
+    /// boundary samples against mid-symbol, making it immune to the group
+    /// delay that biases zero-crossing detection. This enables stable
+    /// frequency (beta) correction for tracking transmitter baud rate drift.
+    pub fn new_gardner(sample_rate: u32, baud_rate: u32, alpha: i16, beta: i16) -> Self {
+        let nominal = (sample_rate as i32 * PLL_SCALE) / baud_rate as i32;
+        Self {
+            phase: 0,
+            freq: nominal,
+            nominal_freq: nominal,
+            alpha,
+            beta,
+            prev_sample: 0,
+            locked: false,
+            lock_count: 0,
+            hysteresis: 0,
+            use_gardner: true,
+            prev_boundary: 0,
+            mid_sample: 0,
+            mid_captured: false,
+            error_shift: 8,
+        }
+    }
+
+    /// Set the Gardner error right-shift (builder pattern).
+    ///
+    /// Controls how aggressively the PLL corrects timing errors.
+    /// Smaller shift → larger error signal → faster but less stable.
+    /// Default is 8.
+    pub fn with_error_shift(mut self, shift: u8) -> Self {
+        self.error_shift = shift;
+        self
+    }
+
+    /// Set the Gardner error right-shift on an existing PLL instance.
+    pub fn set_error_shift(&mut self, shift: u8) {
+        self.error_shift = shift;
     }
 
     /// Set hysteresis threshold for transition detection (builder pattern).
@@ -84,50 +151,88 @@ impl ClockRecoveryPll {
         // Advance phase by one sample step
         self.phase += PLL_SCALE;
 
-        // Symbol boundary: phase exceeds the current symbol period
-        if self.phase >= self.freq {
-            self.phase -= self.freq;
-            symbol_sample = Some(disc_out);
-        }
+        if self.use_gardner {
+            // ── Gardner TED mode ──
+            // Capture mid-symbol sample when phase crosses freq/2.
+            if !self.mid_captured && self.phase >= self.freq / 2 {
+                self.mid_sample = disc_out;
+                self.mid_captured = true;
+            }
 
-        // Detect transitions (sign changes in discriminator).
-        // With hysteresis, both samples must exceed the threshold to avoid
-        // false transitions from noise near zero.
-        let transition = if self.hysteresis > 0 {
-            (disc_out > self.hysteresis && self.prev_sample < -self.hysteresis)
-                || (disc_out < -self.hysteresis && self.prev_sample > self.hysteresis)
+            // Symbol boundary: phase exceeds the current symbol period
+            if self.phase >= self.freq {
+                self.phase -= self.freq;
+                symbol_sample = Some(disc_out);
+
+                // Gardner error: (current_boundary - prev_boundary) × mid_sample
+                // Positive error = timing is late, negative = early.
+                let diff = disc_out as i32 - self.prev_boundary as i32;
+                let error = ((diff as i64 * self.mid_sample as i64) >> self.error_shift)
+                    .clamp(-16000, 16000) as i32;
+
+                // Proportional correction (phase — fast response)
+                let phase_correction = (error as i64 * self.alpha as i64) >> 15;
+                self.phase -= phase_correction as i32;
+
+                // Integral correction (frequency — slow adaptation)
+                let freq_correction = (error as i64 * self.beta as i64) >> 15;
+                self.freq -= freq_correction as i32;
+
+                // Clamp frequency to ±2% of nominal baud rate
+                let max_drift = self.nominal_freq / 50;
+                self.freq = self.freq.clamp(
+                    self.nominal_freq - max_drift,
+                    self.nominal_freq + max_drift,
+                );
+
+                // Update state for next symbol
+                self.prev_boundary = disc_out;
+                self.mid_captured = false;
+
+                self.lock_count = self.lock_count.saturating_add(1);
+                if self.lock_count > 20 {
+                    self.locked = true;
+                }
+            }
         } else {
-            (disc_out > 0) != (self.prev_sample > 0)
-                && (disc_out != 0 || self.prev_sample != 0)
-        };
-        self.prev_sample = disc_out;
+            // ── Legacy zero-crossing TED mode ──
+            // Symbol boundary: phase exceeds the current symbol period
+            if self.phase >= self.freq {
+                self.phase -= self.freq;
+                symbol_sample = Some(disc_out);
+            }
 
-        if transition {
-            self.lock_count = self.lock_count.saturating_add(1);
+            // Detect transitions (sign changes in discriminator).
+            let transition = if self.hysteresis > 0 {
+                (disc_out > self.hysteresis && self.prev_sample < -self.hysteresis)
+                    || (disc_out < -self.hysteresis && self.prev_sample > self.hysteresis)
+            } else {
+                (disc_out > 0) != (self.prev_sample > 0)
+                    && (disc_out != 0 || self.prev_sample != 0)
+            };
+            self.prev_sample = disc_out;
 
-            // Phase error: distance from the ideal mid-symbol transition point.
-            // Ideal transition occurs at phase = nominal_freq / 2.
-            let ideal = self.nominal_freq / 2;
-            let error = self.phase - ideal;
+            if transition {
+                self.lock_count = self.lock_count.saturating_add(1);
 
-            // Proportional correction (phase — fast response)
-            let phase_correction = (error as i64 * self.alpha as i64) >> 15;
-            self.phase -= phase_correction as i32;
+                let ideal = self.nominal_freq / 2;
+                let error = self.phase - ideal;
 
-            // Integral correction (frequency — slow adaptation)
-            let freq_correction = (error as i64 * self.beta as i64) >> 15;
-            self.freq -= freq_correction as i32;
+                let phase_correction = (error as i64 * self.alpha as i64) >> 15;
+                self.phase -= phase_correction as i32;
 
-            // Clamp frequency to ±2% of nominal baud rate
-            let max_drift = self.nominal_freq / 50;
-            self.freq = self.freq.clamp(
-                self.nominal_freq - max_drift,
-                self.nominal_freq + max_drift,
-            );
+                let freq_correction = (error as i64 * self.beta as i64) >> 15;
+                self.freq -= freq_correction as i32;
 
-            // Consider locked after enough transitions
-            if self.lock_count > 20 {
-                self.locked = true;
+                let max_drift = self.nominal_freq / 50;
+                self.freq = self.freq.clamp(
+                    self.nominal_freq - max_drift,
+                    self.nominal_freq + max_drift,
+                );
+
+                if self.lock_count > 20 {
+                    self.locked = true;
+                }
             }
         }
 
@@ -156,6 +261,9 @@ impl ClockRecoveryPll {
         self.prev_sample = 0;
         self.locked = false;
         self.lock_count = 0;
+        self.prev_boundary = 0;
+        self.mid_sample = 0;
+        self.mid_captured = false;
     }
 }
 

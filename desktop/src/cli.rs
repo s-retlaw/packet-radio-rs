@@ -38,6 +38,10 @@ pub struct Cli {
     #[arg(long)]
     pub dm: bool,
 
+    /// Use Smart3 mini-decoder (3 attribution-optimal parallel decoders)
+    #[arg(long)]
+    pub smart3: bool,
+
     /// Verbose output (repeat for more: -v, -vv, -vvv)
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
