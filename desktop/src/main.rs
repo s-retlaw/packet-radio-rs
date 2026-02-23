@@ -9,7 +9,7 @@ mod cli;
 mod kiss_server;
 
 use clap::Parser;
-use packet_radio_core::modem::demod::{DemodSymbol, FastDemodulator, QualityDemodulator};
+use packet_radio_core::modem::demod::{DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
 use packet_radio_core::modem::multi::MultiDecoder;
 use packet_radio_core::modem::soft_hdlc::{SoftHdlcDecoder, FrameResult};
 use packet_radio_core::modem::DemodConfig;
@@ -81,6 +81,7 @@ fn main() {
         cli.wav.is_some(),
         cli.quality,
         cli.multi,
+        cli.dm,
         cli.sample_rate,
     );
 }
@@ -95,6 +96,7 @@ fn process_loop(
     is_wav: bool,
     use_quality: bool,
     use_multi: bool,
+    use_dm: bool,
     sample_rate: u32,
 ) {
     let config = match sample_rate {
@@ -104,8 +106,14 @@ fn process_loop(
     };
 
     if use_multi {
-        tracing::info!("using multi-decoder (9 parallel decoders)");
+        tracing::info!("using multi-decoder ({} parallel decoders)", {
+            let m = MultiDecoder::new(config);
+            m.num_decoders()
+        });
         process_loop_multi(source, frame_tx, is_wav, config);
+    } else if use_dm {
+        tracing::info!("using delay-multiply demodulator");
+        process_loop_dm(source, frame_tx, is_wav, config);
     } else {
         process_loop_single(source, frame_tx, is_wav, use_quality, config);
     }
@@ -144,6 +152,44 @@ fn process_loop_multi(
             let frame_data = output.frame(i).to_vec();
             print_frame(frame_count, &frame_data);
             let _ = frame_tx.send(frame_data);
+        }
+    }
+}
+
+/// Delay-multiply demodulator processing loop.
+fn process_loop_dm(
+    mut source: Box<dyn SampleSource>,
+    frame_tx: broadcast::Sender<Vec<u8>>,
+    is_wav: bool,
+    config: DemodConfig,
+) {
+    let mut demod = DmDemodulator::with_bpf(config);
+    let mut hdlc = HdlcDecoder::new();
+    let mut audio_buf = [0i16; 1024];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut frame_count: u64 = 0;
+
+    tracing::info!("processing audio at {} Hz (delay-multiply)", config.sample_rate);
+
+    loop {
+        let n = source.read_samples(&mut audio_buf);
+        if n == 0 {
+            if is_wav {
+                tracing::info!("WAV file complete, decoded {frame_count} frames");
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        let num_symbols = demod.process_samples(&audio_buf[..n], &mut symbols);
+        for i in 0..num_symbols {
+            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                frame_count += 1;
+                let frame_data = frame.to_vec();
+                print_frame(frame_count, &frame_data);
+                let _ = frame_tx.send(frame_data);
+            }
         }
     }
 }

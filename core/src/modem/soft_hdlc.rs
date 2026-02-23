@@ -317,6 +317,44 @@ impl SoftHdlcDecoder {
             }
         }
 
+        // NRZI pair-flip: a single raw (pre-NRZI) bit error causes two
+        // consecutive errors in the decoded stream. Try flipping each
+        // low-confidence bit together with its immediate neighbor.
+        for k in 0..num_candidates {
+            if candidates[k].1 >= 128 { break; }
+            let idx = candidates[k].0;
+
+            // Try (idx, idx+1)
+            if idx + 1 < count {
+                self.hard_bits[idx] ^= 1;
+                self.hard_bits[idx + 1] ^= 1;
+                if self.reassemble_and_check_crc() {
+                    self.hard_bits[idx] ^= 1;
+                    self.hard_bits[idx + 1] ^= 1;
+                    self.stats_soft_recovered += 1;
+                    let data_len = self.frame_len - 2;
+                    return Some((data_len, 2));
+                }
+                self.hard_bits[idx] ^= 1;
+                self.hard_bits[idx + 1] ^= 1;
+            }
+
+            // Try (idx-1, idx)
+            if idx > 0 {
+                self.hard_bits[idx - 1] ^= 1;
+                self.hard_bits[idx] ^= 1;
+                if self.reassemble_and_check_crc() {
+                    self.hard_bits[idx - 1] ^= 1;
+                    self.hard_bits[idx] ^= 1;
+                    self.stats_soft_recovered += 1;
+                    let data_len = self.frame_len - 2;
+                    return Some((data_len, 2));
+                }
+                self.hard_bits[idx - 1] ^= 1;
+                self.hard_bits[idx] ^= 1;
+            }
+        }
+
         self.stats_crc_failures += 1;
         None
     }

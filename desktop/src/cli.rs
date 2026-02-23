@@ -30,9 +30,13 @@ pub struct Cli {
     #[arg(long)]
     pub quality: bool,
 
-    /// Use multi-decoder (9 parallel decoders with filter/timing diversity)
+    /// Use multi-decoder (32+ parallel decoders with filter/timing diversity)
     #[arg(long)]
     pub multi: bool,
+
+    /// Use delay-multiply demodulator (BPF → delay-multiply → Bresenham)
+    #[arg(long)]
+    pub dm: bool,
 
     /// Verbose output (repeat for more: -v, -vv, -vvv)
     #[arg(short, long, action = clap::ArgAction::Count)]

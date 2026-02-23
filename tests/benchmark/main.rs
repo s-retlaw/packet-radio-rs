@@ -12,7 +12,7 @@
 use std::time::{Duration, Instant};
 
 use packet_radio_core::ax25::frame::HdlcDecoder;
-use packet_radio_core::modem::demod::{DemodSymbol, FastDemodulator, QualityDemodulator};
+use packet_radio_core::modem::demod::{DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
 use packet_radio_core::modem::multi::MultiDecoder;
 use packet_radio_core::modem::soft_hdlc::{FrameResult, SoftHdlcDecoder};
 use packet_radio_core::modem::DemodConfig;
@@ -47,8 +47,43 @@ fn main() {
             }
             run_compare_approaches(&args[2]);
         }
+        "--dm" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --dm <file.wav>");
+                return;
+            }
+            run_dm_single(&args[2]);
+        }
         "--synthetic" => {
             run_synthetic_benchmark();
+        }
+        "--dm-pll" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --dm-pll <file.wav>");
+                return;
+            }
+            run_dm_pll(&args[2]);
+        }
+        "--dm-pll-sweep" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --dm-pll-sweep <file.wav>");
+                return;
+            }
+            run_dm_pll_sweep(&args[2]);
+        }
+        "--dm-debug" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --dm-debug <file.wav>");
+                return;
+            }
+            run_dm_debug(&args[2]);
+        }
+        "--export" => {
+            if args.len() < 4 {
+                eprintln!("Usage: benchmark --export <file.wav> <output_dir>");
+                return;
+            }
+            run_export(&args[2], &args[3]);
         }
         "--help" | "-h" => print_usage(),
         _ => {
@@ -63,6 +98,11 @@ fn print_usage() {
     println!();
     println!("USAGE:");
     println!("  benchmark --wav <file.wav>             Decode a single WAV file");
+    println!("  benchmark --dm <file.wav>              Decode using delay-multiply demodulator");
+    println!("  benchmark --dm-pll <file.wav>          DM+PLL with all variant combinations");
+    println!("  benchmark --dm-pll-sweep <file.wav>    Sweep PLL alpha/beta parameters");
+    println!("  benchmark --dm-debug <file.wav>        Dump DM discriminator diagnostics to CSV");
+    println!("  benchmark --export <wav> <dir>         Export decoded frames to files");
     println!("  benchmark --suite <directory>           Decode all WAV files, compare with Dire Wolf");
     println!("  benchmark --compare-approaches <wav>    Compare fast vs. quality path frame-by-frame");
     println!("  benchmark --synthetic                   Run synthetic signal benchmark");
@@ -164,6 +204,93 @@ fn decode_multi(samples: &[i16], sample_rate: u32) -> DecodeResult {
     }
 }
 
+/// Upsample audio 2x using linear interpolation.
+fn upsample_2x(samples: &[i16]) -> Vec<i16> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(samples.len() * 2);
+    for i in 0..samples.len() {
+        out.push(samples[i]);
+        if i + 1 < samples.len() {
+            // Linear interpolation between adjacent samples
+            let mid = ((samples[i] as i32 + samples[i + 1] as i32) / 2) as i16;
+            out.push(mid);
+        } else {
+            out.push(samples[i]);
+        }
+    }
+    out
+}
+
+/// Decode audio samples using the delay-multiply demodulator + hard HDLC.
+///
+/// Uses BPF + LPF for real-world signals. Optionally upsamples to 22050 Hz.
+fn decode_dm(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut demod = DmDemodulator::with_bpf(config);
+    let mut hdlc = HdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                frames.push(frame.to_vec());
+            }
+        }
+    }
+
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
+}
+
+/// Decode audio samples using DM at 22050 Hz (upsampled if needed).
+fn decode_dm_22k(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let (effective_rate, owned);
+    let work_samples: &[i16] = if sample_rate <= 11025 {
+        owned = upsample_2x(samples);
+        effective_rate = sample_rate * 2;
+        &owned
+    } else {
+        effective_rate = sample_rate;
+        owned = Vec::new();
+        let _ = &owned;
+        samples
+    };
+
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = effective_rate;
+
+    let mut demod = DmDemodulator::with_bpf(config);
+    let mut hdlc = HdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+
+    for chunk in work_samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                frames.push(frame.to_vec());
+            }
+        }
+    }
+
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
+}
+
 // ─── Single WAV File Decode ────────────────────────────────────────────────
 
 fn run_single_wav(path: &str) {
@@ -214,6 +341,157 @@ fn run_single_wav(path: &str) {
         multi_rt
     );
     println!();
+}
+
+// ─── DM Single WAV Decode ────────────────────────────────────────────────
+
+/// Decode DM without BPF/LPF (raw discriminator).
+fn decode_dm_raw(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut demod = DmDemodulator::new(config); // no BPF
+    let mut hdlc = HdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                frames.push(frame.to_vec());
+            }
+        }
+    }
+    DecodeResult { frames, elapsed: start.elapsed() }
+}
+
+/// Decode with DM using a specific delay value and optional BPF/LPF.
+fn decode_dm_custom(samples: &[i16], sample_rate: u32, delay: usize, use_bpf: bool) -> DecodeResult {
+    use packet_radio_core::modem::delay_multiply::DelayMultiplyDetector;
+    use packet_radio_core::modem::filter::BiquadFilter;
+
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let bpf = if use_bpf {
+        Some(match sample_rate {
+            22050 => packet_radio_core::modem::filter::afsk_bandpass_22050(),
+            44100 => packet_radio_core::modem::filter::afsk_bandpass_44100(),
+            _ => packet_radio_core::modem::filter::afsk_bandpass_11025(),
+        })
+    } else {
+        None
+    };
+
+    let lpf = if use_bpf {
+        packet_radio_core::modem::filter::post_detect_lpf(sample_rate)
+    } else {
+        BiquadFilter::passthrough()
+    };
+
+    let mut detector = DelayMultiplyDetector::with_delay(delay, lpf);
+    let mut bpf_filt = bpf;
+    let mut hdlc = HdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+
+    let baud_rate = config.baud_rate;
+    let mut bit_phase: u32 = 0;
+    let mut accumulator: i64 = 0;
+    let mut prev_nrzi_bit = false;
+
+    // Determine polarity: delays giving τ≈363μs have mark→negative
+    // Short delays have mark→positive. Use the cos formula to determine.
+    let tau = delay as f64 / sample_rate as f64;
+    let mark_cos = (2.0 * std::f64::consts::PI * 1200.0 * tau).cos();
+    let mark_is_negative = mark_cos < 0.0;
+
+    let start = Instant::now();
+
+    for &sample in samples {
+        let filtered = if let Some(ref mut f) = bpf_filt {
+            f.process(sample)
+        } else {
+            sample
+        };
+        let disc_out = detector.process(filtered);
+        accumulator += disc_out as i64;
+
+        bit_phase += baud_rate;
+        if bit_phase >= sample_rate {
+            bit_phase -= sample_rate;
+
+            let raw_bit = if mark_is_negative {
+                accumulator < 0  // mark gives negative output
+            } else {
+                accumulator > 0  // mark gives positive output
+            };
+
+            let decoded_bit = raw_bit == prev_nrzi_bit;
+            prev_nrzi_bit = raw_bit;
+
+            if let Some(frame) = hdlc.feed_bit(decoded_bit) {
+                frames.push(frame.to_vec());
+            }
+
+            accumulator = 0;
+        }
+    }
+
+    DecodeResult { frames, elapsed: start.elapsed() }
+}
+
+fn run_dm_single(path: &str) {
+    println!("═══ Delay-Multiply Demodulator — Delay Sweep ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    println!(
+        "Duration: {:.1}s, {} samples at {} Hz",
+        duration_secs, samples.len(), sample_rate
+    );
+    println!();
+
+    let fast = decode_fast(&samples, sample_rate);
+    let multi = decode_multi(&samples, sample_rate);
+    println!("  Fast:   {:>4}   Multi: {:>4}", fast.frames.len(), multi.frames.len());
+    println!();
+
+    // Sweep delays with BPF+LPF
+    println!("  Delay sweep at {} Hz — BPF+LPF:", sample_rate);
+    for delay in 1..16 {
+        let tau_us = delay as f64 / sample_rate as f64 * 1e6;
+        let mark_cos = (2.0 * std::f64::consts::PI * 1200.0 * delay as f64 / sample_rate as f64).cos();
+        let space_cos = (2.0 * std::f64::consts::PI * 2200.0 * delay as f64 / sample_rate as f64).cos();
+        let sep = (mark_cos - space_cos).abs();
+        let polarity = if mark_cos < 0.0 { "M-" } else { "M+" };
+        let result = decode_dm_custom(&samples, sample_rate, delay, true);
+        println!("    d={:>2} τ={:>5.0}μs sep={:.2} {} → {:>4} packets",
+            delay, tau_us, sep, polarity, result.frames.len());
+    }
+    println!();
+
+    // Also sweep without BPF+LPF
+    println!("  Delay sweep at {} Hz — no filters:", sample_rate);
+    for delay in 1..16 {
+        let tau_us = delay as f64 / sample_rate as f64 * 1e6;
+        let mark_cos = (2.0 * std::f64::consts::PI * 1200.0 * delay as f64 / sample_rate as f64).cos();
+        let space_cos = (2.0 * std::f64::consts::PI * 2200.0 * delay as f64 / sample_rate as f64).cos();
+        let sep = (mark_cos - space_cos).abs();
+        let polarity = if mark_cos < 0.0 { "M-" } else { "M+" };
+        let result = decode_dm_custom(&samples, sample_rate, delay, false);
+        println!("    d={:>2} τ={:>5.0}μs sep={:.2} {} → {:>4} packets",
+            delay, tau_us, sep, polarity, result.frames.len());
+    }
 }
 
 // ─── Benchmark Suite (All WAV Files) ───────────────────────────────────────
@@ -316,11 +594,13 @@ fn run_suite(dir: &str) {
         fast_count: usize,
         quality_count: usize,
         multi_count: usize,
+        dm_count: usize,
         soft_saves: u32,
         dw_count: Option<u32>,
         fast_elapsed: Duration,
         qual_elapsed: Duration,
         multi_elapsed: Duration,
+        dm_elapsed: Duration,
         duration_secs: f64,
     }
 
@@ -342,12 +622,14 @@ fn run_suite(dir: &str) {
         let fast = decode_fast(&samples, sample_rate);
         let (quality, soft_saves) = decode_quality(&samples, sample_rate);
         let multi = decode_multi(&samples, sample_rate);
+        let dm = decode_dm(&samples, sample_rate);
 
         eprintln!(
-            "fast={}, quality={}, multi={}",
+            "fast={}, quality={}, multi={}, dm={}",
             fast.frames.len(),
             quality.frames.len(),
-            multi.frames.len()
+            multi.frames.len(),
+            dm.frames.len()
         );
 
         // Match against Dire Wolf data
@@ -362,11 +644,13 @@ fn run_suite(dir: &str) {
             fast_count: fast.frames.len(),
             quality_count: quality.frames.len(),
             multi_count: multi.frames.len(),
+            dm_count: dm.frames.len(),
             soft_saves,
             dw_count,
             fast_elapsed: fast.elapsed,
             qual_elapsed: quality.elapsed,
             multi_elapsed: multi.elapsed,
+            dm_elapsed: dm.elapsed,
             duration_secs,
         });
     }
@@ -376,21 +660,22 @@ fn run_suite(dir: &str) {
     // Print comparison table
     if have_dw {
         println!(
-            "{:<30} {:>8} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
-            "Track", "DireWolf", "Fast", "Quality", "Multi", "Fast%", "Qual%", "Multi%"
+            "{:<30} {:>8} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
+            "Track", "DireWolf", "Fast", "Quality", "Multi", "DM", "Fast%", "Multi%", "DM%"
         );
-        println!("{}", "─".repeat(91));
+        println!("{}", "─".repeat(105));
     } else {
         println!(
-            "{:<30} {:>7} {:>7} {:>7} {:>5}",
-            "Track", "Fast", "Quality", "Multi", "Saves"
+            "{:<30} {:>7} {:>7} {:>7} {:>7} {:>5}",
+            "Track", "Fast", "Quality", "Multi", "DM", "Saves"
         );
-        println!("{}", "─".repeat(60));
+        println!("{}", "─".repeat(67));
     }
 
     let mut total_fast = 0usize;
     let mut total_quality = 0usize;
     let mut total_multi = 0usize;
+    let mut total_dm = 0usize;
     let mut total_dw = 0u32;
     let mut total_saves = 0u32;
 
@@ -398,6 +683,7 @@ fn run_suite(dir: &str) {
         total_fast += r.fast_count;
         total_quality += r.quality_count;
         total_multi += r.multi_count;
+        total_dm += r.dm_count;
         total_saves += r.soft_saves;
 
         if have_dw {
@@ -411,21 +697,21 @@ fn run_suite(dir: &str) {
                 }
             };
             println!(
-                "{:<30} {:>8} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
-                r.display_name, dw, r.fast_count, r.quality_count, r.multi_count,
-                pct(r.fast_count), pct(r.quality_count), pct(r.multi_count)
+                "{:<30} {:>8} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
+                r.display_name, dw, r.fast_count, r.quality_count, r.multi_count, r.dm_count,
+                pct(r.fast_count), pct(r.multi_count), pct(r.dm_count)
             );
         } else {
             println!(
-                "{:<30} {:>7} {:>7} {:>7} {:>5}",
-                r.display_name, r.fast_count, r.quality_count, r.multi_count, r.soft_saves
+                "{:<30} {:>7} {:>7} {:>7} {:>7} {:>5}",
+                r.display_name, r.fast_count, r.quality_count, r.multi_count, r.dm_count, r.soft_saves
             );
         }
     }
 
     // Totals
     if have_dw {
-        println!("{}", "─".repeat(91));
+        println!("{}", "─".repeat(105));
         let pct = |count: usize| -> String {
             if total_dw > 0 {
                 format!("{:.1}%", count as f64 / total_dw as f64 * 100.0)
@@ -434,15 +720,15 @@ fn run_suite(dir: &str) {
             }
         };
         println!(
-            "{:<30} {:>8} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
-            "TOTAL", total_dw, total_fast, total_quality, total_multi,
-            pct(total_fast), pct(total_quality), pct(total_multi)
+            "{:<30} {:>8} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
+            "TOTAL", total_dw, total_fast, total_quality, total_multi, total_dm,
+            pct(total_fast), pct(total_multi), pct(total_dm)
         );
     } else {
-        println!("{}", "─".repeat(60));
+        println!("{}", "─".repeat(67));
         println!(
-            "{:<30} {:>7} {:>7} {:>7} {:>5}",
-            "TOTAL", total_fast, total_quality, total_multi, total_saves
+            "{:<30} {:>7} {:>7} {:>7} {:>7} {:>5}",
+            "TOTAL", total_fast, total_quality, total_multi, total_dm, total_saves
         );
     }
 
@@ -453,15 +739,14 @@ fn run_suite(dir: &str) {
         let fast_rt = r.duration_secs / r.fast_elapsed.as_secs_f64();
         let qual_rt = r.duration_secs / r.qual_elapsed.as_secs_f64();
         let multi_rt = r.duration_secs / r.multi_elapsed.as_secs_f64();
+        let dm_rt = r.duration_secs / r.dm_elapsed.as_secs_f64();
         println!(
-            "  {:<30}  fast {:.2}s ({:.0}x RT)  quality {:.2}s ({:.0}x RT)  multi {:.2}s ({:.0}x RT)",
+            "  {:<30}  fast {:.2}s ({:.0}x)  quality {:.2}s ({:.0}x)  multi {:.2}s ({:.0}x)  dm {:.2}s ({:.0}x)",
             r.display_name,
-            r.fast_elapsed.as_secs_f64(),
-            fast_rt,
-            r.qual_elapsed.as_secs_f64(),
-            qual_rt,
-            r.multi_elapsed.as_secs_f64(),
-            multi_rt
+            r.fast_elapsed.as_secs_f64(), fast_rt,
+            r.qual_elapsed.as_secs_f64(), qual_rt,
+            r.multi_elapsed.as_secs_f64(), multi_rt,
+            r.dm_elapsed.as_secs_f64(), dm_rt
         );
     }
 }
@@ -715,6 +1000,400 @@ fn run_synthetic_benchmark() {
     }
 
     println!("  {}", "─".repeat(32 + 10 + 10 + 10 + 10 + 8));
+}
+
+// ─── DM+PLL Decode Engine ─────────────────────────────────────────────────
+
+/// Decode using DM+PLL with configurable options.
+fn decode_dm_pll_opts(
+    samples: &[i16],
+    sample_rate: u32,
+    alpha: i16,
+    beta: i16,
+    adaptive: bool,
+    preemph: i16,
+    hysteresis: i16,
+) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut demod = DmDemodulator::with_bpf_pll_custom(config, alpha, beta);
+    if hysteresis > 0 {
+        demod = demod.with_pll_hysteresis(hysteresis);
+    }
+    if adaptive {
+        demod = demod.with_adaptive();
+    }
+    if preemph != 0 {
+        demod = demod.with_preemph(preemph);
+    }
+
+    let mut hdlc = HdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                frames.push(frame.to_vec());
+            }
+        }
+    }
+
+    DecodeResult { frames, elapsed: start.elapsed() }
+}
+
+/// Simple DM+PLL decode with default gains.
+fn decode_dm_pll(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    decode_dm_pll_opts(samples, sample_rate, 400, 30, false, 0, 0)
+}
+
+/// Decode DM+PLL with symbol counting for diagnostics.
+fn decode_dm_pll_counted(samples: &[i16], sample_rate: u32, alpha: i16, beta: i16) -> (DecodeResult, usize, u32) {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+    let mut demod = DmDemodulator::with_bpf_pll_custom(config, alpha, beta);
+    let mut hdlc = HdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut total_syms = 0usize;
+    let mut flags = 0u32;
+    let mut shift_reg: u8 = 0;
+
+    let start = Instant::now();
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        total_syms += n;
+        for i in 0..n {
+            shift_reg = (shift_reg >> 1) | if symbols[i].bit { 0x80 } else { 0 };
+            if shift_reg == 0x7E { flags += 1; }
+            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                frames.push(frame.to_vec());
+            }
+        }
+    }
+    (DecodeResult { frames, elapsed: start.elapsed() }, total_syms, flags)
+}
+
+// ─── DM+PLL Single File Analysis ────────────────────────────────────────
+
+fn run_dm_pll(path: &str) {
+    println!("═══ DM+PLL Demodulator Variants ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    println!("Duration: {:.1}s, {} samples at {} Hz\n", duration_secs, samples.len(), sample_rate);
+
+    // Baselines
+    let fast = decode_fast(&samples, sample_rate);
+    let multi = decode_multi(&samples, sample_rate);
+    let dm_bres = decode_dm(&samples, sample_rate);
+    // DM+Bresenham with adaptive
+    let dm_bres_adapt = {
+        let mut config = DemodConfig::default_1200();
+        config.sample_rate = sample_rate;
+        let demod = DmDemodulator::with_bpf(config).with_adaptive();
+        let mut hdlc = HdlcDecoder::new();
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        let mut dm = demod;
+        for chunk in samples.chunks(1024) {
+            let n = dm.process_samples(chunk, &mut symbols);
+            for i in 0..n {
+                if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                    frames.push(frame.to_vec());
+                }
+            }
+        }
+        frames.len()
+    };
+
+    println!("  Baselines:");
+    println!("    Fast (Goertzel+Bresenham):  {:>5}", fast.frames.len());
+    println!("    DM+Bresenham:               {:>5}", dm_bres.frames.len());
+    println!("    DM+Bres+adaptive:           {:>5}", dm_bres_adapt);
+    println!("    Multi (36 decoders):         {:>5}", multi.frames.len());
+    println!();
+
+    // Diagnostic: symbol count and flag detection
+    let (r_diag, sym_count, flag_count) = decode_dm_pll_counted(&samples, sample_rate, 400, 30);
+    let expected_syms = (samples.len() as u64 * 1200 / sample_rate as u64) as usize;
+    println!("  PLL diagnostics (a=400, b=30):");
+    println!("    Symbols produced: {} (expected ~{})", sym_count, expected_syms);
+    println!("    Flags detected:   {}", flag_count);
+    println!("    Frames decoded:   {}", r_diag.frames.len());
+
+    // Also compare with Bresenham
+    {
+        let mut config = DemodConfig::default_1200();
+        config.sample_rate = sample_rate;
+        let mut demod = DmDemodulator::with_bpf(config);
+        let mut symbols_buf = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        let mut bres_syms = 0usize;
+        let mut bres_flags = 0u32;
+        let mut shift: u8 = 0;
+        for chunk in samples.chunks(1024) {
+            let n = demod.process_samples(chunk, &mut symbols_buf);
+            bres_syms += n;
+            for i in 0..n {
+                shift = (shift >> 1) | if symbols_buf[i].bit { 0x80 } else { 0 };
+                if shift == 0x7E { bres_flags += 1; }
+            }
+        }
+        println!("    Bresenham syms:   {} flags: {}", bres_syms, bres_flags);
+    }
+    println!();
+
+    // DM+PLL variants with best alpha, testing beta and features
+    println!("  DM+PLL variants (alpha=936):");
+    let variants: &[(&str, i16, bool, i16, i16)] = &[
+        // (name, beta, adaptive, preemph, hysteresis)
+        ("DM+PLL b=0",                         0,  false, 0,     0),
+        ("DM+PLL b=10",                        10, false, 0,     0),
+        ("DM+PLL b=30",                        30, false, 0,     0),
+        ("DM+PLL b=0 +adaptive",               0,  true,  0,     0),
+        ("DM+PLL b=0 +preemph(0.90)",          0,  false, 29491, 0),
+        ("DM+PLL b=0 +preemph(0.95)",          0,  false, 31130, 0),
+        ("DM+PLL b=0 +adapt+preemph(0.90)",    0,  true,  29491, 0),
+        ("DM+PLL b=0 +adapt+preemph(0.95)",    0,  true,  31130, 0),
+        ("DM+PLL b=10 +adapt+preemph(0.95)",   10, true,  31130, 0),
+        // With hysteresis
+        ("DM+PLL b=10 hyst=50",                10, false, 0,     50),
+        ("DM+PLL b=30 hyst=50",                30, false, 0,     50),
+        ("DM+PLL b=10 hyst=100",               10, false, 0,     100),
+        ("DM+PLL b=30 hyst=100",               30, false, 0,     100),
+    ];
+
+    for &(name, beta, adaptive, preemph, hyst) in variants {
+        let r = decode_dm_pll_opts(&samples, sample_rate, 936, beta, adaptive, preemph, hyst);
+        println!("    {:<38} {:>5}", name, r.frames.len());
+    }
+    println!();
+
+    // Also try different alpha/beta
+    println!("  Alpha/beta sweep (no adaptive/preemph):");
+    let alphas = [0i16, 200, 400, 600, 936, 1200, 1500, 2000, 3000];
+    let betas = [0i16, 1, 2, 5, 10, 20];
+    for &a in &alphas {
+        for &b in &betas {
+            let r = decode_dm_pll_opts(&samples, sample_rate, a, b, false, 0, 0);
+            println!("    a={:>4} b={:>3} → {:>5}", a, b, r.frames.len());
+        }
+    }
+}
+
+// ─── DM+PLL Parameter Sweep ────────────────────────────────────────────
+
+fn run_dm_pll_sweep(path: &str) {
+    println!("═══ DM+PLL Alpha/Beta Sweep ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    println!("Duration: {:.1}s at {} Hz\n", duration_secs, sample_rate);
+
+    let alphas = [100i16, 200, 300, 400, 500, 600, 800, 936, 1200, 1500];
+    let betas = [10i16, 20, 30, 40, 50, 60, 74, 80, 100, 120];
+
+    // Header
+    print!("  {:>6}", "a\\b");
+    for &b in &betas { print!(" {:>5}", b); }
+    println!();
+    println!("  {}", "─".repeat(6 + betas.len() * 6));
+
+    let mut best_count = 0usize;
+    let mut best_a = 0i16;
+    let mut best_b = 0i16;
+
+    for &a in &alphas {
+        print!("  {:>6}", a);
+        for &b in &betas {
+            let r = decode_dm_pll_opts(&samples, sample_rate, a, b, false, 0, 0);
+            let count = r.frames.len();
+            print!(" {:>5}", count);
+            if count > best_count {
+                best_count = count;
+                best_a = a;
+                best_b = b;
+            }
+        }
+        println!();
+    }
+
+    println!("\n  Best: alpha={}, beta={} → {} frames", best_a, best_b, best_count);
+
+    // Now sweep with adaptive + best alpha/beta
+    println!("\n  Best alpha/beta with adaptive + pre-emphasis:");
+    let preemphs = [0i16, 26214, 29491, 31130, 32440];
+    let preemph_names = ["none", "0.80", "0.90", "0.95", "0.99"];
+    for (i, &pe) in preemphs.iter().enumerate() {
+        let r_plain = decode_dm_pll_opts(&samples, sample_rate, best_a, best_b, false, pe, 0);
+        let r_adapt = decode_dm_pll_opts(&samples, sample_rate, best_a, best_b, true, pe, 0);
+        println!("    preemph={:<5}  plain={:>5}  adaptive={:>5}",
+            preemph_names[i], r_plain.frames.len(), r_adapt.frames.len());
+    }
+}
+
+// ─── DM Debug Diagnostics ──────────────────────────────────────────────
+
+fn run_dm_debug(path: &str) {
+    use packet_radio_core::modem::delay_multiply::DelayMultiplyDetector;
+
+    println!("═══ DM Discriminator Diagnostics ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+    };
+
+    // Limit to first 5 seconds for manageable output
+    let max_samples = (sample_rate * 5) as usize;
+    let work_samples = &samples[..samples.len().min(max_samples)];
+
+    let delay = 8usize; // Standard filtered delay for 11025 Hz
+    let lpf = packet_radio_core::modem::filter::post_detect_lpf(sample_rate);
+    let mut detector = DelayMultiplyDetector::with_delay(delay, lpf);
+    let mut bpf = match sample_rate {
+        22050 => packet_radio_core::modem::filter::afsk_bandpass_22050(),
+        44100 => packet_radio_core::modem::filter::afsk_bandpass_44100(),
+        _ => packet_radio_core::modem::filter::afsk_bandpass_11025(),
+    };
+
+    let mut pll = packet_radio_core::modem::pll::ClockRecoveryPll::new(
+        sample_rate, 1200, 400, 30,
+    );
+
+    let csv_path = format!("{}.dm_debug.csv", path);
+    let mut csv = String::from("sample,disc_out,leaky,pll_phase,pll_locked,symbol_boundary\n");
+
+    let mut leaky: i64 = 0;
+    for (i, &s) in work_samples.iter().enumerate() {
+        let filtered = bpf.process(s);
+        let disc_out = detector.process(filtered);
+
+        // Replicate the leaky integrator from DmDemodulator
+        leaky -= leaky >> 3;
+        leaky += disc_out as i64;
+        let pll_input = leaky.clamp(-32000, 32000) as i16;
+        let sym = pll.update(pll_input);
+
+        csv.push_str(&format!("{},{},{},{},{},{}\n",
+            i, disc_out, leaky, pll.phase,
+            if pll.locked { 1 } else { 0 },
+            if sym.is_some() { 1 } else { 0 },
+        ));
+    }
+
+    match std::fs::write(&csv_path, &csv) {
+        Ok(_) => println!("Wrote {} samples to {}", work_samples.len(), csv_path),
+        Err(e) => eprintln!("Error writing {}: {}", csv_path, e),
+    }
+}
+
+// ─── Frame Export ──────────────────────────────────────────────────────
+
+fn frame_to_hex(frame: &[u8]) -> String {
+    frame.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join("")
+}
+
+fn run_export(wav_path: &str, output_dir: &str) {
+    println!("═══ Frame Export ═══");
+    println!("File: {}", wav_path);
+
+    let (sample_rate, samples) = match read_wav_file(wav_path) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("Error reading {}: {}", wav_path, e); return; }
+    };
+
+    // Create output directory
+    if let Err(e) = std::fs::create_dir_all(output_dir) {
+        eprintln!("Error creating {}: {}", output_dir, e);
+        return;
+    }
+
+    let paths: &[(&str, Box<dyn Fn(&[i16], u32) -> DecodeResult>)] = &[
+        ("fast", Box::new(|s, sr| decode_fast(s, sr))),
+        ("dm", Box::new(|s, sr| decode_dm(s, sr))),
+        ("dm_pll", Box::new(|s, sr| decode_dm_pll(s, sr))),
+        ("multi", Box::new(|s, sr| {
+            decode_multi(s, sr)
+        })),
+    ];
+
+    for &(name, ref decode_fn) in paths {
+        let result = decode_fn(&samples, sample_rate);
+        let out_path = format!("{}/{}.txt", output_dir, name);
+        let mut content = String::new();
+        for frame in &result.frames {
+            content.push_str(&frame_to_hex(frame));
+            // Try to parse AX.25 callsigns
+            if frame.len() >= 14 {
+                let dst = parse_callsign(&frame[0..7]);
+                let src = parse_callsign(&frame[7..14]);
+                content.push_str(&format!(" {}>{}",  src, dst));
+            }
+            content.push('\n');
+        }
+        match std::fs::write(&out_path, &content) {
+            Ok(_) => println!("  {} → {} ({} frames)", name, out_path, result.frames.len()),
+            Err(e) => eprintln!("  Error writing {}: {}", out_path, e),
+        }
+    }
+
+    // Frame comparison: show overlap between paths
+    println!();
+    let fast = decode_fast(&samples, sample_rate);
+    let dm = decode_dm(&samples, sample_rate);
+    let dm_pll = decode_dm_pll(&samples, sample_rate);
+    let multi = decode_multi(&samples, sample_rate);
+
+    let sets: Vec<(&str, std::collections::HashSet<Vec<u8>>)> = vec![
+        ("fast", fast.frames.into_iter().collect()),
+        ("dm", dm.frames.into_iter().collect()),
+        ("dm_pll", dm_pll.frames.into_iter().collect()),
+        ("multi", multi.frames.into_iter().collect()),
+    ];
+
+    println!("  Frame overlap matrix:");
+    print!("  {:>8}", "");
+    for &(name, _) in &sets { print!(" {:>8}", name); }
+    println!();
+
+    for &(name_a, ref set_a) in &sets {
+        print!("  {:>8}", name_a);
+        for &(_, ref set_b) in &sets {
+            let overlap = set_a.intersection(set_b).count();
+            print!(" {:>8}", overlap);
+        }
+        println!();
+    }
+}
+
+/// Parse AX.25 callsign from 7 bytes (6 chars + SSID byte).
+fn parse_callsign(data: &[u8]) -> String {
+    if data.len() < 7 { return "???".to_string(); }
+    let mut call = String::with_capacity(9);
+    for i in 0..6 {
+        let c = (data[i] >> 1) & 0x7F;
+        if c > 0x20 { call.push(c as char); }
+    }
+    let ssid = (data[6] >> 1) & 0x0F;
+    if ssid > 0 {
+        call.push_str(&format!("-{}", ssid));
+    }
+    call
 }
 
 // ─── Signal Impairment Utilities ─────────────────────────────────────────

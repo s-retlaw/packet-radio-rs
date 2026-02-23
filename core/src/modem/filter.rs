@@ -166,6 +166,31 @@ pub const fn post_detect_lpf_11025() -> BiquadFilter {
     BiquadFilter::new(2547, 5093, 2547, -35110, 12528)
 }
 
+/// Precomputed post-detection LPF at 22050 Hz. Cutoff 1200 Hz, Q=0.707.
+pub const fn post_detect_lpf_22050() -> BiquadFilter {
+    BiquadFilter::new(767, 1533, 767, -49907, 20206)
+}
+
+/// Precomputed post-detection LPF at 44100 Hz. Cutoff 1200 Hz, Q=0.707.
+pub const fn post_detect_lpf_44100() -> BiquadFilter {
+    BiquadFilter::new(213, 426, 213, -57644, 25729)
+}
+
+/// Select the post-detection LPF for a given sample rate.
+/// Uses precomputed coefficients for common rates, runtime computation
+/// on std targets for others.
+pub fn post_detect_lpf(sample_rate: u32) -> BiquadFilter {
+    match sample_rate {
+        11025 => post_detect_lpf_11025(),
+        22050 => post_detect_lpf_22050(),
+        44100 => post_detect_lpf_44100(),
+        #[cfg(feature = "std")]
+        _ => lowpass_coeffs(sample_rate, 1200.0, 0.707),
+        #[cfg(not(feature = "std"))]
+        _ => post_detect_lpf_11025(), // fallback
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

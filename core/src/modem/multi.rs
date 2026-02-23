@@ -8,18 +8,21 @@
 //! - 3 BPF variants × 3 timing offsets = 9 base decoders
 //! - ±50 Hz offset × 3 timing = 6 frequency-shifted decoders
 //! - ±100 Hz offset × 1 timing = 2 frequency-shifted decoders
-//! - 9 space gain levels (-6 to +12 dB) = 9 gain-diverse decoders
+//! - 3 AGC decoders (one per BPF variant)
+//! - 8 space gain levels = 8 gain-diverse decoders
 //! - 4 cross-product (freq offset + gain) decoders
-//! - Total: 30 parallel decoders
+//! - Total: 32 parallel decoders
 
-use super::demod::{DemodSymbol, FastDemodulator};
+use super::demod::{DemodSymbol, DmDemodulator, FastDemodulator};
 use super::filter::BiquadFilter;
 use super::DemodConfig;
 use crate::ax25::frame::HdlcDecoder;
 
-/// Maximum number of parallel decoders.
-/// 9 base (3 BPF × 3 timing) + 8 frequency-shifted + 9 gain-diverse = 26.
+/// Maximum number of parallel fast decoders.
 const MAX_DECODERS: usize = 32;
+
+/// Maximum number of parallel DM decoders.
+const MAX_DM_DECODERS: usize = 6;
 
 /// Maximum unique frames tracked for deduplication.
 const DEDUP_RING_SIZE: usize = 64;
@@ -67,10 +70,17 @@ impl MultiOutput {
 }
 
 /// Multi-decoder: runs N parallel demodulators with diversity.
+///
+/// Combines fast-path Goertzel decoders with delay-multiply decoders
+/// for maximum decode performance across different signal conditions.
 pub struct MultiDecoder {
     decoders: [FastDemodulator; MAX_DECODERS],
     hdlc: [HdlcDecoder; MAX_DECODERS],
     num_active: usize,
+    /// DM decoders (BPF+LPF, long delay) for complementary coverage.
+    dm_decoders: [DmDemodulator; MAX_DM_DECODERS],
+    dm_hdlc: [HdlcDecoder; MAX_DM_DECODERS],
+    dm_active: usize,
     /// Ring buffer of (hash, generation) for time-windowed deduplication.
     recent_hashes: [(u32, u32); DEDUP_RING_SIZE],
     recent_write: usize,
@@ -164,14 +174,23 @@ impl MultiDecoder {
             }
         }
 
+        // AGC decoders: one per BPF variant, adapts to mark/space imbalance.
+        // These replace 3 of the static gain decoders.
+        for f in 0..3 {
+            if idx < MAX_DECODERS {
+                decoders[idx] = FastDemodulator::with_filter(config, filters[f]).with_agc();
+                idx += 1;
+            }
+        }
+
         // Gain diversity decoders (Dire Wolf multi-slicer approach).
         // Different space energy gains handle de-emphasis and varying audio paths.
-        // Q8 format: 256 = 0 dB. Values are 10^(dB/10) × 256 for amplitude dB:
-        //   -6.0, -3.8, -1.5, +0.8, +3.0, +5.3, +7.5, +9.8, +12.0 dB
-        // These match Dire Wolf's 9-level multi-slicer gain set.
+        // Q8 format: 256 = 0 dB.  Reduced from 9 to 8 entries since AGC decoders
+        // now handle adaptive gain compensation; +0.8 dB (308) dropped as closest
+        // to default 0 dB.
         #[cfg(feature = "std")]
         {
-            let gains_q8: [u16; 9] = [64, 107, 181, 308, 511, 868, 1440, 2445, 4057];
+            let gains_q8: [u16; 8] = [64, 107, 181, 511, 868, 1440, 2445, 4057];
             for &gain in &gains_q8 {
                 if idx < MAX_DECODERS {
                     decoders[idx] = FastDemodulator::new(config).with_space_gain(gain);
@@ -182,7 +201,7 @@ impl MultiDecoder {
         #[cfg(not(feature = "std"))]
         {
             // Fewer gain levels on embedded to save RAM/CPU
-            let gains_q8: [u16; 4] = [181, 511, 1440, 4057];
+            let gains_q8: [u16; 3] = [181, 1440, 4057];
             for &gain in &gains_q8 {
                 if idx < MAX_DECODERS {
                     decoders[idx] = FastDemodulator::new(config).with_space_gain(gain);
@@ -215,10 +234,54 @@ impl MultiDecoder {
             }
         }
 
+        // DM decoders with BPF+LPF and delay/timing/PLL diversity.
+        // These use a different algorithm (delay-multiply discriminator) that
+        // is complementary to Goertzel — it decodes frames that Goertzel misses.
+        // PLL decoders adapt to clock drift; Bresenham decoders use fixed timing.
+        let mut dm_decoders: [DmDemodulator; MAX_DM_DECODERS] =
+            core::array::from_fn(|_| DmDemodulator::with_bpf(config));
+        let dm_hdlc: [HdlcDecoder; MAX_DM_DECODERS] =
+            core::array::from_fn(|_| HdlcDecoder::new());
+
+        let mut dm_idx = 0;
+        // DM+PLL decoders (adaptive phase tracking, no timing offsets needed)
+        // Alpha=936 is optimal; alpha=400 provides diversity
+        if dm_idx < MAX_DM_DECODERS {
+            dm_decoders[dm_idx] = DmDemodulator::with_bpf_pll_custom(config, 936, 0);
+            dm_idx += 1;
+        }
+        if dm_idx < MAX_DM_DECODERS {
+            dm_decoders[dm_idx] = DmDemodulator::with_bpf_pll_custom(config, 400, 0);
+            dm_idx += 1;
+        }
+        // DM+Bresenham decoders with timing diversity (complementary to PLL)
+        for &phase in &offsets {
+            if dm_idx < MAX_DM_DECODERS {
+                dm_decoders[dm_idx] = DmDemodulator::with_bpf_and_offset(config, phase);
+                dm_idx += 1;
+            }
+        }
+        // DM+Bresenham with alternate delay (d=5 at 11025 Hz ≈ τ=454μs).
+        // This delay has the highest mark/space separation (1.96) and decodes
+        // different frames than d=8.
+        let alt_delay = match config.sample_rate {
+            11025 => 5,
+            22050 => 10,
+            44100 => 20,
+            _ => config.sample_rate as usize / 2400,
+        };
+        if dm_idx < MAX_DM_DECODERS {
+            dm_decoders[dm_idx] = DmDemodulator::with_bpf_delay_and_offset(config, alt_delay, 0);
+            dm_idx += 1;
+        }
+
         Self {
             decoders,
             hdlc,
             num_active: idx,
+            dm_decoders,
+            dm_hdlc,
+            dm_active: dm_idx,
             recent_hashes: [(0u32, 0u32); DEDUP_RING_SIZE],
             recent_write: 0,
             recent_count: 0,
@@ -238,6 +301,10 @@ impl MultiDecoder {
             core::array::from_fn(|_| FastDemodulator::new(config));
         let hdlc: [HdlcDecoder; MAX_DECODERS] =
             core::array::from_fn(|_| HdlcDecoder::new());
+        let dm_decoders: [DmDemodulator; MAX_DM_DECODERS] =
+            core::array::from_fn(|_| DmDemodulator::with_bpf(config));
+        let dm_hdlc: [HdlcDecoder; MAX_DM_DECODERS] =
+            core::array::from_fn(|_| HdlcDecoder::new());
 
         let mut idx = 0;
         for f in filters {
@@ -253,6 +320,9 @@ impl MultiDecoder {
             decoders,
             hdlc,
             num_active: idx,
+            dm_decoders,
+            dm_hdlc,
+            dm_active: 0, // no DM decoders in custom diversity mode
             recent_hashes: [(0u32, 0u32); DEDUP_RING_SIZE],
             recent_write: 0,
             recent_count: 0,
@@ -272,24 +342,43 @@ impl MultiDecoder {
         let mut output = MultiOutput::new();
         let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
 
+        // Process fast (Goertzel) decoders
         for d in 0..self.num_active {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
             for i in 0..n {
                 if let Some(frame_bytes) = self.hdlc[d].feed_bit(symbols[i].bit) {
                     self.total_decoded += 1;
-
-                    // Copy frame data to break borrow before calling self methods
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
-
-                    // Compute hash for dedup
                     let hash = frame_hash(&frame_copy[..len]);
                     if !self.is_duplicate(hash) {
                         self.record_hash(hash);
                         self.total_unique += 1;
+                        if output.count < MAX_OUTPUT_FRAMES {
+                            output.frames[output.count].data[..len]
+                                .copy_from_slice(&frame_copy[..len]);
+                            output.frames[output.count].len = len;
+                            output.count += 1;
+                        }
+                    }
+                }
+            }
+        }
 
-                        // Copy to output
+        // Process DM (delay-multiply) decoders
+        for d in 0..self.dm_active {
+            let n = self.dm_decoders[d].process_samples(samples, &mut symbols);
+            for i in 0..n {
+                if let Some(frame_bytes) = self.dm_hdlc[d].feed_bit(symbols[i].bit) {
+                    self.total_decoded += 1;
+                    let len = frame_bytes.len().min(330);
+                    let mut frame_copy = [0u8; 330];
+                    frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
+                    let hash = frame_hash(&frame_copy[..len]);
+                    if !self.is_duplicate(hash) {
+                        self.record_hash(hash);
+                        self.total_unique += 1;
                         if output.count < MAX_OUTPUT_FRAMES {
                             output.frames[output.count].data[..len]
                                 .copy_from_slice(&frame_copy[..len]);
@@ -310,15 +399,19 @@ impl MultiDecoder {
             self.decoders[d].reset();
             self.hdlc[d].reset();
         }
+        for d in 0..self.dm_active {
+            self.dm_decoders[d].reset();
+            self.dm_hdlc[d].reset();
+        }
         self.recent_hashes = [(0u32, 0u32); DEDUP_RING_SIZE];
         self.recent_write = 0;
         self.recent_count = 0;
         self.generation = 0;
     }
 
-    /// Number of active parallel decoders.
+    /// Number of active parallel decoders (fast + DM).
     pub fn num_decoders(&self) -> usize {
-        self.num_active
+        self.num_active + self.dm_active
     }
 
     /// Check if a hash was seen recently (within last DEDUP_WINDOW generations).
@@ -362,12 +455,13 @@ mod tests {
     fn test_multi_decoder_creation() {
         let config = DemodConfig::default_1200();
         let multi = MultiDecoder::new(config);
-        // 9 base + 8 freq + 9 gain + 4 cross = 30 (std)
-        // 9 base + 2 freq + 4 gain = 15 (no_std)
+        // Fast: 9 base + 8 freq + 3 AGC + 8 gain + 4 cross = 32 (std)
+        // Fast: 9 base + 2 freq + 3 AGC + 3 gain = 17 (no_std)
+        // DM: 2 PLL + 3 Bresenham d=8 + 1 Bresenham d=5 = 6 decoders
         #[cfg(feature = "std")]
-        assert_eq!(multi.num_decoders(), 30);
+        assert_eq!(multi.num_decoders(), 38);
         #[cfg(not(feature = "std"))]
-        assert_eq!(multi.num_decoders(), 15);
+        assert_eq!(multi.num_decoders(), 23);
         assert_eq!(multi.total_decoded, 0);
         assert_eq!(multi.total_unique, 0);
     }

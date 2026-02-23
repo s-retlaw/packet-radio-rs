@@ -1,9 +1,10 @@
-//! Delay-and-Multiply Frequency Discriminator — **experimental, not integrated**.
+//! Delay-and-Multiply Frequency Discriminator.
 //!
-//! This module implements a lightweight frequency detector but is NOT used by
-//! the active demodulators (`FastDemodulator`/`QualityDemodulator`), which use
-//! Goertzel tone detection instead. Kept as reference for potential future use
-//! on extremely constrained targets where Goertzel is too expensive.
+//! Used by `DmDemodulator` as part of the delay-multiply demodulation pipeline:
+//! BPF → Delay-Multiply → LPF → PLL → NRZI → HDLC.
+//!
+//! Produces continuous sample-by-sample discriminator output where polarity
+//! indicates mark vs space frequency. Only 1 multiply per sample.
 //!
 //! See docs/MODEM_DESIGN.md for the mathematical derivation.
 
@@ -108,12 +109,13 @@ pub fn optimal_delay(sample_rate: u32) -> usize {
     //
     // On no_std targets without float, use the hardcoded values below.
 
-    // Hardcoded optimal delays for common sample rates
+    // Hardcoded optimal delays for common sample rates.
+    // All use τ ≈ 363 μs which gives mark→negative, space→positive.
     match sample_rate {
-        11025 => 4,   // 363 μs: mark→−0.92, space→+0.32
-        22050 => 7,   // 317 μs: mark→−0.76, space→+0.67
-        44100 => 15,  // 340 μs: mark→−0.86, space→+0.53
-        48000 => 16,  // 333 μs: mark→−0.83, space→+0.58
+        11025 => 4,   // 363 μs: mark→−0.92, space→+0.30
+        22050 => 8,   // 363 μs: mark→−0.92, space→+0.30
+        44100 => 16,  // 363 μs: mark→−0.92, space→+0.30
+        48000 => 17,  // 354 μs: mark→−0.89, space→+0.18
         _ => {
             // For other sample rates, approximate: τ ≈ 1/(f_mark+f_space)
             // In samples: delay ≈ sample_rate / (1200 + 2200)

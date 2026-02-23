@@ -1,16 +1,13 @@
-//! Clock Recovery PLL — **experimental, not integrated**.
+//! Clock Recovery PLL — digital phase-locked loop for symbol timing.
 //!
-//! This module implements a digital phase-locked loop but is NOT used by the
-//! active demodulators, which use Bresenham fixed-rate symbol timing instead.
-//! Kept as reference for potential future use with adaptive symbol timing.
-//!
-//! The Bresenham approach was chosen over PLL because it exactly matches the
-//! modulator's timing, avoiding PLL lock/jitter issues on noisy signals.
+//! Used by `DmDemodulator` to recover symbol timing from the discriminator
+//! output. Adapts to actual transmitter baud rate (±2% drift tolerance).
+//! The fast/quality paths use Bresenham fixed-rate timing instead.
 
 /// Digital PLL for clock recovery.
 pub struct ClockRecoveryPll {
     /// Phase accumulator (wraps at nominal_freq)
-    phase: i32,
+    pub phase: i32,
     /// Current phase increment per sample (tracks baud rate)
     freq: i32,
     /// Nominal phase increment (sample_rate / baud_rate × scaling)
@@ -25,6 +22,10 @@ pub struct ClockRecoveryPll {
     pub locked: bool,
     /// Count of transitions seen since last reset
     lock_count: u16,
+    /// Hysteresis threshold for transition detection.
+    /// When > 0, both samples must exceed ±hysteresis to register a transition.
+    /// Prevents false transitions from noise near zero crossing.
+    hysteresis: i16,
 }
 
 /// PLL scaling factor. We multiply samples_per_symbol by this to get
@@ -50,7 +51,23 @@ impl ClockRecoveryPll {
             prev_sample: 0,
             locked: false,
             lock_count: 0,
+            hysteresis: 0,
         }
+    }
+
+    /// Set hysteresis threshold for transition detection (builder pattern).
+    ///
+    /// When > 0, a transition is only detected when the discriminator output
+    /// crosses from below `-hysteresis` to above `+hysteresis` (or vice versa).
+    /// This prevents noise near the zero crossing from causing false transitions.
+    pub fn with_hysteresis(mut self, threshold: i16) -> Self {
+        self.hysteresis = threshold;
+        self
+    }
+
+    /// Set hysteresis threshold on an existing PLL instance.
+    pub fn set_hysteresis(&mut self, threshold: i16) {
+        self.hysteresis = threshold;
     }
 
     /// Process one discriminator sample.
@@ -73,9 +90,16 @@ impl ClockRecoveryPll {
             symbol_sample = Some(disc_out);
         }
 
-        // Detect transitions (sign changes in discriminator)
-        let transition = (disc_out > 0) != (self.prev_sample > 0)
-            && (disc_out != 0 || self.prev_sample != 0);
+        // Detect transitions (sign changes in discriminator).
+        // With hysteresis, both samples must exceed the threshold to avoid
+        // false transitions from noise near zero.
+        let transition = if self.hysteresis > 0 {
+            (disc_out > self.hysteresis && self.prev_sample < -self.hysteresis)
+                || (disc_out < -self.hysteresis && self.prev_sample > self.hysteresis)
+        } else {
+            (disc_out > 0) != (self.prev_sample > 0)
+                && (disc_out != 0 || self.prev_sample != 0)
+        };
         self.prev_sample = disc_out;
 
         if transition {
@@ -183,6 +207,30 @@ mod tests {
         }
 
         assert!(pll.locked, "PLL should be locked after 500 samples");
+    }
+
+    #[test]
+    fn test_pll_hysteresis() {
+        // Without hysteresis, small noise causes transitions
+        let mut pll_no_hyst = ClockRecoveryPll::new(11025, 1200, 936, 74);
+        // Feed small alternating noise (±10)
+        for i in 0..500 {
+            let val: i16 = if i % 2 == 0 { 10 } else { -10 };
+            pll_no_hyst.update(val);
+        }
+        let transitions_no = pll_no_hyst.lock_count as u32;
+
+        // With hysteresis=100, the ±10 noise should NOT trigger transitions
+        let mut pll_hyst = ClockRecoveryPll::new(11025, 1200, 936, 74)
+            .with_hysteresis(100);
+        for i in 0..500 {
+            let val: i16 = if i % 2 == 0 { 10 } else { -10 };
+            pll_hyst.update(val);
+        }
+        assert_eq!(pll_hyst.lock_count, 0,
+            "Hysteresis should block small noise transitions");
+        assert!(transitions_no > 0,
+            "Without hysteresis, small noise should trigger transitions");
     }
 
     #[test]

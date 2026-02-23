@@ -1,25 +1,34 @@
 //! AFSK Modem — Bell 202 modulation and demodulation
 //!
 //! This module provides the core DSP for 1200 baud AFSK as used in APRS and
-//! packet radio. Three demodulation modes are available:
+//! packet radio. Four demodulation modes are available:
 //!
 //! **Fast path**: Goertzel tone detection with Bresenham symbol timing.
-//! Hard-decision decoding. Minimal CPU/RAM — suitable for Cortex-M0, RP2040.
+//! Hard-decision decoding. Optional AGC normalizes mark/space energy averages
+//! to compensate for de-emphasis and other frequency-dependent gain differences.
+//! Minimal CPU/RAM — suitable for Cortex-M0, RP2040.
 //!
 //! **Quality path**: Same Goertzel+Bresenham core, plus Hilbert transform for
 //! LLR confidence values. Feeds SoftHdlcDecoder for 1-2 bit error recovery.
 //!
-//! **Multi-decoder** (`multi-decoder` feature): 30 parallel fast-path decoders
-//! with filter bandwidth, timing offset, frequency offset, and gain diversity.
-//! Gain diversity (Dire Wolf multi-slicer approach) handles de-emphasized audio.
-//! Cross-product decoders handle combined freq offset + de-emphasis.
+//! **Delay-multiply path**: Continuous discriminator (delay-and-multiply) with
+//! PLL clock recovery. Produces sample-by-sample output and adapts to
+//! transmitter baud rate drift. Lower CPU than Goertzel (1 multiply/sample).
+//!
+//! **Multi-decoder** (`multi-decoder` feature): 32 parallel fast-path decoders
+//! with filter bandwidth, timing offset, frequency offset, gain diversity,
+//! and AGC (automatic gain control). AGC decoders adapt to mark/space energy
+//! imbalance from de-emphasis. Gain diversity (Dire Wolf multi-slicer approach)
+//! provides static compensation. Cross-product decoders handle combined freq
+//! offset + de-emphasis.
 //!
 //! # Architecture
 //!
 //! ```text
 //! Fast:    Samples → BPF → Goertzel → Bresenham → NRZI → HDLC
 //! Quality: Samples → BPF → Goertzel+Hilbert → Bresenham → NRZI → SoftHDLC
-//! Multi:   Samples → [17× (shifted BPF → shifted Goertzel → offset Bresenham → HDLC)] → Dedup
+//! DM:      Samples → BPF → Delay-Multiply → LPF → PLL → NRZI → HDLC
+//! Multi:   Samples → [N× diverse decoders → HDLC] → Dedup
 //! Mod:     Bits → NRZI Encode → Phase Accumulator (NCO) → Samples
 //! ```
 //!
@@ -27,11 +36,11 @@
 
 pub mod afsk;
 pub mod demod;
-pub mod delay_multiply; // experimental — not integrated into active demodulators
+pub mod delay_multiply;
 pub mod filter;
 pub mod hilbert;
 pub mod adaptive;
-pub mod pll; // experimental — not integrated into active demodulators
+pub mod pll;
 pub mod soft_hdlc;
 #[cfg(feature = "multi-decoder")]
 pub mod multi;
