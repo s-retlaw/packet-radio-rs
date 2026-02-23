@@ -118,6 +118,13 @@ fn main() {
             }
             run_smart3(&args[2]);
         }
+        "--soft-diag" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --soft-diag <file.wav>");
+                return;
+            }
+            run_soft_diag(&args[2]);
+        }
         "--help" | "-h" => print_usage(),
         _ => {
             eprintln!("Unknown argument: {}", args[1]);
@@ -140,6 +147,7 @@ fn print_usage() {
     println!("  benchmark --diff <file.wav>            Frame-level diff against Dire Wolf reference");
     println!("  benchmark --attribution <file.wav>     Per-decoder attribution analysis (multi-decoder)");
     println!("  benchmark --smart3 <file.wav>          Decode using Smart3 mini-decoder (3 optimal decoders)");
+    println!("  benchmark --soft-diag <file.wav>       Soft decode diagnostics (per-frame LLR analysis)");
     println!("  benchmark --suite <directory>           Decode all WAV files, compare with Dire Wolf");
     println!("  benchmark --compare-approaches <wav>    Compare fast vs. quality path frame-by-frame");
     println!("  benchmark --synthetic                   Run synthetic signal benchmark");
@@ -208,7 +216,7 @@ fn decode_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
         }
     }
 
-    let soft_recovered = soft_hdlc.stats_soft_recovered;
+    let soft_recovered = soft_hdlc.stats_total_soft_recovered();
     (
         DecodeResult {
             frames,
@@ -219,7 +227,7 @@ fn decode_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
 }
 
 /// Decode audio samples using the multi-decoder (9 parallel fast decoders).
-fn decode_multi(samples: &[i16], sample_rate: u32) -> DecodeResult {
+fn decode_multi(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
     let mut config = DemodConfig::default_1200();
     config.sample_rate = sample_rate;
 
@@ -235,14 +243,15 @@ fn decode_multi(samples: &[i16], sample_rate: u32) -> DecodeResult {
         }
     }
 
-    DecodeResult {
+    let soft = multi.total_soft_recovered();
+    (DecodeResult {
         frames,
         elapsed: start.elapsed(),
-    }
+    }, soft)
 }
 
 /// Decode audio samples using the MiniDecoder (3 attribution-optimal decoders).
-fn decode_smart3(samples: &[i16], sample_rate: u32) -> DecodeResult {
+fn decode_smart3(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
     let mut config = DemodConfig::default_1200();
     config.sample_rate = sample_rate;
 
@@ -258,10 +267,11 @@ fn decode_smart3(samples: &[i16], sample_rate: u32) -> DecodeResult {
         }
     }
 
-    DecodeResult {
+    let soft = mini.total_soft_recovered();
+    (DecodeResult {
         frames,
         elapsed: start.elapsed(),
-    }
+    }, soft)
 }
 
 /// Decode using the fast demodulator with adaptive Goertzel re-tuning.
@@ -535,9 +545,9 @@ fn run_single_wav(path: &str) {
     println!();
 
     let fast = decode_fast(&samples, sample_rate);
-    let (quality, soft_saves) = decode_quality(&samples, sample_rate);
-    let smart3 = decode_smart3(&samples, sample_rate);
-    let multi = decode_multi(&samples, sample_rate);
+    let (quality, qual_soft) = decode_quality(&samples, sample_rate);
+    let (smart3, smart3_soft) = decode_smart3(&samples, sample_rate);
+    let (multi, multi_soft) = decode_multi(&samples, sample_rate);
 
     let fast_rt = duration_secs / fast.elapsed.as_secs_f64();
     let qual_rt = duration_secs / quality.elapsed.as_secs_f64();
@@ -555,19 +565,21 @@ fn run_single_wav(path: &str) {
         quality.frames.len(),
         quality.elapsed.as_secs_f64(),
         qual_rt,
-        soft_saves
+        qual_soft
     );
     println!(
-        "  Smart3 path:  {:>4} packets in {:.2}s ({:.0}x real-time)",
+        "  Smart3 path:  {:>4} packets in {:.2}s ({:.0}x real-time, {} soft saves)",
         smart3.frames.len(),
         smart3.elapsed.as_secs_f64(),
-        smart3_rt
+        smart3_rt,
+        smart3_soft
     );
     println!(
-        "  Multi path:   {:>4} packets in {:.2}s ({:.0}x real-time)",
+        "  Multi path:   {:>4} packets in {:.2}s ({:.0}x real-time, {} soft saves)",
         multi.frames.len(),
         multi.elapsed.as_secs_f64(),
-        multi_rt
+        multi_rt,
+        multi_soft
     );
     println!();
 }
@@ -595,13 +607,14 @@ fn run_smart3(path: &str) {
     );
     println!();
 
-    let smart3 = decode_smart3(&samples, sample_rate);
+    let (smart3, smart3_soft) = decode_smart3(&samples, sample_rate);
     let fast = decode_fast(&samples, sample_rate);
 
-    println!("  Smart3:  {:>4} packets in {:.2}s ({:.0}x real-time)",
+    println!("  Smart3:  {:>4} packets in {:.2}s ({:.0}x real-time, {} soft saves)",
         smart3.frames.len(),
         smart3.elapsed.as_secs_f64(),
-        duration_secs / smart3.elapsed.as_secs_f64());
+        duration_secs / smart3.elapsed.as_secs_f64(),
+        smart3_soft);
     println!("  Fast:    {:>4} packets (baseline comparison)",
         fast.frames.len());
     let gain = smart3.frames.len() as i64 - fast.frames.len() as i64;
@@ -609,6 +622,89 @@ fn run_smart3(path: &str) {
         gain,
         if fast.frames.len() > 0 { gain as f64 / fast.frames.len() as f64 * 100.0 } else { 0.0 });
     println!();
+}
+
+// ─── Soft Decode Diagnostics ─────────────────────────────────────────────
+
+fn run_soft_diag(path: &str) {
+    println!("═══ Soft Decode Diagnostics ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    println!("Duration: {:.1}s, {} samples at {} Hz", duration_secs, samples.len(), sample_rate);
+    println!();
+
+    // Run quality single-decoder with detailed stats
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+    let mut demod = QualityDemodulator::new(config);
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                let data = match &result {
+                    FrameResult::Valid(d) => d,
+                    FrameResult::Recovered { data, .. } => data,
+                };
+                frames.push(data.to_vec());
+            }
+        }
+    }
+
+    println!("=== Quality Single-Decoder Stats ===");
+    println!("  Decoded frames:      {:>5}", frames.len());
+    println!("  Hard decodes:        {:>5}", soft_hdlc.stats_hard_decode);
+    println!("  CRC failures:        {:>5}", soft_hdlc.stats_crc_failures);
+    println!("  Soft recovered:      {:>5} total", soft_hdlc.stats_total_soft_recovered());
+    println!("    Syndrome 1-bit:    {:>5}", soft_hdlc.stats_syndrome);
+    println!("    Single flip:       {:>5}", soft_hdlc.stats_single_flip);
+    println!("    Pair flip:         {:>5}", soft_hdlc.stats_pair_flip);
+    println!("    NRZI pair:         {:>5}", soft_hdlc.stats_nrzi_pair);
+    println!("    Triple flip:       {:>5}", soft_hdlc.stats_triple_flip);
+    println!("    NRZI triple:       {:>5}", soft_hdlc.stats_nrzi_triple);
+    println!("  False positives:     {:>5}", soft_hdlc.stats_false_positives);
+    println!();
+
+    // Run multi-decoder with soft stats
+    let (multi, multi_soft) = decode_multi(&samples, sample_rate);
+    let (smart3, smart3_soft) = decode_smart3(&samples, sample_rate);
+
+    println!("=== Multi-Decoder Soft Stats ===");
+    println!("  Multi decoded:       {:>5} ({} soft saves)", multi.frames.len(), multi_soft);
+    println!("  Smart3 decoded:      {:>5} ({} soft saves)", smart3.frames.len(), smart3_soft);
+    println!();
+
+    // Run fast+adaptive single decoder with energy LLR
+    let fast_adapt = decode_fast_adaptive(&samples, sample_rate);
+    println!("=== Adaptive Goertzel ===");
+    println!("  Fast+adapt decoded:  {:>5}", fast_adapt.frames.len());
+    println!();
+
+    // Load DW reference for comparison if available
+    let dw_ref = discover_dw_reference(path);
+    if let Some((pkt_path, _)) = dw_ref {
+        if let Ok(dw_packets) = load_dw_packets(&pkt_path) {
+            let dw_set: std::collections::HashSet<String> = dw_packets.into_iter().collect();
+            let multi_tnc2 = frames_to_tnc2(&multi.frames);
+            let multi_set: std::collections::HashSet<&str> = multi_tnc2.iter().map(|s| s.as_str()).collect();
+            let dw_only = dw_set.iter().filter(|p| !multi_set.contains(p.as_str())).count();
+
+            println!("=== vs Dire Wolf ===");
+            println!("  DW unique:           {:>5}", dw_set.len());
+            println!("  Multi overlap:       {:>5}", dw_set.iter().filter(|p| multi_set.contains(p.as_str())).count());
+            println!("  DW-only (we miss):   {:>5}", dw_only);
+            println!();
+        }
+    }
 }
 
 // ─── DM Single WAV Decode ────────────────────────────────────────────────
@@ -730,7 +826,7 @@ fn run_dm_single(path: &str) {
     println!();
 
     let fast = decode_fast(&samples, sample_rate);
-    let multi = decode_multi(&samples, sample_rate);
+    let (multi, _) = decode_multi(&samples, sample_rate);
     println!("  Fast:   {:>4}   Multi: {:>4}", fast.frames.len(), multi.frames.len());
     println!();
 
@@ -865,6 +961,8 @@ fn run_suite(dir: &str) {
         multi_count: usize,
         dm_count: usize,
         soft_saves: u32,
+        smart3_soft: u32,
+        multi_soft: u32,
         dw_count: Option<u32>,
         fast_elapsed: Duration,
         qual_elapsed: Duration,
@@ -890,9 +988,9 @@ fn run_suite(dir: &str) {
         eprint!("  Decoding {}... ", display);
 
         let fast = decode_fast(&samples, sample_rate);
-        let (quality, soft_saves) = decode_quality(&samples, sample_rate);
-        let smart3 = decode_smart3(&samples, sample_rate);
-        let multi = decode_multi(&samples, sample_rate);
+        let (quality, qual_soft) = decode_quality(&samples, sample_rate);
+        let (smart3, smart3_soft) = decode_smart3(&samples, sample_rate);
+        let (multi, multi_soft) = decode_multi(&samples, sample_rate);
         let dm = decode_dm(&samples, sample_rate);
 
         eprintln!(
@@ -918,7 +1016,9 @@ fn run_suite(dir: &str) {
             smart3_count: smart3.frames.len(),
             multi_count: multi.frames.len(),
             dm_count: dm.frames.len(),
-            soft_saves,
+            soft_saves: qual_soft,
+            smart3_soft,
+            multi_soft,
             dw_count,
             fast_elapsed: fast.elapsed,
             qual_elapsed: quality.elapsed,
@@ -1030,6 +1130,21 @@ fn run_suite(dir: &str) {
             r.dm_elapsed.as_secs_f64(), dm_rt
         );
     }
+
+    // Soft recovery summary
+    let total_smart3_soft: u32 = results.iter().map(|r| r.smart3_soft).sum();
+    let total_multi_soft: u32 = results.iter().map(|r| r.multi_soft).sum();
+    println!();
+    println!("Soft recovery saves:");
+    println!("  {:<28}  {:>6} {:>6} {:>6}", "Track", "Qual", "Smart3", "Multi");
+    println!("  {}", "─".repeat(52));
+    for r in &results {
+        println!("  {:<28}  {:>6} {:>6} {:>6}",
+            r.display_name, r.soft_saves, r.smart3_soft, r.multi_soft);
+    }
+    println!("  {}", "─".repeat(52));
+    println!("  {:<28}  {:>6} {:>6} {:>6}",
+        "TOTAL", total_saves, total_smart3_soft, total_multi_soft);
 }
 
 // ─── Compare Approaches (A/B Test) ────────────────────────────────────────
@@ -1265,7 +1380,7 @@ fn run_synthetic_benchmark() {
 
         let fast = decode_fast(&signal, sample_rate);
         let (quality, soft_saves) = decode_quality(&signal, sample_rate);
-        let multi = decode_multi(&signal, sample_rate);
+        let (multi, _) = decode_multi(&signal, sample_rate);
 
         println!(
             "  {:<32}  {:>5}/{:<4}  {:>5}/{:<4}  {:>5}/{:<4}  {:>10}",
@@ -1368,7 +1483,7 @@ fn decode_dm_pll_soft(
         }
     }
 
-    let soft_recovered = soft_hdlc.stats_soft_recovered;
+    let soft_recovered = soft_hdlc.stats_total_soft_recovered();
     (DecodeResult { frames, elapsed: start.elapsed() }, soft_recovered)
 }
 
@@ -1420,7 +1535,7 @@ fn run_dm_pll(path: &str) {
 
     // Baselines
     let fast = decode_fast(&samples, sample_rate);
-    let multi = decode_multi(&samples, sample_rate);
+    let (multi, _) = decode_multi(&samples, sample_rate);
     let dm_bres = decode_dm(&samples, sample_rate);
     // DM+Bresenham with adaptive
     let dm_bres_adapt = {
@@ -1446,7 +1561,7 @@ fn run_dm_pll(path: &str) {
     println!("    Fast (Goertzel+Bresenham):  {:>5}", fast.frames.len());
     println!("    DM+Bresenham:               {:>5}", dm_bres.frames.len());
     println!("    DM+Bres+adaptive:           {:>5}", dm_bres_adapt);
-    println!("    Multi (36 decoders):         {:>5}", multi.frames.len());
+    println!("    Multi (38 decoders):         {:>5}", multi.frames.len());
     println!();
 
     // Diagnostic: symbol count and flag detection
@@ -1624,7 +1739,7 @@ fn decode_dm_pll_tuned(
                 }
             }
         }
-        let soft_saves = soft_hdlc.stats_soft_recovered;
+        let soft_saves = soft_hdlc.stats_total_soft_recovered();
         (frame_count, soft_saves)
     } else {
         let mut hdlc = HdlcDecoder::new();
@@ -1664,7 +1779,7 @@ fn run_dm_pll_tune(path: &str) {
 
     // Baselines
     let fast = decode_fast(&samples, sample_rate);
-    let multi = decode_multi(&samples, sample_rate);
+    let (multi, _) = decode_multi(&samples, sample_rate);
     println!("  Baselines: fast={}, multi={}", fast.frames.len(), multi.frames.len());
     println!();
 
@@ -1892,7 +2007,7 @@ fn run_export(wav_path: &str, output_dir: &str) {
         ("dm", Box::new(|s, sr| decode_dm(s, sr))),
         ("dm_pll", Box::new(|s, sr| decode_dm_pll(s, sr))),
         ("multi", Box::new(|s, sr| {
-            decode_multi(s, sr)
+            decode_multi(s, sr).0
         })),
     ];
 
@@ -1921,7 +2036,7 @@ fn run_export(wav_path: &str, output_dir: &str) {
     let fast = decode_fast(&samples, sample_rate);
     let dm = decode_dm(&samples, sample_rate);
     let dm_pll = decode_dm_pll(&samples, sample_rate);
-    let multi = decode_multi(&samples, sample_rate);
+    let (multi, _) = decode_multi(&samples, sample_rate);
 
     let sets: Vec<(&str, std::collections::HashSet<Vec<u8>>)> = vec![
         ("fast", fast.frames.into_iter().collect()),
@@ -2379,12 +2494,12 @@ fn run_diff(wav_path: &str, reference: Option<&str>) {
     }
 
     let fast = decode_fast(&samples, sample_rate);
-    let (quality, _) = decode_quality(&samples, sample_rate);
+    let (quality, qual_soft) = decode_quality(&samples, sample_rate);
     let fast_adapt = decode_fast_adaptive(&samples, sample_rate);
     let qual_adapt = decode_quality_adaptive(&samples, sample_rate);
     let best_single = decode_best_single(&samples, sample_rate);
-    let smart3 = decode_smart3(&samples, sample_rate);
-    let multi = decode_multi(&samples, sample_rate);
+    let (smart3, smart3_soft) = decode_smart3(&samples, sample_rate);
+    let (multi, multi_soft) = decode_multi(&samples, sample_rate);
     let dm = decode_dm(&samples, sample_rate);
     // Best single decoders from attribution coverage curve
     let best1 = decode_custom_goertzel(&samples, sample_rate, -50, 2, -1); // G:freq-50/t2
@@ -2407,16 +2522,27 @@ fn run_diff(wav_path: &str, reference: Option<&str>) {
 
     // Summary table
     println!("=== Decoder Mode Comparison vs Dire Wolf ===");
-    println!("{:<14} {:>8} {:>8} {:>8} {:>8}", "Mode", "Decoded", "Overlap", "DW-only", "Us-only");
-    println!("{}", "─".repeat(54));
+    println!("{:<14} {:>8} {:>8} {:>8} {:>8} {:>6}", "Mode", "Decoded", "Overlap", "DW-only", "Us-only", "Soft");
+    println!("{}", "─".repeat(62));
+
+    // Map mode names to their soft recovery counts
+    let soft_map: std::collections::HashMap<&str, u32> = [
+        ("quality", qual_soft),
+        ("smart3", smart3_soft),
+        ("multi", multi_soft),
+    ].iter().copied().collect();
 
     for mode in &modes {
         let us_set: std::collections::HashSet<&str> = mode.tnc2_frames.iter().map(|s| s.as_str()).collect();
         let overlap = dw_set.iter().filter(|p| us_set.contains(p.as_str())).count();
         let dw_only = dw_set.len() - overlap;
         let us_only = us_set.len() - overlap;
-        println!("{:<14} {:>8} {:>8} {:>8} {:>8}",
-            mode.name, mode.tnc2_frames.len(), overlap, dw_only, us_only);
+        let soft_str = match soft_map.get(mode.name) {
+            Some(&n) if n > 0 => format!("{}", n),
+            _ => "-".to_string(),
+        };
+        println!("{:<14} {:>8} {:>8} {:>8} {:>8} {:>6}",
+            mode.name, mode.tnc2_frames.len(), overlap, dw_only, us_only, soft_str);
     }
     println!();
 

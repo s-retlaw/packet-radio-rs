@@ -2,14 +2,20 @@
 //!
 //! Wraps the standard hard-decision HDLC decoder but also records the
 //! soft (confidence) value for each bit. When a CRC failure occurs,
-//! it identifies the least-confident bits and systematically flips
-//! 1-2 of them, re-checking CRC each time.
+//! it attempts error correction through multiple strategies:
 //!
-//! This can recover packets with 1-2 bit errors that a hard-decision
+//! 1. **CRC syndrome-based correction** — O(n) scan finds any single-bit error
+//!    without trial CRC checks, regardless of confidence ranking.
+//! 2. **Confidence-based single/pair/triple flips** — systematically flips the
+//!    lowest-confidence bits (up to 3 at a time) and re-checks CRC.
+//! 3. **NRZI-aware pair/triple flips** — handles the case where a single raw
+//!    (pre-NRZI) bit error causes 2-3 consecutive decoded errors.
+//!
+//! This can recover packets with 1-3 bit errors that a hard-decision
 //! decoder would completely miss — typically 5-15% more packets in
 //! marginal signal conditions.
 
-use super::{MAX_FRAME_BITS, MAX_FLIP_CANDIDATES};
+use super::{MAX_FRAME_BITS, MAX_FLIP_CANDIDATES, FLIP_CONFIDENCE_THRESHOLD, TRIPLE_FLIP_LIMIT};
 
 /// Maximum frame length in bytes for bit-flip recovery working buffer
 const MAX_FRAME_BYTES: usize = 400; // AX.25 max ≈ 330 + margin
@@ -60,14 +66,26 @@ pub struct SoftHdlcDecoder {
     /// Bytes written to frame_buf
     frame_len: usize,
 
-    // --- Statistics ---
+    // --- Statistics (per recovery type) ---
 
     /// Number of frames decoded normally (hard decision)
     pub stats_hard_decode: u32,
-    /// Number of frames recovered via bit-flipping
-    pub stats_soft_recovered: u32,
+    /// Number of frames recovered via CRC syndrome single-bit correction
+    pub stats_syndrome: u32,
+    /// Number of frames recovered via confidence-based single flip
+    pub stats_single_flip: u32,
+    /// Number of frames recovered via confidence-based pair flip
+    pub stats_pair_flip: u32,
+    /// Number of frames recovered via NRZI-aware pair flip
+    pub stats_nrzi_pair: u32,
+    /// Number of frames recovered via confidence-based triple flip
+    pub stats_triple_flip: u32,
+    /// Number of frames recovered via NRZI-aware triple flip
+    pub stats_nrzi_triple: u32,
     /// Number of CRC failures (not recoverable)
     pub stats_crc_failures: u32,
+    /// Number of soft-recovered frames rejected by AX.25 address validation
+    pub stats_false_positives: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -94,9 +112,25 @@ impl SoftHdlcDecoder {
             byte_bit_count: 0,
             frame_len: 0,
             stats_hard_decode: 0,
-            stats_soft_recovered: 0,
+            stats_syndrome: 0,
+            stats_single_flip: 0,
+            stats_pair_flip: 0,
+            stats_nrzi_pair: 0,
+            stats_triple_flip: 0,
+            stats_nrzi_triple: 0,
             stats_crc_failures: 0,
+            stats_false_positives: 0,
         }
+    }
+
+    /// Total soft-recovered frames across all recovery types.
+    pub fn stats_total_soft_recovered(&self) -> u32 {
+        self.stats_syndrome
+            + self.stats_single_flip
+            + self.stats_pair_flip
+            + self.stats_nrzi_pair
+            + self.stats_triple_flip
+            + self.stats_nrzi_triple
     }
 
     /// Feed a soft bit (LLR value) into the decoder.
@@ -140,6 +174,35 @@ impl SoftHdlcDecoder {
     }
 
     // --- Private methods ---
+
+    /// Lightweight AX.25 address sanity check for soft-recovered frames.
+    /// Validates that source and destination callsign bytes contain only
+    /// valid characters (A-Z, 0-9, space) and are non-empty.
+    /// Returns false for garbage frames that passed CRC by chance.
+    fn is_valid_ax25_frame(data: &[u8]) -> bool {
+        if data.len() < 14 {
+            return false;
+        }
+        // Check dest (bytes 0-5) and src (bytes 7-12) callsign chars
+        for &(start, end) in &[(0usize, 6usize), (7usize, 13usize)] {
+            let mut has_nonspace = false;
+            let mut i = start;
+            while i < end {
+                let ch = data[i] >> 1; // AX.25 chars are shifted left by 1
+                match ch {
+                    0x20 => {}                          // space (padding)
+                    0x30..=0x39 => has_nonspace = true,  // 0-9
+                    0x41..=0x5A => has_nonspace = true,  // A-Z
+                    _ => return false,                   // invalid character
+                }
+                i += 1;
+            }
+            if !has_nonspace {
+                return false; // all spaces = empty callsign
+            }
+        }
+        true
+    }
 
     fn process_bit(&mut self, bit: bool) -> Option<FrameResult<'_>> {
         // Track consecutive ones for flag/abort detection
@@ -251,17 +314,87 @@ impl SoftHdlcDecoder {
         crc == 0x0F47
     }
 
+    /// CRC syndrome-based single-bit correction.
+    ///
+    /// Computes syndrome = CRC(frame) XOR 0x0F47, then incrementally checks
+    /// each bit position for a matching single-bit error pattern. O(n) with
+    /// ~5 ops per bit, no trial CRC checks needed.
+    ///
+    /// Returns `(data_len, 1)` on success, updating `frame_buf` in place.
+    fn try_syndrome_correction(&mut self) -> Option<(usize, u8)> {
+        if self.frame_len < 17 {
+            return None;
+        }
+
+        let residue = crate::ax25::crc16_ccitt(&self.frame_buf[..self.frame_len]);
+        let syndrome = residue ^ 0x0F47;
+        if syndrome == 0 {
+            return None; // Already correct (shouldn't reach here)
+        }
+
+        // Incrementally compute error polynomial for each bit position.
+        // e(0) = syndrome for error at the very last bit processed (MSB of last byte).
+        // e(k+1) = one zero-step of CRC from e(k), moving toward earlier bits.
+        let total_bits = self.frame_len * 8;
+        let mut e: u16 = 0x8408; // Error polynomial for last bit
+
+        for k in 0..total_bits {
+            if e == syndrome {
+                // Found the error at bit_index = total_bits - 1 - k
+                let bit_index = total_bits - 1 - k;
+                let byte_idx = bit_index / 8;
+                let bit_in_byte = bit_index % 8;
+
+                // Flip the bit in frame_buf
+                self.frame_buf[byte_idx] ^= 1 << bit_in_byte;
+
+                // Verify (paranoia check)
+                let check = crate::ax25::crc16_ccitt(&self.frame_buf[..self.frame_len]);
+                if check == 0x0F47 {
+                    // Validate AX.25 address to reject false positives
+                    if !Self::is_valid_ax25_frame(&self.frame_buf[..self.frame_len]) {
+                        self.frame_buf[byte_idx] ^= 1 << bit_in_byte; // flip back
+                        self.stats_false_positives += 1;
+                        return None;
+                    }
+                    self.stats_syndrome += 1;
+                    let data_len = self.frame_len - 2;
+                    return Some((data_len, 1));
+                } else {
+                    // Flip back — shouldn't happen if math is correct
+                    self.frame_buf[byte_idx] ^= 1 << bit_in_byte;
+                    return None;
+                }
+            }
+
+            // Step to next earlier bit position
+            e = if e & 1 != 0 {
+                (e >> 1) ^ 0x8408
+            } else {
+                e >> 1
+            };
+        }
+
+        None
+    }
+
     /// Try bit-flip recovery. Returns `(data_len, flips)` on success, updating
     /// `frame_buf` and `frame_len` in place. Returns `None` on failure.
     fn try_bit_flip_recovery_info(&mut self) -> Option<(usize, u8)> {
+        // Phase 1: CRC syndrome-based single-bit correction (fastest, any position)
+        if let Some(result) = self.try_syndrome_correction() {
+            return Some(result);
+        }
+
         let count = self.bit_count.min(MAX_FRAME_BITS);
         if count == 0 {
             self.stats_crc_failures += 1;
             return None;
         }
 
-        // Build a list of (bit_index, confidence) sorted by confidence
-        let mut candidates = [(0usize, 128u8); MAX_FLIP_CANDIDATES];
+        // Build a list of (bit_index, confidence) sorted by confidence (lowest first)
+        let threshold = FLIP_CONFIDENCE_THRESHOLD;
+        let mut candidates = [(0usize, threshold); MAX_FLIP_CANDIDATES];
         for i in 0..count {
             let confidence = self.soft_bits[i].unsigned_abs();
             if confidence < candidates[MAX_FLIP_CANDIDATES - 1].1 {
@@ -275,53 +408,74 @@ impl SoftHdlcDecoder {
             }
         }
 
-        // Try flipping single bits
+        // Phase 2: Confidence-based single-bit flips (top-12 candidates)
+        // Continue to end of phase and pick the lowest-cost valid match.
         let num_candidates = MAX_FLIP_CANDIDATES.min(count);
+        let mut best_single: Option<(usize, u8)> = None; // (k, cost)
         for k in 0..num_candidates {
-            if candidates[k].1 >= 128 {
+            if candidates[k].1 >= threshold {
                 break;
             }
             let bit_idx = candidates[k].0;
             self.hard_bits[bit_idx] ^= 1;
 
             if self.reassemble_and_check_crc() {
-                self.hard_bits[bit_idx] ^= 1;
-                self.stats_soft_recovered += 1;
-                let data_len = self.frame_len - 2;
-                return Some((data_len, 1));
+                let cost = candidates[k].1;
+                if best_single.map_or(true, |(_, c)| cost < c) {
+                    best_single = Some((k, cost));
+                }
             }
 
             self.hard_bits[bit_idx] ^= 1;
         }
+        if let Some((k, _)) = best_single {
+            self.hard_bits[candidates[k].0] ^= 1;
+            self.reassemble_and_check_crc();
+            self.hard_bits[candidates[k].0] ^= 1;
+            self.stats_single_flip += 1;
+            let data_len = self.frame_len - 2;
+            return Some((data_len, 1));
+        }
 
-        // Try flipping pairs of bits
-        let pair_limit = num_candidates.min(6);
-        for i in 0..pair_limit {
-            if candidates[i].1 >= 128 { break; }
-            for j in (i + 1)..pair_limit {
-                if candidates[j].1 >= 128 { break; }
+        // Phase 3: Confidence-based pair flips (top-12 candidates, C(12,2)=66)
+        // Pick the pair with the lowest combined confidence cost.
+        let mut best_pair: Option<(usize, usize, u16)> = None; // (i, j, cost)
+        for i in 0..num_candidates {
+            if candidates[i].1 >= threshold { break; }
+            for j in (i + 1)..num_candidates {
+                if candidates[j].1 >= threshold { break; }
 
                 self.hard_bits[candidates[i].0] ^= 1;
                 self.hard_bits[candidates[j].0] ^= 1;
 
                 if self.reassemble_and_check_crc() {
-                    self.hard_bits[candidates[i].0] ^= 1;
-                    self.hard_bits[candidates[j].0] ^= 1;
-                    self.stats_soft_recovered += 1;
-                    let data_len = self.frame_len - 2;
-                    return Some((data_len, 2));
+                    let cost = candidates[i].1 as u16 + candidates[j].1 as u16;
+                    if best_pair.map_or(true, |(_, _, c)| cost < c) {
+                        best_pair = Some((i, j, cost));
+                    }
                 }
 
                 self.hard_bits[candidates[i].0] ^= 1;
                 self.hard_bits[candidates[j].0] ^= 1;
             }
         }
+        if let Some((i, j, _)) = best_pair {
+            self.hard_bits[candidates[i].0] ^= 1;
+            self.hard_bits[candidates[j].0] ^= 1;
+            self.reassemble_and_check_crc();
+            self.hard_bits[candidates[i].0] ^= 1;
+            self.hard_bits[candidates[j].0] ^= 1;
+            self.stats_pair_flip += 1;
+            let data_len = self.frame_len - 2;
+            return Some((data_len, 2));
+        }
 
-        // NRZI pair-flip: a single raw (pre-NRZI) bit error causes two
-        // consecutive errors in the decoded stream. Try flipping each
-        // low-confidence bit together with its immediate neighbor.
+        // Phase 4: NRZI pair-flip — a single raw (pre-NRZI) bit error causes two
+        // consecutive errors in the decoded stream.
+        // Pick the pair with the lowest sum of |LLR| at flipped positions.
+        let mut best_nrzi_pair: Option<(usize, usize, u16)> = None; // (bit1, bit2, cost)
         for k in 0..num_candidates {
-            if candidates[k].1 >= 128 { break; }
+            if candidates[k].1 >= threshold { break; }
             let idx = candidates[k].0;
 
             // Try (idx, idx+1)
@@ -329,11 +483,11 @@ impl SoftHdlcDecoder {
                 self.hard_bits[idx] ^= 1;
                 self.hard_bits[idx + 1] ^= 1;
                 if self.reassemble_and_check_crc() {
-                    self.hard_bits[idx] ^= 1;
-                    self.hard_bits[idx + 1] ^= 1;
-                    self.stats_soft_recovered += 1;
-                    let data_len = self.frame_len - 2;
-                    return Some((data_len, 2));
+                    let cost = self.soft_bits[idx].unsigned_abs() as u16
+                        + self.soft_bits[idx + 1].unsigned_abs() as u16;
+                    if best_nrzi_pair.map_or(true, |(_, _, c)| cost < c) {
+                        best_nrzi_pair = Some((idx, idx + 1, cost));
+                    }
                 }
                 self.hard_bits[idx] ^= 1;
                 self.hard_bits[idx + 1] ^= 1;
@@ -344,15 +498,109 @@ impl SoftHdlcDecoder {
                 self.hard_bits[idx - 1] ^= 1;
                 self.hard_bits[idx] ^= 1;
                 if self.reassemble_and_check_crc() {
-                    self.hard_bits[idx - 1] ^= 1;
-                    self.hard_bits[idx] ^= 1;
-                    self.stats_soft_recovered += 1;
-                    let data_len = self.frame_len - 2;
-                    return Some((data_len, 2));
+                    let cost = self.soft_bits[idx - 1].unsigned_abs() as u16
+                        + self.soft_bits[idx].unsigned_abs() as u16;
+                    if best_nrzi_pair.map_or(true, |(_, _, c)| cost < c) {
+                        best_nrzi_pair = Some((idx - 1, idx, cost));
+                    }
                 }
                 self.hard_bits[idx - 1] ^= 1;
                 self.hard_bits[idx] ^= 1;
             }
+        }
+        if let Some((b1, b2, _)) = best_nrzi_pair {
+            self.hard_bits[b1] ^= 1;
+            self.hard_bits[b2] ^= 1;
+            self.reassemble_and_check_crc();
+            self.hard_bits[b1] ^= 1;
+            self.hard_bits[b2] ^= 1;
+            self.stats_nrzi_pair += 1;
+            let data_len = self.frame_len - 2;
+            return Some((data_len, 2));
+        }
+
+        // Phase 5: Confidence-based triple flips (top-8 candidates, C(8,3)=56)
+        // Pick the triple with the lowest combined confidence cost.
+        let triple_limit = num_candidates.min(TRIPLE_FLIP_LIMIT);
+        let mut best_triple: Option<(usize, usize, usize, u16)> = None; // (i, j, k, cost)
+        for i in 0..triple_limit {
+            if candidates[i].1 >= threshold { break; }
+            for j in (i + 1)..triple_limit {
+                if candidates[j].1 >= threshold { break; }
+                for k in (j + 1)..triple_limit {
+                    if candidates[k].1 >= threshold { break; }
+
+                    self.hard_bits[candidates[i].0] ^= 1;
+                    self.hard_bits[candidates[j].0] ^= 1;
+                    self.hard_bits[candidates[k].0] ^= 1;
+
+                    if self.reassemble_and_check_crc() {
+                        let cost = candidates[i].1 as u16
+                            + candidates[j].1 as u16
+                            + candidates[k].1 as u16;
+                        if best_triple.map_or(true, |(_, _, _, c)| cost < c) {
+                            best_triple = Some((i, j, k, cost));
+                        }
+                    }
+
+                    self.hard_bits[candidates[i].0] ^= 1;
+                    self.hard_bits[candidates[j].0] ^= 1;
+                    self.hard_bits[candidates[k].0] ^= 1;
+                }
+            }
+        }
+        if let Some((i, j, k, _)) = best_triple {
+            self.hard_bits[candidates[i].0] ^= 1;
+            self.hard_bits[candidates[j].0] ^= 1;
+            self.hard_bits[candidates[k].0] ^= 1;
+            self.reassemble_and_check_crc();
+            self.hard_bits[candidates[i].0] ^= 1;
+            self.hard_bits[candidates[j].0] ^= 1;
+            self.hard_bits[candidates[k].0] ^= 1;
+            self.stats_triple_flip += 1;
+            let data_len = self.frame_len - 2;
+            return Some((data_len, 3));
+        }
+
+        // Phase 6: NRZI-aware triple flips — two adjacent pre-NRZI errors cause
+        // 3 consecutive decoded errors: (idx-1, idx, idx+1).
+        // Pick the triple with the lowest sum of |LLR| at flipped positions.
+        let mut best_nrzi_triple: Option<(usize, u16)> = None; // (candidate_k, cost)
+        for k in 0..num_candidates {
+            if candidates[k].1 >= threshold { break; }
+            let idx = candidates[k].0;
+
+            if idx > 0 && idx + 1 < count {
+                self.hard_bits[idx - 1] ^= 1;
+                self.hard_bits[idx] ^= 1;
+                self.hard_bits[idx + 1] ^= 1;
+
+                if self.reassemble_and_check_crc() {
+                    let cost = self.soft_bits[idx - 1].unsigned_abs() as u16
+                        + self.soft_bits[idx].unsigned_abs() as u16
+                        + self.soft_bits[idx + 1].unsigned_abs() as u16;
+                    if best_nrzi_triple.map_or(true, |(_, c)| cost < c) {
+                        best_nrzi_triple = Some((k, cost));
+                    }
+                }
+
+                self.hard_bits[idx - 1] ^= 1;
+                self.hard_bits[idx] ^= 1;
+                self.hard_bits[idx + 1] ^= 1;
+            }
+        }
+        if let Some((k, _)) = best_nrzi_triple {
+            let idx = candidates[k].0;
+            self.hard_bits[idx - 1] ^= 1;
+            self.hard_bits[idx] ^= 1;
+            self.hard_bits[idx + 1] ^= 1;
+            self.reassemble_and_check_crc();
+            self.hard_bits[idx - 1] ^= 1;
+            self.hard_bits[idx] ^= 1;
+            self.hard_bits[idx + 1] ^= 1;
+            self.stats_nrzi_triple += 1;
+            let data_len = self.frame_len - 2;
+            return Some((data_len, 3));
         }
 
         self.stats_crc_failures += 1;
@@ -413,6 +661,11 @@ impl SoftHdlcDecoder {
         // Check CRC (last 2 bytes are CRC)
         let crc = crate::ax25::crc16_ccitt(&frame[..frame_len]);
         if crc == 0x0F47 {
+            // Validate AX.25 address to reject false positives
+            if !Self::is_valid_ax25_frame(&frame[..frame_len]) {
+                self.stats_false_positives += 1;
+                return false;
+            }
             // Copy to frame_buf for output
             self.frame_buf[..frame_len].copy_from_slice(&frame[..frame_len]);
             self.frame_len = frame_len;
@@ -432,7 +685,7 @@ mod tests {
         let decoder = SoftHdlcDecoder::new();
         assert_eq!(decoder.bit_count, 0);
         assert_eq!(decoder.stats_hard_decode, 0);
-        assert_eq!(decoder.stats_soft_recovered, 0);
+        assert_eq!(decoder.stats_total_soft_recovered(), 0);
     }
 
     #[test]
@@ -447,13 +700,67 @@ mod tests {
         assert_eq!(decoder.frame_len, 0);
     }
 
-    // Integration tests with real HDLC frames will be added once the
-    // AX.25 frame encoder is implemented. Key test scenarios:
-    //
-    // 1. Clean frame → Valid decode (hard decision works)
-    // 2. Frame with 1 flipped bit (weak LLR) → Recovered by single flip
-    // 3. Frame with 2 flipped bits (weak LLR) → Recovered by double flip
-    // 4. Frame with 3+ flipped bits → CRC failure (unrecoverable)
-    // 5. Random data → No false frames
-    // 6. Verify false positive rate is < 0.04%
+    #[test]
+    fn test_stats_total_soft_recovered() {
+        let mut decoder = SoftHdlcDecoder::new();
+        decoder.stats_syndrome = 1;
+        decoder.stats_single_flip = 2;
+        decoder.stats_pair_flip = 3;
+        decoder.stats_nrzi_pair = 4;
+        decoder.stats_triple_flip = 5;
+        decoder.stats_nrzi_triple = 6;
+        assert_eq!(decoder.stats_total_soft_recovered(), 21);
+    }
+
+    #[test]
+    fn test_ax25_frame_validation() {
+        // Valid callsigns: "N0CALL" (dest) and "W1AW  " (src), shifted left by 1
+        let mut frame = [0u8; 17];
+        // Dest: "N0CALL" -> bytes 0..6, each char << 1
+        let dest = b"N0CALL";
+        for i in 0..6 {
+            frame[i] = dest[i] << 1;
+        }
+        // Byte 6: SSID byte (doesn't matter for validation)
+        frame[6] = 0xE0;
+        // Src: "W1AW  " -> bytes 7..13
+        let src = b"W1AW  ";
+        for i in 0..6 {
+            frame[7 + i] = src[i] << 1;
+        }
+        frame[13] = 0xE1; // SSID with end-of-address bit
+        assert!(SoftHdlcDecoder::is_valid_ax25_frame(&frame));
+
+        // Invalid: lowercase in destination
+        let mut bad = frame;
+        bad[0] = b'n' << 1;
+        assert!(!SoftHdlcDecoder::is_valid_ax25_frame(&bad));
+
+        // Invalid: special char in source
+        let mut bad2 = frame;
+        bad2[7] = b'#' << 1;
+        assert!(!SoftHdlcDecoder::is_valid_ax25_frame(&bad2));
+
+        // Invalid: all-space callsign
+        let mut bad3 = frame;
+        for i in 0..6 {
+            bad3[i] = b' ' << 1;
+        }
+        assert!(!SoftHdlcDecoder::is_valid_ax25_frame(&bad3));
+
+        // Invalid: too short
+        assert!(!SoftHdlcDecoder::is_valid_ax25_frame(&frame[..13]));
+    }
+
+    #[test]
+    fn test_syndrome_math() {
+        // Verify syndrome stepping: e(0) = 0x8408, each step shifts through poly
+        let mut e: u16 = 0x8408;
+        // After one step
+        e = if e & 1 != 0 { (e >> 1) ^ 0x8408 } else { e >> 1 };
+        assert_eq!(e, 0x4204); // 0x8408 >> 1 = 0x4204 (bit 0 was 0)
+        // After another step
+        e = if e & 1 != 0 { (e >> 1) ^ 0x8408 } else { e >> 1 };
+        assert_eq!(e, 0x2102); // 0x4204 >> 1 = 0x2102 (bit 0 was 0)
+    }
 }

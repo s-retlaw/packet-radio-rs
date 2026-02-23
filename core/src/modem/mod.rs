@@ -64,8 +64,16 @@ pub const MAX_DELAY: usize = 32;
 /// AX.25 max frame = 330 bytes × 8 bits + flags + stuffing ≈ 3000 bits
 pub const MAX_FRAME_BITS: usize = 4096;
 
-/// Number of candidate bits to consider for bit-flip recovery
-pub const MAX_FLIP_CANDIDATES: usize = 8;
+/// Number of candidate bits to consider for bit-flip recovery.
+/// Top-12 used for single/pair flips, top-8 for triple flips.
+pub const MAX_FLIP_CANDIDATES: usize = 12;
+
+/// Confidence threshold for candidate inclusion in bit-flip recovery.
+/// Only bits with |LLR| < this value are considered for flipping.
+pub const FLIP_CONFIDENCE_THRESHOLD: u8 = 96;
+
+/// Maximum candidates to use for triple-flip search (controls compute budget).
+pub const TRIPLE_FLIP_LIMIT: usize = 8;
 
 /// Demodulator configuration
 #[derive(Clone, Copy, Debug)]
