@@ -169,7 +169,7 @@ fn decode_fast(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let mut config = DemodConfig::default_1200();
     config.sample_rate = sample_rate;
 
-    let mut demod = FastDemodulator::new(config);
+    let mut demod = FastDemodulator::new(config).with_adaptive_gain();
     let mut hdlc = HdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
     let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
@@ -196,7 +196,7 @@ fn decode_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
     let mut config = DemodConfig::default_1200();
     config.sample_rate = sample_rate;
 
-    let mut demod = QualityDemodulator::new(config);
+    let mut demod = QualityDemodulator::new(config).with_adaptive_gain();
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
     let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];

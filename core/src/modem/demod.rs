@@ -102,6 +102,22 @@ pub struct FastDemodulator {
     energy_llr: bool,
     /// Optional adaptive Goertzel re-tuning from preamble measurements.
     adaptive: Option<AdaptiveState>,
+    /// Whether adaptive preamble gain measurement is enabled.
+    adaptive_gain_enabled: bool,
+    /// Shift register for NRZI-decoded bits (flag detection).
+    demod_shift_reg: u8,
+    /// Accumulated mark energy during preamble (on mark-tone symbols).
+    preamble_mark_energy: i64,
+    /// Accumulated space energy during preamble (on space-tone symbols).
+    preamble_space_energy: i64,
+    /// Number of mark-tone symbols accumulated during preamble.
+    preamble_mark_count: u16,
+    /// Number of space-tone symbols accumulated during preamble.
+    preamble_space_count: u16,
+    /// Number of HDLC flags (0x7E) detected in current preamble.
+    preamble_flag_count: u8,
+    /// Symbols since last flag detection (for preamble-end detection).
+    symbols_since_last_flag: u8,
 }
 
 impl FastDemodulator {
@@ -139,6 +155,14 @@ impl FastDemodulator {
             space_energy_peak: 1,
             energy_llr: false,
             adaptive: None,
+            adaptive_gain_enabled: false,
+            demod_shift_reg: 0,
+            preamble_mark_energy: 0,
+            preamble_space_energy: 0,
+            preamble_mark_count: 0,
+            preamble_space_count: 0,
+            preamble_flag_count: 0,
+            symbols_since_last_flag: 255,
         }
     }
 
@@ -165,6 +189,14 @@ impl FastDemodulator {
             space_energy_peak: 1,
             energy_llr: false,
             adaptive: None,
+            adaptive_gain_enabled: false,
+            demod_shift_reg: 0,
+            preamble_mark_energy: 0,
+            preamble_space_energy: 0,
+            preamble_mark_count: 0,
+            preamble_space_count: 0,
+            preamble_flag_count: 0,
+            symbols_since_last_flag: 255,
         }
     }
 
@@ -207,6 +239,14 @@ impl FastDemodulator {
             space_energy_peak: 1,
             energy_llr: false,
             adaptive: None,
+            adaptive_gain_enabled: false,
+            demod_shift_reg: 0,
+            preamble_mark_energy: 0,
+            preamble_space_energy: 0,
+            preamble_mark_count: 0,
+            preamble_space_count: 0,
+            preamble_flag_count: 0,
+            symbols_since_last_flag: 255,
         }
     }
 
@@ -259,6 +299,18 @@ impl FastDemodulator {
         self
     }
 
+    /// Enable adaptive mark/space gain from preamble measurement.
+    ///
+    /// Measures relative mark and space Goertzel energy during the HDLC flag
+    /// preamble and sets `space_gain_q8` to compensate for de-emphasis or
+    /// frequency-dependent gain differences. Re-measures on each new preamble.
+    ///
+    /// Only effective when AGC is disabled (AGC already handles gain).
+    pub fn with_adaptive_gain(mut self) -> Self {
+        self.adaptive_gain_enabled = true;
+        self
+    }
+
     /// Reset demodulator state.
     pub fn reset(&mut self) {
         self.bpf.reset();
@@ -271,6 +323,17 @@ impl FastDemodulator {
         self.bit_phase = 0;
         self.mark_energy_peak = 1;
         self.space_energy_peak = 1;
+        // Reset adaptive gain state
+        if self.adaptive_gain_enabled {
+            self.space_gain_q8 = 256;
+            self.demod_shift_reg = 0;
+            self.preamble_mark_energy = 0;
+            self.preamble_space_energy = 0;
+            self.preamble_mark_count = 0;
+            self.preamble_space_count = 0;
+            self.preamble_flag_count = 0;
+            self.symbols_since_last_flag = 255;
+        }
         // Reset adaptive state and restore original Goertzel coefficients
         if let Some(ref mut adaptive) = self.adaptive {
             adaptive.hilbert.reset();
@@ -380,6 +443,57 @@ impl FastDemodulator {
                 // 5. NRZI decode
                 let decoded_bit = raw_bit == self.prev_nrzi_bit;
                 self.prev_nrzi_bit = raw_bit;
+
+                // 5b. Adaptive preamble gain: measure mark/space energy ratio
+                // during HDLC flag preamble and set space_gain_q8 automatically.
+                if self.adaptive_gain_enabled && !self.agc_enabled {
+                    self.demod_shift_reg = (self.demod_shift_reg << 1) | (decoded_bit as u8);
+
+                    if self.demod_shift_reg == 0x7E {
+                        self.preamble_flag_count = self.preamble_flag_count.saturating_add(1);
+                        self.symbols_since_last_flag = 0;
+                    } else {
+                        self.symbols_since_last_flag = self.symbols_since_last_flag.saturating_add(1);
+                    }
+
+                    // Accumulate energy while in preamble region
+                    if self.preamble_flag_count >= 1 && self.symbols_since_last_flag <= 8 {
+                        // Classify by raw energy comparison (no gain applied)
+                        if mark_energy > space_energy {
+                            self.preamble_mark_energy += mark_energy >> AGC_ENERGY_SHIFT;
+                            self.preamble_mark_count += 1;
+                        } else {
+                            self.preamble_space_energy += space_energy >> AGC_ENERGY_SHIFT;
+                            self.preamble_space_count += 1;
+                        }
+                    }
+
+                    // Preamble ended: compute and apply gain
+                    if self.symbols_since_last_flag > 8
+                        && self.preamble_flag_count >= 2
+                        && self.preamble_mark_count > 0
+                        && self.preamble_space_count > 0
+                    {
+                        let mark_avg = self.preamble_mark_energy / self.preamble_mark_count as i64;
+                        let space_avg = self.preamble_space_energy / self.preamble_space_count as i64;
+                        if space_avg > 0 {
+                            let measured = (mark_avg * 256) / space_avg;
+                            // Apply only 25% of the correction — Goertzel filter
+                            // response already partially compensates for de-emphasis.
+                            // Only increase gain (compensate de-emphasis), never decrease.
+                            // Apply 25% of measured excess above unity.
+                            let excess = (measured - 256).max(0);
+                            let gain = 256 + (excess >> 2);
+                            self.space_gain_q8 = (gain as u16).min(512);
+                        }
+                        // Reset accumulators for next preamble
+                        self.preamble_mark_energy = 0;
+                        self.preamble_space_energy = 0;
+                        self.preamble_mark_count = 0;
+                        self.preamble_space_count = 0;
+                        self.preamble_flag_count = 0;
+                    }
+                }
 
                 // 6. LLR: energy-based or fixed
                 let llr = if self.energy_llr {
@@ -495,6 +609,24 @@ pub struct QualityDemodulator {
     freq_count: u32,
     /// Whether Goertzel coefficients have been re-tuned from tracker estimates.
     retuned: bool,
+    /// Space energy gain in Q8 (256 = unity). Set by adaptive gain.
+    space_gain_q8: u16,
+    /// Whether adaptive preamble gain measurement is enabled.
+    adaptive_gain_enabled: bool,
+    /// Shift register for NRZI-decoded bits (flag detection).
+    demod_shift_reg: u8,
+    /// Accumulated mark energy during preamble (on mark-tone symbols).
+    preamble_mark_energy: i64,
+    /// Accumulated space energy during preamble (on space-tone symbols).
+    preamble_space_energy: i64,
+    /// Number of mark-tone symbols accumulated during preamble.
+    preamble_mark_count: u16,
+    /// Number of space-tone symbols accumulated during preamble.
+    preamble_space_count: u16,
+    /// Number of HDLC flags (0x7E) detected in current preamble.
+    preamble_flag_count: u8,
+    /// Symbols since last flag detection (for preamble-end detection).
+    symbols_since_last_flag: u8,
 }
 
 impl QualityDemodulator {
@@ -530,7 +662,22 @@ impl QualityDemodulator {
             freq_accum: 0,
             freq_count: 0,
             retuned: false,
+            space_gain_q8: 256,
+            adaptive_gain_enabled: false,
+            demod_shift_reg: 0,
+            preamble_mark_energy: 0,
+            preamble_space_energy: 0,
+            preamble_mark_count: 0,
+            preamble_space_count: 0,
+            preamble_flag_count: 0,
+            symbols_since_last_flag: 255,
         }
+    }
+
+    /// Enable adaptive mark/space gain from preamble measurement.
+    pub fn with_adaptive_gain(mut self) -> Self {
+        self.adaptive_gain_enabled = true;
+        self
     }
 
     /// Reset demodulator state.
@@ -554,6 +701,17 @@ impl QualityDemodulator {
             self.mark_coeff = goertzel_coeff(self.config.mark_freq, self.config.sample_rate);
             self.space_coeff = goertzel_coeff(self.config.space_freq, self.config.sample_rate);
             self.retuned = false;
+        }
+        // Reset adaptive gain state
+        if self.adaptive_gain_enabled {
+            self.space_gain_q8 = 256;
+            self.demod_shift_reg = 0;
+            self.preamble_mark_energy = 0;
+            self.preamble_space_energy = 0;
+            self.preamble_mark_count = 0;
+            self.preamble_space_count = 0;
+            self.preamble_flag_count = 0;
+            self.symbols_since_last_flag = 255;
         }
     }
 
@@ -623,7 +781,7 @@ impl QualityDemodulator {
                     + self.space_s2 * self.space_s2
                     - ((self.space_coeff as i64 * self.space_s1 * self.space_s2) >> 14);
 
-                let raw_bit = mark_energy > space_energy;
+                let raw_bit = mark_energy * 256 > space_energy * (self.space_gain_q8 as i64);
 
                 // 6. Hybrid LLR: combine energy-based and frequency-based confidence
                 // Energy confidence from Goertzel ratio
@@ -649,6 +807,50 @@ impl QualityDemodulator {
                 // 7. NRZI decode
                 let decoded_bit = raw_bit == self.prev_nrzi_bit;
                 self.prev_nrzi_bit = raw_bit;
+
+                // 7b. Adaptive preamble gain (same as FastDemodulator)
+                if self.adaptive_gain_enabled {
+                    self.demod_shift_reg = (self.demod_shift_reg << 1) | (decoded_bit as u8);
+
+                    if self.demod_shift_reg == 0x7E {
+                        self.preamble_flag_count = self.preamble_flag_count.saturating_add(1);
+                        self.symbols_since_last_flag = 0;
+                    } else {
+                        self.symbols_since_last_flag = self.symbols_since_last_flag.saturating_add(1);
+                    }
+
+                    if self.preamble_flag_count >= 1 && self.symbols_since_last_flag <= 8 {
+                        if mark_energy > space_energy {
+                            self.preamble_mark_energy += mark_energy >> AGC_ENERGY_SHIFT;
+                            self.preamble_mark_count += 1;
+                        } else {
+                            self.preamble_space_energy += space_energy >> AGC_ENERGY_SHIFT;
+                            self.preamble_space_count += 1;
+                        }
+                    }
+
+                    if self.symbols_since_last_flag > 8
+                        && self.preamble_flag_count >= 2
+                        && self.preamble_mark_count > 0
+                        && self.preamble_space_count > 0
+                    {
+                        let mark_avg = self.preamble_mark_energy / self.preamble_mark_count as i64;
+                        let space_avg = self.preamble_space_energy / self.preamble_space_count as i64;
+                        if space_avg > 0 {
+                            let measured = (mark_avg * 256) / space_avg;
+                            // Only increase gain (compensate de-emphasis), never decrease.
+                            // Apply 25% of measured excess above unity.
+                            let excess = (measured - 256).max(0);
+                            let gain = 256 + (excess >> 2);
+                            self.space_gain_q8 = (gain as u16).min(512);
+                        }
+                        self.preamble_mark_energy = 0;
+                        self.preamble_space_energy = 0;
+                        self.preamble_mark_count = 0;
+                        self.preamble_space_count = 0;
+                        self.preamble_flag_count = 0;
+                    }
+                }
 
                 // At NRZI transitions the Goertzel window spans both tones,
                 // making the energy ratio unreliable. Halve confidence.
