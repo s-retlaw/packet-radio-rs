@@ -101,7 +101,7 @@ impl DemodConfig {
             space_freq: SPACE_FREQ,
             baud_rate: BAUD_RATE,
             pll_alpha: 936,   // ~0.0286 in Q15 — moderate tracking
-            pll_beta: 74,     // ~0.00226 in Q15
+            pll_beta: 0,      // beta=0 universally optimal (frequency correction hurts)
         }
     }
 
