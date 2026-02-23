@@ -1794,11 +1794,7 @@ impl CorrelationDemodulator {
                     let total = mark_energy + space_energy;
                     if total > 0 {
                         let energy_ratio = ((mark_energy - space_energy) * 127) / total;
-                        let mut confidence = energy_ratio.unsigned_abs().max(1).min(127) as i8;
-                        if !decoded_bit {
-                            confidence >>= 1;
-                            if confidence == 0 { confidence = 1; }
-                        }
+                        let confidence = energy_ratio.unsigned_abs().max(1).min(127) as i8;
                         if decoded_bit { confidence } else { -confidence }
                     } else {
                         0
