@@ -46,6 +46,10 @@ pub struct Cli {
     #[arg(long)]
     pub corr: bool,
 
+    /// Use correlation demodulator + Gardner PLL timing recovery
+    #[arg(long)]
+    pub corr_pll: bool,
+
     /// Verbose output (repeat for more: -v, -vv, -vvv)
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,

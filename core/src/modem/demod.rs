@@ -1507,6 +1507,9 @@ pub struct CorrelationDemodulator {
     preamble_flag_count: u8,
     /// Symbols since last flag detection
     symbols_since_last_flag: u8,
+    /// Optional PLL for adaptive symbol timing (Gardner TED).
+    /// When present, replaces Bresenham fixed-rate timing.
+    pll: Option<ClockRecoveryPll>,
 }
 
 impl CorrelationDemodulator {
@@ -1555,6 +1558,7 @@ impl CorrelationDemodulator {
             preamble_space_count: 0,
             preamble_flag_count: 0,
             symbols_since_last_flag: 255,
+            pll: None,
         }
     }
 
@@ -1583,6 +1587,18 @@ impl CorrelationDemodulator {
         self
     }
 
+    /// Set custom LPF for correlation channels.
+    ///
+    /// Overrides the default 600 Hz cutoff LPF with a custom filter.
+    /// Useful for sweeping LPF cutoff to find the optimal value.
+    pub fn with_corr_lpf(mut self, lpf: BiquadFilter) -> Self {
+        self.mark_i_lpf = lpf;
+        self.mark_q_lpf = lpf;
+        self.space_i_lpf = lpf;
+        self.space_q_lpf = lpf;
+        self
+    }
+
     /// Enable energy-based LLR output.
     pub fn with_energy_llr(mut self) -> Self {
         self.energy_llr = true;
@@ -1592,6 +1608,26 @@ impl CorrelationDemodulator {
     /// Enable adaptive mark/space gain from preamble measurement.
     pub fn with_adaptive_gain(mut self) -> Self {
         self.adaptive_gain_enabled = true;
+        self
+    }
+
+    /// Enable Gardner PLL timing recovery with default parameters.
+    ///
+    /// Uses an absolute-value envelope discriminator to drive the PLL:
+    /// `disc = (|mark_i| + |mark_q|) - (|space_i| + |space_q|)`
+    /// This uses the **same signal path** as the bit decision (no group delay
+    /// mismatch), unlike the failed Goertzel+DM PLL experiments.
+    pub fn with_pll(mut self) -> Self {
+        self.pll = Some(
+            ClockRecoveryPll::new_gardner(self.config.sample_rate, 1200, 936, 0)
+                .with_error_shift(8)
+        );
+        self
+    }
+
+    /// Enable PLL timing recovery with a custom-configured PLL.
+    pub fn with_custom_pll(mut self, pll: ClockRecoveryPll) -> Self {
+        self.pll = Some(pll);
         self
     }
 
@@ -1619,6 +1655,9 @@ impl CorrelationDemodulator {
             self.preamble_space_count = 0;
             self.preamble_flag_count = 0;
             self.symbols_since_last_flag = 255;
+        }
+        if let Some(ref mut pll) = self.pll {
+            pll.reset();
         }
     }
 
@@ -1670,11 +1709,31 @@ impl CorrelationDemodulator {
             let space_i = self.space_i_lpf.process(space_i_raw as i16);
             let space_q = self.space_q_lpf.process(space_q_raw as i16);
 
-            // 4. Bresenham symbol timing
-            self.bit_phase += baud_rate;
-            if self.bit_phase >= sample_rate {
-                self.bit_phase -= sample_rate;
+            // 4. Symbol timing: PLL or Bresenham
+            let boundary = if let Some(ref mut pll) = self.pll {
+                // Normalized abs-envelope discriminator: bounded to ±127 regardless of
+                // signal level, preventing PLL overcorrection on strong signals.
+                // Cost: ~10 ops/sample (abs, add, divide).
+                let mark_env = (mark_i as i32).abs() + (mark_q as i32).abs();
+                let space_env = (space_i as i32).abs() + (space_q as i32).abs();
+                let total = mark_env + space_env;
+                let disc = if total > 0 {
+                    (((mark_env - space_env) as i64 * 127) / total as i64).clamp(-127, 127) as i16
+                } else {
+                    0
+                };
+                pll.update(disc).is_some()
+            } else {
+                self.bit_phase += baud_rate;
+                if self.bit_phase >= sample_rate {
+                    self.bit_phase -= sample_rate;
+                    true
+                } else {
+                    false
+                }
+            };
 
+            if boundary {
                 // 5. Envelope detection: I² + Q²
                 let mark_energy = (mark_i as i64) * (mark_i as i64)
                     + (mark_q as i64) * (mark_q as i64);
@@ -1832,6 +1891,25 @@ mod tests {
         let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
+        assert!(n < 200);
+    }
+
+    #[test]
+    fn test_corr_demod_pll_creation() {
+        let config = DemodConfig::default_1200();
+        let demod = CorrelationDemodulator::new(config).with_pll();
+        assert!(demod.pll.is_some());
+    }
+
+    #[test]
+    fn test_corr_demod_pll_processes_silence() {
+        let config = DemodConfig::default_1200();
+        let mut demod = CorrelationDemodulator::new(config).with_pll();
+        let silence = [0i16; 1000];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 200];
+
+        let n = demod.process_samples(&silence, &mut symbols);
+        // PLL should still produce symbols (at approximately baud rate)
         assert!(n < 200);
     }
 

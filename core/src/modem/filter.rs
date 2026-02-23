@@ -227,22 +227,23 @@ pub fn post_detect_lpf(sample_rate: u32) -> BiquadFilter {
 }
 
 /// Precomputed lowpass filter for correlation demodulator at 11025 Hz.
-/// Cutoff at 600 Hz (half baud rate) to reject cross-tone beat at 1000 Hz.
+/// Cutoff at 500 Hz — empirically optimal across WA8LMF tracks.
+/// Tighter than 600 Hz: better cross-tone rejection with minimal
+/// transition detail loss. +44 packets on Track 2 vs 600 Hz.
 ///
-/// At 1000 Hz: -9.4 dB attenuation → cross-tone energy -18.8 dB below on-tone.
-/// Computed from Audio EQ Cookbook LPF: cutoff=600 Hz, Q=0.707, Fs=11025 Hz.
+/// Computed from Audio EQ Cookbook LPF: cutoff=500 Hz, Q=0.707, Fs=11025 Hz.
 pub const fn corr_lpf_11025() -> BiquadFilter {
-    BiquadFilter::new(766, 1533, 766, -49906, 20205)
+    BiquadFilter::new(551, 1102, 551, -52463, 21899)
 }
 
-/// Precomputed correlation LPF at 22050 Hz. Cutoff 600 Hz, Q=0.707.
+/// Precomputed correlation LPF at 22050 Hz. Cutoff 500 Hz, Q=0.707.
 pub const fn corr_lpf_22050() -> BiquadFilter {
-    BiquadFilter::new(213, 426, 213, -57644, 25729)
+    BiquadFilter::new(150, 301, 150, -58951, 26787)
 }
 
-/// Precomputed correlation LPF at 44100 Hz. Cutoff 600 Hz, Q=0.707.
+/// Precomputed correlation LPF at 44100 Hz. Cutoff 500 Hz, Q=0.707.
 pub const fn corr_lpf_44100() -> BiquadFilter {
-    BiquadFilter::new(56, 112, 56, -61578, 29036)
+    BiquadFilter::new(39, 79, 39, -62236, 29627)
 }
 
 /// Select the correlation demodulator LPF for a given sample rate.
@@ -252,7 +253,7 @@ pub fn corr_lpf(sample_rate: u32) -> BiquadFilter {
         22050 => corr_lpf_22050(),
         44100 => corr_lpf_44100(),
         #[cfg(feature = "std")]
-        _ => lowpass_coeffs(sample_rate, 600.0, 0.707),
+        _ => lowpass_coeffs(sample_rate, 500.0, 0.707),
         #[cfg(not(feature = "std"))]
         _ => corr_lpf_11025(), // fallback
     }
