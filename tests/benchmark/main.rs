@@ -177,7 +177,7 @@ fn print_usage() {
     println!("  benchmark --smart3 <file.wav>          Decode using Smart3 mini-decoder (3 optimal decoders)");
     println!("  benchmark --soft-diag <file.wav>       Soft decode diagnostics (per-frame LLR analysis)");
     println!("  benchmark --corr <file.wav>            Decode using correlation (mixer) demodulator");
-    println!("  benchmark --corr-lpf-sweep <file.wav>  Sweep correlation LPF cutoff (400-900 Hz)");
+    println!("  benchmark --corr-lpf-sweep <file.wav>  Sweep correlation LPF cutoff (400-1000 Hz, 50 Hz steps)");
     println!("  benchmark --corr-pll <file.wav>        Correlation + Gardner PLL timing recovery");
     println!("  benchmark --corr-pll-sweep <file.wav>  Sweep Corr+PLL alpha/error_shift parameters");
     println!("  benchmark --suite <directory>           Decode all WAV files, compare with Dire Wolf");
@@ -983,14 +983,15 @@ fn run_corr_lpf_sweep(path: &str) {
     println!("Duration: {:.1}s, {} samples at {} Hz", duration_secs, samples.len(), sample_rate);
     println!();
 
-    // Baseline: default 600 Hz cutoff
+    // Baseline: default 500 Hz cutoff (tone_separation / 2)
     let corr_baseline = decode_corr(&samples, sample_rate);
     let (corr_q_baseline, soft_baseline) = decode_corr_quality(&samples, sample_rate);
-    println!("Baseline (600 Hz): {} hard, {} quality ({} soft saves)",
+    println!("Baseline (500 Hz): {} hard, {} quality ({} soft saves)",
         corr_baseline.frames.len(), corr_q_baseline.frames.len(), soft_baseline);
     println!();
 
-    let cutoffs = [400.0, 500.0, 550.0, 600.0, 650.0, 700.0, 800.0, 900.0];
+    let cutoffs = [400.0, 450.0, 500.0, 550.0, 600.0, 650.0, 700.0, 750.0,
+                   800.0, 850.0, 900.0, 950.0, 1000.0];
 
     println!("{:<10} {:>8} {:>8} {:>8}", "Cutoff", "Hard", "Quality", "Soft");
     println!("{}", "─".repeat(40));

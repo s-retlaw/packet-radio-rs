@@ -1531,7 +1531,7 @@ impl CorrelationDemodulator {
     /// Create a new correlation demodulator.
     pub fn new(config: DemodConfig) -> Self {
         let bpf = Self::select_bpf(config.sample_rate);
-        let lpf = super::filter::corr_lpf(config.sample_rate);
+        let lpf = super::filter::corr_lpf_for_config(config.mark_freq, config.space_freq, config.baud_rate, config.sample_rate);
 
         Self {
             config,

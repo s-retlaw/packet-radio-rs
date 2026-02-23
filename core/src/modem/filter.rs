@@ -38,6 +38,18 @@ impl BiquadFilter {
         self.s2 = 0;
     }
 
+    /// Replace coefficients without resetting filter state.
+    ///
+    /// Useful for adaptive filtering where you want to change the frequency
+    /// response mid-stream without the transient from zeroing state.
+    pub fn set_coefficients(&mut self, other: &BiquadFilter) {
+        self.b0 = other.b0;
+        self.b1 = other.b1;
+        self.b2 = other.b2;
+        self.a1 = other.a1;
+        self.a2 = other.a2;
+    }
+
     /// Process a single sample. Direct Form II Transposed.
     #[inline]
     pub fn process(&mut self, input: i16) -> i16 {
@@ -256,6 +268,127 @@ pub fn corr_lpf(sample_rate: u32) -> BiquadFilter {
         _ => lowpass_coeffs(sample_rate, 500.0, 0.707),
         #[cfg(not(feature = "std"))]
         _ => corr_lpf_11025(), // fallback
+    }
+}
+
+/// Compute correlation LPF from signal parameters.
+///
+/// LPF must reject the cross-tone beat (`tone_sep`) AND pass the symbol
+/// envelope (`baud_rate / 2`).  `tone_sep / 2` handles the beat;
+/// `baud_rate * 2 / 5` handles the envelope.
+///
+/// For Bell 202 (mark=1200, space=2200, baud=1200): max(500, 480) = 500 Hz.
+/// For V.23 (mark=1300, space=2100, baud=1200): max(400, 480) = 480 Hz.
+pub fn corr_lpf_for_config(mark_freq: u32, space_freq: u32, baud_rate: u32, sample_rate: u32) -> BiquadFilter {
+    let tone_sep = if space_freq > mark_freq {
+        space_freq - mark_freq
+    } else {
+        mark_freq - space_freq
+    };
+    let cutoff = core::cmp::max(tone_sep / 2, baud_rate * 2 / 5);
+
+    // Fast path: standard Bell 202 → precomputed 500 Hz
+    if cutoff == 500 {
+        return corr_lpf(sample_rate);
+    }
+
+    corr_lpf_by_cutoff(sample_rate, cutoff)
+}
+
+// ─── Precomputed correlation LPF table (5 cutoffs × 3 sample rates) ────
+
+/// Correlation LPF: 400 Hz cutoff at 11025 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_11025_400() -> BiquadFilter {
+    BiquadFilter::new(365, 730, 365, -55043, 23737)
+}
+
+/// Correlation LPF: 450 Hz cutoff at 11025 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_11025_450() -> BiquadFilter {
+    BiquadFilter::new(454, 908, 454, -53750, 22799)
+}
+
+/// Correlation LPF: 550 Hz cutoff at 11025 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_11025_550() -> BiquadFilter {
+    BiquadFilter::new(655, 1310, 655, -51182, 21035)
+}
+
+/// Correlation LPF: 600 Hz cutoff at 11025 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_11025_600() -> BiquadFilter {
+    BiquadFilter::new(766, 1533, 766, -49906, 20205)
+}
+
+/// Correlation LPF: 400 Hz cutoff at 22050 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_22050_400() -> BiquadFilter {
+    BiquadFilter::new(98, 196, 98, -60263, 27889)
+}
+
+/// Correlation LPF: 450 Hz cutoff at 22050 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_22050_450() -> BiquadFilter {
+    BiquadFilter::new(123, 246, 123, -59607, 27332)
+}
+
+/// Correlation LPF: 550 Hz cutoff at 22050 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_22050_550() -> BiquadFilter {
+    BiquadFilter::new(180, 361, 180, -58297, 26253)
+}
+
+/// Correlation LPF: 600 Hz cutoff at 22050 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_22050_600() -> BiquadFilter {
+    BiquadFilter::new(213, 426, 213, -57644, 25729)
+}
+
+/// Correlation LPF: 400 Hz cutoff at 44100 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_44100_400() -> BiquadFilter {
+    BiquadFilter::new(25, 51, 25, -62895, 30230)
+}
+
+/// Correlation LPF: 450 Hz cutoff at 44100 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_44100_450() -> BiquadFilter {
+    BiquadFilter::new(32, 64, 32, -62566, 29927)
+}
+
+/// Correlation LPF: 550 Hz cutoff at 44100 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_44100_550() -> BiquadFilter {
+    BiquadFilter::new(47, 95, 47, -61907, 29330)
+}
+
+/// Correlation LPF: 600 Hz cutoff at 44100 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_44100_600() -> BiquadFilter {
+    BiquadFilter::new(56, 112, 56, -61578, 29036)
+}
+
+/// Select a precomputed correlation LPF by cutoff frequency and sample rate.
+///
+/// Supports 400/450/500/550/600 Hz cutoffs at 11025/22050/44100 Hz.
+/// Falls back to runtime computation on `std`, or 500 Hz on `no_std`.
+pub fn corr_lpf_by_cutoff(sample_rate: u32, cutoff_hz: u32) -> BiquadFilter {
+    // Snap to nearest supported cutoff
+    let snapped = if cutoff_hz <= 425 { 400 }
+        else if cutoff_hz <= 475 { 450 }
+        else if cutoff_hz <= 525 { 500 }
+        else if cutoff_hz <= 575 { 550 }
+        else { 600 };
+
+    match (sample_rate, snapped) {
+        (11025, 400) => corr_lpf_11025_400(),
+        (11025, 450) => corr_lpf_11025_450(),
+        (11025, 500) => corr_lpf_11025(),
+        (11025, 550) => corr_lpf_11025_550(),
+        (11025, 600) => corr_lpf_11025_600(),
+        (22050, 400) => corr_lpf_22050_400(),
+        (22050, 450) => corr_lpf_22050_450(),
+        (22050, 500) => corr_lpf_22050(),
+        (22050, 550) => corr_lpf_22050_550(),
+        (22050, 600) => corr_lpf_22050_600(),
+        (44100, 400) => corr_lpf_44100_400(),
+        (44100, 450) => corr_lpf_44100_450(),
+        (44100, 500) => corr_lpf_44100(),
+        (44100, 550) => corr_lpf_44100_550(),
+        (44100, 600) => corr_lpf_44100_600(),
+        #[cfg(feature = "std")]
+        _ => lowpass_coeffs(sample_rate, cutoff_hz as f64, 0.707),
+        #[cfg(not(feature = "std"))]
+        _ => corr_lpf(sample_rate), // fallback to 500 Hz
     }
 }
 
