@@ -1,4 +1,4 @@
-//! ESP32-C3 Test Harness Firmware
+//! ESP32-C6 Test Harness Firmware
 //!
 //! Receives audio samples over UART (via CP2102N USB-UART bridge), decodes with
 //! `MiniDecoder` / `FastDemodulator`, and returns decoded frames + cycle counts.
@@ -121,7 +121,7 @@ impl BenchStats {
     }
 }
 
-/// Initialize ESP32-C3 performance counter for cycle counting.
+/// Initialize ESP32-C6 performance counter for cycle counting.
 /// mpcer (0x7E0) = event type, mpcmr (0x7E1) = enable.
 fn init_perf_counter() {
     unsafe {
@@ -132,7 +132,7 @@ fn init_perf_counter() {
     }
 }
 
-/// Read ESP32-C3 performance counter (mpccr CSR 0x7E2).
+/// Read ESP32-C6 performance counter (mpccr CSR 0x7E2).
 /// Returns 32-bit cycle count (wraps every ~27s at 160 MHz).
 #[inline(always)]
 fn read_cycles() -> u32 {
@@ -172,7 +172,7 @@ fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     init_perf_counter();
 
-    // UART0 on default pins (TX=GPIO21, RX=GPIO20 on ESP32-C3)
+    // UART0 on default pins (TX=GPIO16, RX=GPIO17 on ESP32-C6)
     // These are the same pins used by the CP2102N USB-UART bridge
     let config = uart::Config::default().with_baudrate(UART_BAUD);
     let mut serial = Uart::new(peripherals.UART0, config)

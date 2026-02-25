@@ -9,7 +9,8 @@ members = [
     "tests/kiss_e2e",
 ]
 exclude = [
-    "esp32c3-test",  # Requires riscv32imc target — build separately
+    "esp32c3-test",  # Requires riscv32imc target (ESP32-C3) — build separately
+    "esp32c6-test",  # Requires riscv32imac target (ESP32-C6) — build separately
     "rp2040-test",   # Requires thumbv6m-none-eabi target — build separately
 ]
 resolver = "2"

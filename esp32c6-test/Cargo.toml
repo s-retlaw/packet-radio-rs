@@ -1,17 +1,17 @@
 [package]
-name = "esp32c3-test"
+name = "esp32c6-test"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "ESP32-C3 test harness firmware — validates packet-radio-core on real C3 MCU hardware"
+description = "ESP32-C6 test harness firmware — validates packet-radio-core on real MCU hardware"
 
 [dependencies]
-# ESP32-C3 HAL (RISC-V, no_std)
-esp-hal = { version = "1.0.0", features = ["esp32c3", "unstable"] }
-esp-backtrace = { version = "0.18.1", features = ["esp32c3", "panic-handler", "println"] }
-esp-println = { version = "0.16.1", features = ["esp32c3"] }
+# ESP32-C6 HAL (RISC-V, no_std)
+esp-hal = { version = "1.0.0", features = ["esp32c6", "unstable"] }
+esp-backtrace = { version = "0.18.1", features = ["esp32c6", "panic-handler", "println"] }
+esp-println = { version = "0.16.1", features = ["esp32c6"] }
 embedded-io = "0.6"
-esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32c3"] }
+esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32c6"] }
 
 # Packet radio core (no_std, no alloc needed for MiniDecoder)
 packet-radio-core = { path = "../core", default-features = false, features = ["multi-decoder"] }

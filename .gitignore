@@ -28,8 +28,10 @@ esp32/sdkconfig.old
 
 # MCU test harness build artifacts
 esp32c3-test/target/
+esp32c6-test/target/
 rp2040-test/target/
 
 # Lock files for excluded (non-workspace) crates
 esp32c3-test/Cargo.lock
+esp32c6-test/Cargo.lock
 rp2040-test/Cargo.lock
