@@ -54,6 +54,18 @@ pub struct Cli {
     #[arg(long)]
     pub corr_pll: bool,
 
+    /// Write TX audio to WAV file (modulated output from KISS frames received via TCP)
+    #[arg(long)]
+    pub tx_wav: Option<PathBuf>,
+
+    /// RX pipe mode: output KISS frames to stdout (binary). Audio from --wav or stdin.
+    #[arg(long)]
+    pub rx_pipe: bool,
+
+    /// TX pipe mode: read KISS from stdin, output raw i16 LE PCM to stdout.
+    #[arg(long)]
+    pub tx_pipe: bool,
+
     /// Verbose output (repeat for more: -v, -vv, -vvv)
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,

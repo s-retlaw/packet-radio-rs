@@ -162,6 +162,43 @@ impl SampleSource for WavSource {
     }
 }
 
+/// Raw i16 LE PCM audio from stdin (for pipe mode).
+pub struct StdinSource {
+    reader: std::io::BufReader<std::io::Stdin>,
+}
+
+impl StdinSource {
+    /// Create a new stdin audio source.
+    pub fn new() -> Self {
+        Self {
+            reader: std::io::BufReader::new(std::io::stdin()),
+        }
+    }
+}
+
+impl SampleSource for StdinSource {
+    fn read_samples(&mut self, buf: &mut [i16]) -> usize {
+        use std::io::Read;
+        // Read raw bytes: 2 bytes per i16 sample, little-endian
+        let byte_count = buf.len() * 2;
+        let mut raw = vec![0u8; byte_count];
+        let mut total_read = 0;
+        while total_read < byte_count {
+            match self.reader.read(&mut raw[total_read..]) {
+                Ok(0) => break, // EOF
+                Ok(n) => total_read += n,
+                Err(_) => break,
+            }
+        }
+        // Convert pairs of bytes to i16 LE
+        let complete_samples = total_read / 2;
+        for i in 0..complete_samples {
+            buf[i] = i16::from_le_bytes([raw[i * 2], raw[i * 2 + 1]]);
+        }
+        complete_samples
+    }
+}
+
 /// List available audio input devices.
 pub fn list_devices() {
     let host = cpal::default_host();

@@ -1,0 +1,10 @@
+[package]
+name = "kiss-e2e"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kiss-tnc = "0.2"
+tokio = { version = "1", features = ["full"] }
+hound = "3"
+packet-radio-core = { path = "../../core", features = ["std", "multi-decoder"] }

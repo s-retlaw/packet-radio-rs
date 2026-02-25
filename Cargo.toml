@@ -3,8 +3,13 @@ members = [
     "core",
     "desktop",
     "esp32",
+    "esp32c3-host",
     "shared",
     "tests/benchmark",
+    "tests/kiss_e2e",
+]
+exclude = [
+    "esp32c3-test",  # Requires riscv32imc target — build separately
 ]
 resolver = "2"
 
