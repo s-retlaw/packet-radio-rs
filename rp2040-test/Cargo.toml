@@ -13,6 +13,9 @@ cortex-m-rt = "0.7"
 panic-halt = "1.0"
 critical-section = "1.1"
 
+# GPIO toggle trait
+embedded-hal = "1.0"
+
 # USB-CDC serial
 usb-device = "0.3"
 usbd-serial = "0.2"

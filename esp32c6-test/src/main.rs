@@ -16,7 +16,11 @@
 mod protocol;
 
 use esp_backtrace as _;
+use esp_hal::rmt::Rmt;
+use esp_hal::time::Rate;
 use esp_hal::uart::{self, Uart};
+use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
+use smart_leds::{RGB8, SmartLedsWrite};
 // esp_println shares UART0 — do NOT use println! after UART init
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -185,6 +189,15 @@ fn main() -> ! {
         core::hint::spin_loop();
     }
 
+    // WS2812 addressable RGB LED on GPIO8 via RMT
+    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80)).expect("RMT init");
+    let mut rmt_buf = smart_led_buffer!(1);
+    let mut led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO8, &mut rmt_buf);
+    let led_off: [RGB8; 1] = [RGB8 { r: 0, g: 0, b: 0 }];
+    let led_on: [RGB8; 1] = [RGB8 { r: 0, g: 20, b: 0 }]; // dim green
+    let mut led_state = false;
+    let _ = led.write(led_off.iter().cloned());
+
     let mut decoder = Decoder::None;
     let mut stats = BenchStats::new();
     let mut read_buf = [0u8; READ_BUF_SIZE];
@@ -278,6 +291,8 @@ fn main() -> ! {
                         };
 
                         stats = BenchStats::new();
+                        let _ = led.write(led_on.iter().cloned()); // LED on — stream starting
+                        led_state = true;
                         send_msg(&mut serial, MSG_READY, &[]);
                     } else {
                         send_error(&mut serial, b"bad config payload");
@@ -317,6 +332,9 @@ fn main() -> ! {
                                         &frame_payload[..fp_len],
                                     );
                                     chunk_frames += 1;
+                                    led_state = !led_state;
+                                    let c = if led_state { &led_on } else { &led_off };
+                                    let _ = led.write(c.iter().cloned());
                                 }
                             }
                         }
@@ -335,6 +353,9 @@ fn main() -> ! {
                                     &frame_payload[..fp_len],
                                 );
                                 chunk_frames += 1;
+                                led_state = !led_state;
+                                let c = if led_state { &led_on } else { &led_off };
+                                let _ = led.write(c.iter().cloned());
                             }
                         }
 
@@ -379,6 +400,9 @@ fn main() -> ! {
                                                 &frame_payload[..fp_len],
                                             );
                                             chunk_frames += 1;
+                                            led_state = !led_state;
+                                            let c = if led_state { &led_on } else { &led_off };
+                                            let _ = led.write(c.iter().cloned());
                                         }
                                     }
                                 }
@@ -411,6 +435,9 @@ fn main() -> ! {
                                             &frame_payload[..fp_len],
                                         );
                                         chunk_frames += 1;
+                                        led_state = !led_state;
+                                        let c = if led_state { &led_on } else { &led_off };
+                                        let _ = led.write(c.iter().cloned());
                                     }
                                 }
                             }
@@ -427,6 +454,8 @@ fn main() -> ! {
                 }
 
                 MSG_STREAM_END => {
+                    let _ = led.write(led_off.iter().cloned()); // LED off — stream done
+                    led_state = false;
                     let stats_payload = StatsPayload {
                         total_frames: stats.total_frames,
                         chunks: stats.chunks,

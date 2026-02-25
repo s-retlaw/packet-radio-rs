@@ -1,13 +1,17 @@
 //! ESP32-C3 Test Harness Firmware
 //!
-//! Receives audio samples over UART (via CP2102N USB-UART bridge), decodes with
+//! Receives audio samples over USB-Serial-JTAG, decodes with
 //! `MiniDecoder` / `FastDemodulator`, and returns decoded frames + cycle counts.
 //!
 //! Protocol: length-prefixed binary messages (see `protocol.rs`).
 //! Flow: request-response — host sends one AUDIO_CHUNK, waits for CHUNK_ACK.
 //!
-//! Uses UART0 (default console pins) so the same USB port handles both
-//! flashing and data communication. No port switching needed.
+//! Uses the built-in USB-Serial-JTAG peripheral (shows up as /dev/ttyACMx).
+//! The same USB port handles both flashing and data communication.
+//!
+//! IMPORTANT: UsbSerialJtag::write() blocks until the USB host reads the data.
+//! Never write before receiving (the host may not have the port open yet).
+//! After espflash, press RST (not BOOT+RST) to enter the application.
 
 #![no_std]
 #![no_main]
@@ -16,8 +20,11 @@
 mod protocol;
 
 use esp_backtrace as _;
-use esp_hal::uart::{self, Uart};
-// esp_println shares UART0 — do NOT use println! after UART init
+use esp_hal::rmt::Rmt;
+use esp_hal::time::Rate;
+use esp_hal::usb_serial_jtag::UsbSerialJtag;
+use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
+use smart_leds::{RGB8, SmartLedsWrite};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -36,10 +43,6 @@ const MAX_CHUNK_SAMPLES: usize = 512;
 
 /// Read buffer for incoming serial data.
 const READ_BUF_SIZE: usize = MAX_MSG_SIZE + 16;
-
-/// UART baud rate — 921600 for fast sample streaming.
-/// CP2102N supports up to 3 Mbaud; 921600 is widely reliable.
-const UART_BAUD: u32 = 921600;
 
 /// FNV-1a hash for frame dedup (matches core implementation).
 fn fnv1a_hash(data: &[u8]) -> u32 {
@@ -143,28 +146,23 @@ fn read_cycles() -> u32 {
     cycles
 }
 
-/// Blocking write all bytes to UART.
-fn uart_write_all(uart: &mut Uart<'static, esp_hal::Blocking>, data: &[u8]) {
-    let mut offset = 0;
-    while offset < data.len() {
-        match embedded_io::Write::write(uart, &data[offset..]) {
-            Ok(n) => offset += n,
-            Err(_) => {} // retry
-        }
-    }
-    let _ = embedded_io::Write::flush(uart);
+/// Blocking write all bytes to USB-Serial-JTAG.
+/// Uses the HAL write() which blocks until USB host ACKs each 64-byte chunk.
+/// Only call after receiving data from host (proves host is connected).
+fn serial_write_all(serial: &mut UsbSerialJtag<'static, esp_hal::Blocking>, data: &[u8]) {
+    let _ = serial.write(data);
 }
 
-/// Send a protocol message over UART.
-fn send_msg(uart: &mut Uart<'static, esp_hal::Blocking>, msg_type: u8, payload: &[u8]) {
+/// Send a protocol message over USB-Serial-JTAG.
+fn send_msg(serial: &mut UsbSerialJtag<'static, esp_hal::Blocking>, msg_type: u8, payload: &[u8]) {
     let mut buf = [0u8; MAX_MSG_SIZE];
     let len = build_msg(msg_type, 0, payload, &mut buf);
-    uart_write_all(uart, &buf[..len]);
+    serial_write_all(serial, &buf[..len]);
 }
 
 /// Send an error message with a text description.
-fn send_error(uart: &mut Uart<'static, esp_hal::Blocking>, msg: &[u8]) {
-    send_msg(uart, MSG_ERROR, msg);
+fn send_error(serial: &mut UsbSerialJtag<'static, esp_hal::Blocking>, msg: &[u8]) {
+    send_msg(serial, MSG_ERROR, msg);
 }
 
 #[esp_hal::main]
@@ -172,18 +170,19 @@ fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     init_perf_counter();
 
-    // UART0 on default pins (TX=GPIO21, RX=GPIO20 on ESP32-C3)
-    // These are the same pins used by the CP2102N USB-UART bridge
-    let config = uart::Config::default().with_baudrate(UART_BAUD);
-    let mut serial = Uart::new(peripherals.UART0, config)
-        .expect("UART init failed");
+    // USB-Serial-JTAG — built-in USB on ESP32-C3, shows up as /dev/ttyACMx
+    // NOTE: Do NOT write before receiving data — write() blocks until host reads,
+    // and if host hasn't opened the port yet, it blocks forever.
+    let mut serial = UsbSerialJtag::new(peripherals.USB_DEVICE);
 
-    // NOTE: Do NOT use println! after UART init — esp_println shares UART0
-    // and its text output corrupts binary protocol messages.
-    // The startup delay gives the host time to drain any bootloader output.
-    for _ in 0..500_000u32 {
-        core::hint::spin_loop();
-    }
+    // WS2812 addressable RGB LED on GPIO2 (ESP32-C3-DevKit-RUST-1) via RMT
+    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80)).expect("RMT init");
+    let mut rmt_buf = smart_led_buffer!(1);
+    let mut led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO2, &mut rmt_buf);
+    let led_off: [RGB8; 1] = [RGB8 { r: 0, g: 0, b: 0 }];
+    let led_on: [RGB8; 1] = [RGB8 { r: 0, g: 20, b: 0 }]; // dim green
+    let mut led_state = false;
+    let _ = led.write(led_off.iter().cloned());
 
     let mut decoder = Decoder::None;
     let mut stats = BenchStats::new();
@@ -195,18 +194,20 @@ fn main() -> ! {
     let mut symbol_buf = [DemodSymbol { bit: false, llr: 0 }; 1024];
 
     loop {
-        // Poll UART for available bytes
+        // Poll for available bytes (non-blocking read_byte, spin until data)
         let avail = READ_BUF_SIZE - read_pos;
         if avail == 0 {
-            // Buffer full without a valid message — discard and resync
             read_pos = 0;
             continue;
         }
 
-        match embedded_io::Read::read(&mut serial, &mut read_buf[read_pos..]) {
-            Ok(0) => continue,
-            Ok(n) => read_pos += n,
-            Err(_) => continue,
+        // Read one byte at a time using nb API (non-blocking, no USB host dependency)
+        match serial.read_byte() {
+            Ok(b) => {
+                read_buf[read_pos] = b;
+                read_pos += 1;
+            }
+            Err(_) => continue, // WouldBlock — no data yet
         }
 
         // Try to parse complete messages
@@ -215,18 +216,16 @@ fn main() -> ! {
             let total = hdr.total_len();
 
             if hdr.payload_len as usize > MAX_PAYLOAD {
-                // Invalid — discard one byte and try to resync
                 read_buf.copy_within(1..read_pos, 0);
                 read_pos -= 1;
                 continue;
             }
 
             if read_pos < total {
-                break; // need more data
+                break;
             }
 
             let payload = &read_buf[HEADER_SIZE..total];
-
             match hdr.msg_type {
                 MSG_PING => {
                     send_msg(&mut serial, MSG_PONG, &[]);
@@ -278,6 +277,8 @@ fn main() -> ! {
                         };
 
                         stats = BenchStats::new();
+                        let _ = led.write(led_on.iter().cloned()); // LED on — stream starting
+                        led_state = true;
                         send_msg(&mut serial, MSG_READY, &[]);
                     } else {
                         send_error(&mut serial, b"bad config payload");
@@ -317,6 +318,9 @@ fn main() -> ! {
                                         &frame_payload[..fp_len],
                                     );
                                     chunk_frames += 1;
+                                    led_state = !led_state;
+                                    let c = if led_state { &led_on } else { &led_off };
+                                    let _ = led.write(c.iter().cloned());
                                 }
                             }
                         }
@@ -335,6 +339,9 @@ fn main() -> ! {
                                     &frame_payload[..fp_len],
                                 );
                                 chunk_frames += 1;
+                                led_state = !led_state;
+                                let c = if led_state { &led_on } else { &led_off };
+                                let _ = led.write(c.iter().cloned());
                             }
                         }
 
@@ -346,13 +353,11 @@ fn main() -> ! {
                                 );
                                 for i in 0..n_sym {
                                     if let Some(frame_data) = state.hdlcs[phase].feed_bit(symbol_buf[i].bit) {
-                                        // Copy frame data to break borrow before is_duplicate
                                         let hash = fnv1a_hash(frame_data);
                                         let flen = frame_data.len().min(330);
                                         let mut frame_copy = [0u8; 330];
                                         frame_copy[..flen].copy_from_slice(&frame_data[..flen]);
 
-                                        // Check dedup using hash directly
                                         let is_dup = {
                                             let mut found = false;
                                             for j in 0..state.recent_count.min(32) {
@@ -379,6 +384,9 @@ fn main() -> ! {
                                                 &frame_payload[..fp_len],
                                             );
                                             chunk_frames += 1;
+                                            led_state = !led_state;
+                                            let c = if led_state { &led_on } else { &led_off };
+                                            let _ = led.write(c.iter().cloned());
                                         }
                                     }
                                 }
@@ -386,10 +394,8 @@ fn main() -> ! {
                         }
 
                         Decoder::Tnc(tnc, kiss_dec) => {
-                            // Full TNC pipeline: demod → KISS encode → drain
                             tnc.poll_rx(&sample_buf[..n_samples], &mut BenchPlatform);
 
-                            // Drain KISS outbox and decode frames back
                             let mut kiss_buf = [0u8; 1024];
                             loop {
                                 let n = tnc.read_kiss(&mut kiss_buf);
@@ -411,6 +417,9 @@ fn main() -> ! {
                                             &frame_payload[..fp_len],
                                         );
                                         chunk_frames += 1;
+                                        led_state = !led_state;
+                                        let c = if led_state { &led_on } else { &led_off };
+                                        let _ = led.write(c.iter().cloned());
                                     }
                                 }
                             }
@@ -427,6 +436,8 @@ fn main() -> ! {
                 }
 
                 MSG_STREAM_END => {
+                    let _ = led.write(led_off.iter().cloned()); // LED off — stream done
+                    led_state = false;
                     let stats_payload = StatsPayload {
                         total_frames: stats.total_frames,
                         chunks: stats.chunks,
@@ -438,8 +449,6 @@ fn main() -> ! {
                     let mut sp = [0u8; 28];
                     stats_payload.encode(&mut sp);
                     send_msg(&mut serial, MSG_STATS, &sp);
-
-                    // (no println — shares UART0 with protocol)
                 }
 
                 _ => {} // unknown — ignore

@@ -18,6 +18,7 @@ mod protocol;
 
 use panic_halt as _;
 
+use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use rp_pico::entry;
 use rp_pico::hal::{self, pac};
 use rp_pico::hal::usb::UsbBus;
@@ -199,6 +200,11 @@ fn main() -> ! {
     .ok()
     .unwrap();
 
+    // GPIO setup for onboard LED (GPIO25) — toggles on each decoded frame
+    let sio = hal::Sio::new(pac.SIO);
+    let pins = rp_pico::Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
+    let mut led = pins.led.into_push_pull_output();
+
     // Hardware timer for cycle counting (1 us resolution)
     let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
@@ -349,6 +355,7 @@ fn main() -> ! {
                         };
 
                         stats = BenchStats::new();
+                        led.set_high(); // LED on — stream starting
 
                         // Shift buffer before sending response
                         if read_pos > total {
@@ -408,6 +415,7 @@ fn main() -> ! {
                                         &frame_payload[..fp_len],
                                     );
                                     chunk_frames += 1;
+                                    let _ = led.toggle();
                                 }
                             }
                         }
@@ -425,6 +433,7 @@ fn main() -> ! {
                                     &frame_payload[..fp_len],
                                 );
                                 chunk_frames += 1;
+                                let _ = led.toggle();
                             }
                         }
 
@@ -468,6 +477,7 @@ fn main() -> ! {
                                                 &frame_payload[..fp_len],
                                             );
                                             chunk_frames += 1;
+                                            let _ = led.toggle();
                                         }
                                     }
                                 }
@@ -499,6 +509,7 @@ fn main() -> ! {
                                             &frame_payload[..fp_len],
                                         );
                                         chunk_frames += 1;
+                                        let _ = led.toggle();
                                     }
                                 }
                             }
@@ -519,6 +530,7 @@ fn main() -> ! {
                 }
 
                 MSG_STREAM_END => {
+                    led.set_low(); // LED off — stream done
                     // Shift buffer before sending
                     if read_pos > total {
                         read_buf.copy_within(total..read_pos, 0);
