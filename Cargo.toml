@@ -10,6 +10,7 @@ members = [
 ]
 exclude = [
     "esp32c3-test",  # Requires riscv32imc target — build separately
+    "rp2040-test",   # Requires thumbv6m-none-eabi target — build separately
 ]
 resolver = "2"
 

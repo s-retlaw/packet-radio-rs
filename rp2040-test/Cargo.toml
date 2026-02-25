@@ -1,0 +1,30 @@
+[package]
+name = "rp2040-test"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "RP2040 (Raspberry Pi Pico) test harness firmware — validates packet-radio-core on real MCU hardware"
+
+[dependencies]
+# RP2040 BSP (Cortex-M0+, no_std)
+rp-pico = "0.9"
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+panic-halt = "1.0"
+critical-section = "1.1"
+
+# USB-CDC serial
+usb-device = "0.3"
+usbd-serial = "0.2"
+
+# Packet radio core (no_std, no alloc needed for MiniDecoder)
+packet-radio-core = { path = "../core", default-features = false, features = ["multi-decoder"] }
+
+[profile.dev]
+opt-level = "s"       # Optimize for size even in dev (MCU flash is limited)
+
+[profile.release]
+codegen-units = 1
+opt-level = "s"
+lto = "fat"
+overflow-checks = false

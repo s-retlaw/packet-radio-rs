@@ -1,0 +1,22 @@
+[package]
+name = "esp32c3-host"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Host tool for ESP32-C3 test harness — streams WAV audio and compares decode results"
+
+[dependencies]
+# Packet radio core (std, for local comparison decoding)
+packet-radio-core = { path = "../core", features = ["std", "multi-decoder"] }
+
+# Serial port communication
+serialport = "4"
+
+# WAV file reading
+hound = "3"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Timing
+std-time = { package = "time", version = "0.3" }
