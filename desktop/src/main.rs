@@ -10,6 +10,7 @@ mod kiss_server;
 
 use clap::Parser;
 use packet_radio_core::modem::demod::{CorrelationDemodulator, DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
+use packet_radio_core::modem::binary_xor::BinaryXorDemodulator;
 use packet_radio_core::modem::corr_slicer::CorrSlicerDecoder;
 use packet_radio_core::modem::multi::{MiniDecoder, MultiDecoder};
 use packet_radio_core::modem::soft_hdlc::{SoftHdlcDecoder, FrameResult};
@@ -122,6 +123,7 @@ fn main() {
             cli.corr,
             cli.corr_slicer,
             cli.corr_pll,
+            cli.xor,
         );
         return;
     }
@@ -138,6 +140,7 @@ fn main() {
         cli.corr,
         cli.corr_slicer,
         cli.corr_pll,
+        cli.xor,
         cli.sample_rate,
         tx_pipeline,
     );
@@ -249,6 +252,7 @@ fn process_loop(
     use_corr: bool,
     use_corr_slicer: bool,
     use_corr_pll: bool,
+    use_xor: bool,
     sample_rate: u32,
     tx_pipeline: Option<TxPipeline>,
 ) -> Option<TxPipeline> {
@@ -282,6 +286,9 @@ fn process_loop(
     } else if use_dm {
         tracing::info!("using delay-multiply demodulator");
         process_loop_dm(source, frame_tx, is_wav, config, tx_pipeline)
+    } else if use_xor {
+        tracing::info!("using binary XOR correlator");
+        process_loop_xor(source, frame_tx, is_wav, config, tx_pipeline)
     } else {
         process_loop_single(source, frame_tx, is_wav, use_quality, config, tx_pipeline)
     }
@@ -389,6 +396,66 @@ fn process_loop_dm(
     let mut soft_saves: u32 = 0;
 
     tracing::info!("processing audio at {} Hz (delay-multiply + Gardner PLL + soft HDLC)", config.sample_rate);
+
+    loop {
+        let n = source.read_samples(&mut audio_buf);
+        if n == 0 {
+            if is_wav {
+                if soft_saves > 0 {
+                    tracing::info!("WAV file complete, decoded {frame_count} frames ({soft_saves} soft recoveries)");
+                } else {
+                    tracing::info!("WAV file complete, decoded {frame_count} frames");
+                }
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
+
+        let num_symbols = demod.process_samples(&audio_buf[..n], &mut symbols);
+        for i in 0..num_symbols {
+            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                match &result {
+                    FrameResult::Recovered { flips, .. } => {
+                        soft_saves += 1;
+                        tracing::debug!("soft recovery: {} bit(s) corrected", flips);
+                    }
+                    _ => {}
+                }
+                let data = match &result {
+                    FrameResult::Valid(d) => *d,
+                    FrameResult::Recovered { data, .. } => *data,
+                };
+                frame_count += 1;
+                let frame_data = data.to_vec();
+                print_frame(frame_count, &frame_data);
+                let _ = frame_tx.send(frame_data);
+            }
+        }
+    }
+
+    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
+    tx
+}
+
+/// Binary XOR correlator processing loop + soft HDLC.
+fn process_loop_xor(
+    mut source: Box<dyn SampleSource>,
+    frame_tx: broadcast::Sender<Vec<u8>>,
+    is_wav: bool,
+    config: DemodConfig,
+    mut tx: Option<TxPipeline>,
+) -> Option<TxPipeline> {
+    let mut demod = BinaryXorDemodulator::new(config);
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut audio_buf = [0i16; 1024];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut frame_count: u64 = 0;
+    let mut soft_saves: u32 = 0;
+
+    tracing::info!("processing audio at {} Hz (binary XOR correlator + soft HDLC)", config.sample_rate);
 
     loop {
         let n = source.read_samples(&mut audio_buf);
@@ -718,6 +785,7 @@ fn process_loop_rx_pipe(
     use_corr: bool,
     use_corr_slicer: bool,
     use_corr_pll: bool,
+    use_xor: bool,
 ) {
     use std::io::Write;
 
@@ -832,6 +900,29 @@ fn process_loop_rx_pipe(
         let mut soft_hdlc = SoftHdlcDecoder::new();
         let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
         tracing::info!("rx-pipe: delay-multiply + PLL");
+        loop {
+            let n = source.read_samples(&mut audio_buf);
+            if n == 0 {
+                if is_wav { break; }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            }
+            let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
+            for i in 0..ns {
+                if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                    let data = match &result {
+                        FrameResult::Valid(d) => *d,
+                        FrameResult::Recovered { data, .. } => *data,
+                    };
+                    emit_frame(data);
+                }
+            }
+        }
+    } else if use_xor {
+        let mut demod = BinaryXorDemodulator::new(config);
+        let mut soft_hdlc = SoftHdlcDecoder::new();
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        tracing::info!("rx-pipe: binary XOR correlator");
         loop {
             let n = source.read_samples(&mut audio_buf);
             if n == 0 {

@@ -742,6 +742,203 @@ impl MiniDecoder {
     }
 }
 
+// ─── TwistMiniDecoder ───────────────────────────────────────────────────
+
+const TWIST_DECODERS: usize = 6;
+
+/// TwistMiniDecoder — Smart3 (3 decoders) + 3 twist-compensated decoders.
+///
+/// The twist decoders use asymmetric BPF centering and space gain to
+/// compensate for de-emphasis (space tone roll-off) and opposite-twist
+/// conditions. Inspired by Mobilinkd TNC3's parallel twist-tuned approach.
+///
+/// Decoder configuration:
+/// 1-3: Same as MiniDecoder (freq-50/t2, narrow/t0, narrow/t1)
+/// 4: `BPF+0Hz, gain=+1.5dB, t0` — mild de-emphasis compensation (best on T1/T4)
+/// 5: `BPF+200Hz, gain=+1.5dB, t2` — strong de-emphasis compensation (best on T2)
+/// 6: `BPF-200Hz, gain=0dB, t0` — opposite twist compensation (best on T1/T4)
+///
+/// Total: ~1.2 KB RAM (6 × ~200 bytes). Feasible on ESP32 and RP2040.
+pub struct TwistMiniDecoder {
+    decoders: [FastDemodulator; TWIST_DECODERS],
+    hdlc: [SoftHdlcDecoder; TWIST_DECODERS],
+    /// Ring buffer of (hash, generation) for time-windowed deduplication.
+    recent_hashes: [(u32, u32); DEDUP_RING_SIZE],
+    recent_write: usize,
+    recent_count: usize,
+    /// Generation counter — incremented each process_samples call.
+    generation: u32,
+    /// Total frames decoded (including duplicates caught).
+    pub total_decoded: u64,
+    /// Total unique frames output.
+    pub total_unique: u64,
+}
+
+impl TwistMiniDecoder {
+    /// Create a TwistMiniDecoder with Smart3 + 3 twist-compensated decoders.
+    pub fn new(config: DemodConfig) -> Self {
+        let offsets = [0u32, config.sample_rate / 3, 2 * config.sample_rate / 3];
+        let narrow_bpf = match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_narrow_13200(),
+            26400 => super::filter::afsk_bandpass_narrow_26400(),
+            _ => super::filter::afsk_bandpass_narrow_11025(),
+        };
+
+        // Smart3 decoder 1: G:freq-50/t2
+        let mark_shifted = (config.mark_freq as i32 - 50) as u32;
+        let space_shifted = (config.space_freq as i32 - 50) as u32;
+        #[cfg(feature = "std")]
+        let shifted_bpf = {
+            let center = (super::MID_FREQ as i32 - 50) as f64;
+            super::filter::bandpass_coeffs(config.sample_rate, center, 2000.0)
+        };
+        #[cfg(not(feature = "std"))]
+        let shifted_bpf = match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_wide_13200(),
+            26400 => super::filter::afsk_bandpass_wide_26400(),
+            _ => super::filter::afsk_bandpass_wide_11025(),
+        };
+
+        // Twist decoder BPFs
+        // BPF+200Hz: center at 1900 Hz (favors space tone for de-emphasis compensation)
+        #[cfg(feature = "std")]
+        let bpf_plus200 = super::filter::bandpass_coeffs(config.sample_rate, 1900.0, 2000.0);
+        #[cfg(not(feature = "std"))]
+        let bpf_plus200 = match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_wide_13200(),
+            26400 => super::filter::afsk_bandpass_wide_26400(),
+            _ => super::filter::afsk_bandpass_wide_11025(),
+        };
+
+        // BPF-200Hz: center at 1500 Hz (favors mark tone for opposite-twist)
+        #[cfg(feature = "std")]
+        let bpf_minus200 = super::filter::bandpass_coeffs(config.sample_rate, 1500.0, 2000.0);
+        #[cfg(not(feature = "std"))]
+        let bpf_minus200 = match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_narrow_13200(),
+            26400 => super::filter::afsk_bandpass_narrow_26400(),
+            _ => super::filter::afsk_bandpass_narrow_11025(),
+        };
+
+        // Standard BPF for +0Hz offset twist decoder
+        let std_bpf = match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_13200(),
+            26400 => super::filter::afsk_bandpass_26400(),
+            _ => super::filter::afsk_bandpass_11025(),
+        };
+
+        let decoders = [
+            // Smart3 original 3
+            FastDemodulator::with_filter_freq_and_offset(
+                config, shifted_bpf, offsets[2], mark_shifted, space_shifted,
+            ).with_energy_llr(),
+            FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[0])
+                .with_energy_llr(),
+            FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[1])
+                .with_energy_llr(),
+            // Twist decoder 4: BPF+0Hz, gain=+1.5dB (362 Q8), t0
+            // Mild de-emphasis compensation — consistent across all tracks
+            FastDemodulator::with_filter_and_offset(config, std_bpf, offsets[0])
+                .with_space_gain(362)
+                .with_energy_llr(),
+            // Twist decoder 5: BPF+200Hz, gain=+1.5dB (362 Q8), t2
+            // Strong de-emphasis — shifted BPF + gain stacks for T2 priority
+            FastDemodulator::with_filter_and_offset(config, bpf_plus200, offsets[2])
+                .with_space_gain(362)
+                .with_energy_llr(),
+            // Twist decoder 6: BPF-200Hz, gain=0dB, t0
+            // Opposite twist — mark-favoring BPF for transmitters with excess space
+            FastDemodulator::with_filter_and_offset(config, bpf_minus200, offsets[0])
+                .with_energy_llr(),
+        ];
+
+        Self {
+            decoders,
+            hdlc: core::array::from_fn(|_| SoftHdlcDecoder::new()),
+            recent_hashes: [(0u32, 0u32); DEDUP_RING_SIZE],
+            recent_write: 0,
+            recent_count: 0,
+            generation: 0,
+            total_decoded: 0,
+            total_unique: 0,
+        }
+    }
+
+    /// Process audio samples through all 6 decoders.
+    pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
+        self.generation = self.generation.wrapping_add(1);
+        let mut output = MultiOutput::new();
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+        for d in 0..TWIST_DECODERS {
+            let n = self.decoders[d].process_samples(samples, &mut symbols);
+            for i in 0..n {
+                if let Some(result) = self.hdlc[d].feed_soft_bit(symbols[i].llr) {
+                    let frame_bytes = match &result {
+                        FrameResult::Valid(d) => *d,
+                        FrameResult::Recovered { data, .. } => *data,
+                    };
+                    let len = frame_bytes.len().min(330);
+                    let mut frame_copy = [0u8; 330];
+                    frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
+                    self.total_decoded += 1;
+                    let hash = frame_hash(&frame_copy[..len]);
+                    if !self.is_duplicate(hash) {
+                        self.record_hash(hash);
+                        self.total_unique += 1;
+                        if output.count < MAX_OUTPUT_FRAMES {
+                            output.frames[output.count].data[..len]
+                                .copy_from_slice(&frame_copy[..len]);
+                            output.frames[output.count].len = len;
+                            output.count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        output
+    }
+
+    /// Reset all decoders.
+    pub fn reset(&mut self) {
+        for d in 0..TWIST_DECODERS {
+            self.decoders[d].reset();
+            self.hdlc[d].reset();
+        }
+        self.recent_hashes = [(0u32, 0u32); DEDUP_RING_SIZE];
+        self.recent_write = 0;
+        self.recent_count = 0;
+        self.generation = 0;
+    }
+
+    /// Number of active parallel decoders.
+    pub fn num_decoders(&self) -> usize {
+        TWIST_DECODERS
+    }
+
+    /// Check if a hash was seen recently (within last DEDUP_WINDOW generations).
+    fn is_duplicate(&self, hash: u32) -> bool {
+        const DEDUP_WINDOW: u32 = 4;
+        let limit = self.recent_count.min(DEDUP_RING_SIZE);
+        for i in 0..limit {
+            let (h, gen) = self.recent_hashes[i];
+            if h == hash && self.generation.wrapping_sub(gen) <= DEDUP_WINDOW {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn record_hash(&mut self, hash: u32) {
+        self.recent_hashes[self.recent_write] = (hash, self.generation);
+        self.recent_write = (self.recent_write + 1) % DEDUP_RING_SIZE;
+        if self.recent_count < DEDUP_RING_SIZE {
+            self.recent_count += 1;
+        }
+    }
+}
+
 /// Simple hash for frame deduplication (FNV-1a 32-bit).
 fn frame_hash(data: &[u8]) -> u32 {
     let mut hash: u32 = 0x811c_9dc5;

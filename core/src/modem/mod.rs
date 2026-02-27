@@ -45,6 +45,7 @@ pub mod soft_hdlc;
 #[cfg(feature = "multi-decoder")]
 pub mod multi;
 pub mod corr_slicer;
+pub mod binary_xor;
 
 /// Standard Bell 202 mark frequency (Hz)
 pub const MARK_FREQ: u32 = 1200;

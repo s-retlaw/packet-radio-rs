@@ -54,6 +54,10 @@ pub struct Cli {
     #[arg(long)]
     pub corr_pll: bool,
 
+    /// Use binary XOR correlator (twist-immune, amplitude-invariant)
+    #[arg(long)]
+    pub xor: bool,
+
     /// Write TX audio to WAV file (modulated output from KISS frames received via TCP)
     #[arg(long)]
     pub tx_wav: Option<PathBuf>,

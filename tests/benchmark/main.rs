@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 
 use packet_radio_core::ax25::frame::HdlcDecoder;
 use packet_radio_core::modem::demod::{CorrelationDemodulator, DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
+use packet_radio_core::modem::binary_xor::BinaryXorDemodulator;
 use packet_radio_core::modem::corr_slicer::CorrSlicerDecoder;
-use packet_radio_core::modem::multi::{MiniDecoder, MultiDecoder};
+use packet_radio_core::modem::multi::{MiniDecoder, MultiDecoder, TwistMiniDecoder};
 use packet_radio_core::modem::soft_hdlc::{FrameResult, SoftHdlcDecoder};
 use packet_radio_core::modem::DemodConfig;
 
@@ -161,6 +162,27 @@ fn main() {
             }
             run_corr_pll_sweep(&args[2]);
         }
+        "--xor" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --xor <file.wav>");
+                return;
+            }
+            run_xor(&args[2]);
+        }
+        "--twist" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --twist <file.wav>");
+                return;
+            }
+            run_twist_sweep(&args[2]);
+        }
+        "--twist-mini" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --twist-mini <file.wav>");
+                return;
+            }
+            run_twist_mini(&args[2]);
+        }
         "--help" | "-h" => print_usage(),
         _ => {
             eprintln!("Unknown argument: {}", args[1]);
@@ -189,6 +211,8 @@ fn print_usage() {
     println!("  benchmark --corr-lpf-sweep <file.wav>  Sweep correlation LPF cutoff (400-1000 Hz, 50 Hz steps)");
     println!("  benchmark --corr-pll <file.wav>        Correlation + Gardner PLL timing recovery");
     println!("  benchmark --corr-pll-sweep <file.wav>  Sweep Corr+PLL alpha/error_shift parameters");
+    println!("  benchmark --xor <file.wav>             Decode using binary XOR correlator");
+    println!("  benchmark --twist <file.wav>           Sweep twist-tuned decoder configurations");
     println!("  benchmark --suite <directory>           Decode all WAV files, compare with Dire Wolf");
     println!("  benchmark --compare-approaches <wav>    Compare fast vs. quality path frame-by-frame");
     println!("  benchmark --synthetic                   Run synthetic signal benchmark");
@@ -313,6 +337,29 @@ fn decode_smart3(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
         frames,
         elapsed: start.elapsed(),
     }, soft)
+}
+
+/// Decode using TwistMiniDecoder (Smart3 + 3 twist-compensated decoders).
+fn decode_twist_mini(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut decoder = TwistMiniDecoder::new(config);
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+
+    let start = Instant::now();
+
+    for chunk in samples.chunks(1024) {
+        let output = decoder.process_samples(chunk);
+        for i in 0..output.len() {
+            frames.push(output.frame(i).to_vec());
+        }
+    }
+
+    (DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }, 0) // TwistMiniDecoder doesn't expose soft stats yet
 }
 
 /// Decode using the fast demodulator with adaptive Goertzel re-tuning.
@@ -474,6 +521,30 @@ fn decode_custom_goertzel(
         frames,
         elapsed: start.elapsed(),
     }
+}
+
+/// Resample audio to a target sample rate using linear interpolation.
+/// Works for both upsampling and downsampling (e.g., 44100 → 13200).
+fn resample_to(samples: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
+    if from_rate == to_rate || samples.is_empty() {
+        return samples.to_vec();
+    }
+    let ratio = from_rate as f64 / to_rate as f64;
+    let new_len = (samples.len() as f64 / ratio) as usize;
+    let mut out = Vec::with_capacity(new_len);
+    for i in 0..new_len {
+        let src_pos = i as f64 * ratio;
+        let src_idx = src_pos as usize;
+        let frac = src_pos - src_idx as f64;
+        if src_idx + 1 < samples.len() {
+            let s = samples[src_idx] as f64 * (1.0 - frac)
+                + samples[src_idx + 1] as f64 * frac;
+            out.push(s.clamp(-32768.0, 32767.0) as i16);
+        } else if src_idx < samples.len() {
+            out.push(samples[src_idx]);
+        }
+    }
+    out
 }
 
 /// Upsample audio 2x using linear interpolation.
@@ -1847,6 +1918,408 @@ fn wav_filename(path: &str) -> String {
         .unwrap_or_default()
         .to_string_lossy()
         .to_string()
+}
+
+// ─── TwistMini Decoder ─────────────────────────────────────────────────
+
+fn run_twist_mini(path: &str) {
+    println!("═══ TwistMini Decoder (Smart3 + 3 twist-compensated = 6 decoders) ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    println!(
+        "Duration: {:.1}s, {} samples at {} Hz\n",
+        duration_secs, samples.len(), sample_rate
+    );
+
+    // --- Native sample rate ---
+    let fast = decode_fast(&samples, sample_rate);
+    let (smart3, _) = decode_smart3(&samples, sample_rate);
+    let (twist_mini, _) = decode_twist_mini(&samples, sample_rate);
+    let (multi, _) = decode_multi(&samples, sample_rate);
+
+    println!("At {} Hz:", sample_rate);
+    println!("  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
+        fast.frames.len(), fast.elapsed.as_secs_f64(),
+        duration_secs / fast.elapsed.as_secs_f64());
+    println!("  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+        smart3.frames.len(), smart3.elapsed.as_secs_f64(),
+        duration_secs / smart3.elapsed.as_secs_f64());
+    println!("  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
+        twist_mini.frames.len(), twist_mini.elapsed.as_secs_f64(),
+        duration_secs / twist_mini.elapsed.as_secs_f64());
+    println!("  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+        multi.frames.len(), multi.elapsed.as_secs_f64(),
+        duration_secs / multi.elapsed.as_secs_f64());
+
+    let gain_vs_smart3 = twist_mini.frames.len() as i64 - smart3.frames.len() as i64;
+    let gain_vs_multi = twist_mini.frames.len() as i64 - multi.frames.len() as i64;
+    println!("  TwistMini vs Smart3: {:>+4} packets", gain_vs_smart3);
+    println!("  TwistMini vs Multi:  {:>+4} packets", gain_vs_multi);
+
+    // --- Try 13200 Hz variant (pre-resampled WAV or runtime resample) ---
+    let target_rate = 13200u32;
+    if sample_rate != target_rate {
+        println!();
+        // Try to find a pre-resampled WAV file (e.g., foo_13200.wav)
+        let path_13k = path.replace(".wav", "_13200.wav");
+        let (rate_13k, samples_13k) = if let Ok(v) = read_wav_file(&path_13k) {
+            println!("At {} Hz (from {}):", target_rate, path_13k);
+            v
+        } else {
+            println!("At {} Hz (resampled from {}):", target_rate, sample_rate);
+            (target_rate, resample_to(&samples, sample_rate, target_rate))
+        };
+
+        let fast_13k = decode_fast(&samples_13k, rate_13k);
+        let (smart3_13k, _) = decode_smart3(&samples_13k, rate_13k);
+        let (twist_mini_13k, _) = decode_twist_mini(&samples_13k, rate_13k);
+        let (multi_13k, _) = decode_multi(&samples_13k, rate_13k);
+
+        let dur_13k = samples_13k.len() as f64 / rate_13k as f64;
+        println!("  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
+            fast_13k.frames.len(), fast_13k.elapsed.as_secs_f64(),
+            dur_13k / fast_13k.elapsed.as_secs_f64());
+        println!("  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+            smart3_13k.frames.len(), smart3_13k.elapsed.as_secs_f64(),
+            dur_13k / smart3_13k.elapsed.as_secs_f64());
+        println!("  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
+            twist_mini_13k.frames.len(), twist_mini_13k.elapsed.as_secs_f64(),
+            dur_13k / twist_mini_13k.elapsed.as_secs_f64());
+        println!("  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+            multi_13k.frames.len(), multi_13k.elapsed.as_secs_f64(),
+            dur_13k / multi_13k.elapsed.as_secs_f64());
+
+        let gain_13k = twist_mini_13k.frames.len() as i64 - smart3_13k.frames.len() as i64;
+        let gain_vs_native = twist_mini_13k.frames.len() as i64 - twist_mini.frames.len() as i64;
+        println!("  TwistMini@13k vs Smart3@13k: {:>+4} packets", gain_13k);
+        println!("  TwistMini@13k vs TwistMini@native: {:>+4} packets", gain_vs_native);
+    }
+    println!();
+}
+
+// ─── Twist-Tuned Decoder Sweep ──────────────────────────────────────────
+
+/// Decode with a twist-tuned single Goertzel decoder.
+///
+/// `bpf_center_offset`: Hz shift of BPF center relative to 1700 Hz midpoint.
+///   Positive = favor space (compensate de-emphasis), negative = favor mark.
+/// `space_gain_q8`: Static space energy gain (256 = 0 dB).
+/// `timing_phase`: 0/1/2 (0, 1/3, 2/3 symbol offset).
+fn decode_twist(
+    samples: &[i16],
+    sample_rate: u32,
+    bpf_center_offset: i32,
+    space_gain_q8: u16,
+    timing_phase: u32,
+) -> DecodeResult {
+    use packet_radio_core::modem::filter;
+
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let phase_offset = timing_phase * sample_rate / 3;
+
+    // Shift the BPF center to favor one tone over the other
+    let bpf = if bpf_center_offset != 0 {
+        let center = (1700i32 + bpf_center_offset) as f64;
+        filter::bandpass_coeffs(sample_rate, center, 2000.0)
+    } else {
+        filter::afsk_bandpass_11025()
+    };
+
+    let mut demod = FastDemodulator::with_filter_and_offset(config, bpf, phase_offset)
+        .with_space_gain(space_gain_q8)
+        .with_energy_llr();
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                let data = match &result {
+                    FrameResult::Valid(d) => d,
+                    FrameResult::Recovered { data, .. } => data,
+                };
+                frames.push(data.to_vec());
+            }
+        }
+    }
+
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
+}
+
+fn run_twist_sweep(path: &str) {
+    println!("═══ Twist-Tuned Decoder Sweep ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    println!(
+        "Duration: {:.1}s, {} samples at {} Hz\n",
+        duration_secs, samples.len(), sample_rate
+    );
+
+    // Baselines
+    let fast = decode_fast(&samples, sample_rate);
+    let (smart3, _) = decode_smart3(&samples, sample_rate);
+    let (multi, _) = decode_multi(&samples, sample_rate);
+
+    println!("  Baselines:");
+    println!("    Fast:     {:>4}", fast.frames.len());
+    println!("    Smart3:   {:>4}", smart3.frames.len());
+    println!("    Multi:    {:>4}\n", multi.frames.len());
+
+    // Build Smart3 frame set for exclusive analysis
+    use std::collections::HashSet;
+    let smart3_set: HashSet<Vec<u8>> = smart3.frames.iter().cloned().collect();
+
+    // Sweep parameters:
+    // BPF center offsets: -200, -100, 0, +100, +200 Hz
+    // Space gains (Q8): 128 (-3dB), 181 (-1.5dB), 256 (0dB), 362 (+1.5dB), 512 (+3dB), 868 (+5.3dB)
+    // Timing phases: 0, 1, 2
+    let bpf_offsets = [-200i32, -100, 0, 100, 200, 300];
+    let gains: [(u16, &str); 6] = [
+        (128, "-3dB"), (181, "-1.5dB"), (256, "0dB"),
+        (362, "+1.5dB"), (512, "+3dB"), (868, "+5.3dB"),
+    ];
+    let timing_phases = [0u32, 1, 2];
+
+    println!("  {:>8} {:>7} {:>3}  {:>5}  {:>5}  not-in-S3", "BPF_off", "Gain", "T", "Pkts", "Uniq");
+    println!("  {}", "─".repeat(52));
+
+    // Collect results for ranking
+    struct TwistResult {
+        bpf_off: i32,
+        gain_label: String,
+        timing: u32,
+        count: usize,
+        unique: usize,
+        exclusive: usize,
+    }
+    let mut results: Vec<TwistResult> = Vec::new();
+
+    for &bpf_off in &bpf_offsets {
+        for &(gain_q8, gain_label) in &gains {
+            for &t in &timing_phases {
+                let r = decode_twist(&samples, sample_rate, bpf_off, gain_q8, t);
+                let r_set: HashSet<Vec<u8>> = r.frames.iter().cloned().collect();
+                let exclusive = r_set.difference(&smart3_set).count();
+
+                results.push(TwistResult {
+                    bpf_off,
+                    gain_label: gain_label.to_string(),
+                    timing: t,
+                    count: r.frames.len(),
+                    unique: r_set.len(),
+                    exclusive,
+                });
+            }
+        }
+    }
+
+    // Sort by exclusive frames (descending), then by total count
+    results.sort_by(|a, b| b.exclusive.cmp(&a.exclusive).then(b.count.cmp(&a.count)));
+
+    for r in &results {
+        let marker = if r.exclusive > 0 { " ★" } else { "" };
+        println!("  {:>+5} Hz {:>7} t{}  {:>5}  {:>5}  {:>4}{}",
+            r.bpf_off, r.gain_label, r.timing, r.count, r.unique, r.exclusive, marker);
+    }
+
+    // Top candidates summary
+    println!();
+    let top: Vec<&TwistResult> = results.iter().filter(|r| r.exclusive > 0).collect();
+    if top.is_empty() {
+        println!("  No twist configuration found exclusive frames vs Smart3.");
+    } else {
+        println!("  Top twist configurations with exclusive frames vs Smart3:");
+        for r in top.iter().take(10) {
+            println!("    BPF{:>+4}Hz gain={} t{}: {} exclusive ({} total)",
+                r.bpf_off, r.gain_label, r.timing, r.exclusive, r.count);
+        }
+    }
+
+    // Also test: what if we add best twist decoders to Smart3?
+    println!();
+    if !top.is_empty() {
+        // Combine Smart3 + top 3 twist configs
+        let mut combined_set = smart3_set.clone();
+        let mut added = 0;
+        for r in top.iter().take(3) {
+            let tr = decode_twist(&samples, sample_rate, r.bpf_off,
+                gains.iter().find(|(_, l)| l == &r.gain_label).unwrap().0, r.timing);
+            for f in &tr.frames {
+                combined_set.insert(f.clone());
+            }
+            added += 1;
+        }
+        println!("  Smart3 + top {} twist decoders: {} unique (Smart3 alone: {})",
+            added, combined_set.len(), smart3.frames.iter().cloned().collect::<HashSet<_>>().len());
+    }
+    println!();
+}
+
+// ─── Binary XOR Correlator ──────────────────────────────────────────────
+
+/// Decode using Binary XOR correlator + hard HDLC.
+fn decode_xor(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut demod = BinaryXorDemodulator::new(config);
+    let mut hdlc = HdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                frames.push(frame.to_vec());
+            }
+        }
+    }
+
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
+}
+
+/// Decode using Binary XOR correlator + energy LLR + soft HDLC.
+fn decode_xor_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
+    let mut config = DemodConfig::default_1200();
+    config.sample_rate = sample_rate;
+
+    let mut demod = BinaryXorDemodulator::new(config).with_energy_llr();
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut soft_saves: u32 = 0;
+
+    let start = Instant::now();
+
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                let data = match &result {
+                    FrameResult::Valid(d) => d,
+                    FrameResult::Recovered { data, .. } => {
+                        soft_saves += 1;
+                        data
+                    }
+                };
+                frames.push(data.to_vec());
+            }
+        }
+    }
+
+    (DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }, soft_saves)
+}
+
+fn run_xor(path: &str) {
+    println!("═══ Binary XOR Correlator ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    println!(
+        "Duration: {:.1}s, {} samples at {} Hz",
+        duration_secs, samples.len(), sample_rate
+    );
+    println!();
+
+    let xor = decode_xor(&samples, sample_rate);
+    let (xor_q, xor_soft) = decode_xor_quality(&samples, sample_rate);
+    let fast = decode_fast(&samples, sample_rate);
+    let dm = decode_dm(&samples, sample_rate);
+
+    println!("  XOR hard:     {:>4} packets in {:.2}s ({:.0}x real-time)",
+        xor.frames.len(),
+        xor.elapsed.as_secs_f64(),
+        duration_secs / xor.elapsed.as_secs_f64());
+    println!("  XOR quality:  {:>4} packets in {:.2}s ({:.0}x real-time, {} soft saves)",
+        xor_q.frames.len(),
+        xor_q.elapsed.as_secs_f64(),
+        duration_secs / xor_q.elapsed.as_secs_f64(),
+        xor_soft);
+    println!("  Fast:         {:>4} packets (Goertzel baseline)",
+        fast.frames.len());
+    println!("  DM:           {:>4} packets (delay-multiply baseline)",
+        dm.frames.len());
+    let gain_hard = xor.frames.len() as i64 - fast.frames.len() as i64;
+    let gain_dm = xor.frames.len() as i64 - dm.frames.len() as i64;
+    println!("  Gain vs fast: {:>+4} packets", gain_hard);
+    println!("  Gain vs DM:   {:>+4} packets", gain_dm);
+
+    // Exclusive frame analysis: compare XOR vs MCU-feasible decoders
+    let (smart3, _) = decode_smart3(&samples, sample_rate);
+    let (multi, _) = decode_multi(&samples, sample_rate);
+
+    use std::collections::HashSet;
+    let xor_set: HashSet<Vec<u8>> = xor.frames.iter().cloned().collect();
+    let xor_q_set: HashSet<Vec<u8>> = xor_q.frames.iter().cloned().collect();
+    let smart3_set: HashSet<Vec<u8>> = smart3.frames.iter().cloned().collect();
+    let multi_set: HashSet<Vec<u8>> = multi.frames.iter().cloned().collect();
+    let fast_set: HashSet<Vec<u8>> = fast.frames.iter().cloned().collect();
+    let dm_set: HashSet<Vec<u8>> = dm.frames.iter().cloned().collect();
+
+    let xor_not_in_smart3 = xor_set.difference(&smart3_set).count();
+    let xor_q_not_in_smart3 = xor_q_set.difference(&smart3_set).count();
+    let xor_not_in_fast = xor_set.difference(&fast_set).count();
+    let xor_not_in_multi = xor_set.difference(&multi_set).count();
+    // XOR frames not in any MCU-feasible single decoder
+    let mcu_union: HashSet<Vec<u8>> = fast_set.union(&dm_set).cloned().collect();
+    let xor_not_in_mcu_singles = xor_set.difference(&mcu_union).count();
+    // Smart3 + XOR combined
+    let smart3_xor: HashSet<Vec<u8>> = smart3_set.union(&xor_set).cloned().collect();
+
+    println!();
+    println!("  Exclusive frame analysis:");
+    println!("    XOR unique frames:        {:>4}", xor_set.len());
+    println!("    Smart3 unique frames:     {:>4}", smart3_set.len());
+    println!("    Multi unique frames:      {:>4}", multi_set.len());
+    println!("    XOR not in Smart3:        {:>4}  ← MCU-relevant exclusives", xor_not_in_smart3);
+    println!("    XOR qual not in Smart3:   {:>4}", xor_q_not_in_smart3);
+    println!("    XOR not in Fast+DM:       {:>4}", xor_not_in_mcu_singles);
+    println!("    XOR not in Multi:         {:>4}", xor_not_in_multi);
+    println!("    Smart3+XOR combined:      {:>4}  (Smart3 alone: {})", smart3_xor.len(), smart3_set.len());
+    println!();
 }
 
 fn run_suite(dir: &str) {
