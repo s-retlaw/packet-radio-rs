@@ -3,6 +3,10 @@
 //! Receives audio samples over USB-CDC serial, decodes with
 //! `MiniDecoder` / `FastDemodulator`, and returns decoded frames + timing.
 //!
+//! Also supports live ADC decode from a radio connected to GPIO26 (ADC0).
+//! MODE_ADC_KISS: ADC → TncEngine → KISS TNC over USB-CDC (standard TNC)
+//! MODE_ADC_LIVE: ADC → MiniDecoder → TNC2 text over USB-CDC (debug)
+//!
 //! Protocol: length-prefixed binary messages (see `protocol.rs`).
 //! Flow: request-response — host sends one AUDIO_CHUNK, waits for CHUNK_ACK.
 //!
@@ -31,6 +35,7 @@ use usbd_serial::SerialPort;
 use packet_radio_core::modem::demod::{DemodSymbol, FastDemodulator, CorrelationDemodulator};
 use packet_radio_core::modem::soft_hdlc::{FrameResult, SoftHdlcDecoder};
 use packet_radio_core::ax25::frame::HdlcDecoder;
+use packet_radio_core::ax25::{Frame, Address};
 use packet_radio_core::modem::multi::MiniDecoder;
 use packet_radio_core::modem::DemodConfig;
 use packet_radio_core::tnc::{TncEngine, MiniAdapter, NullModulate, TncConfig, TncPlatform};
@@ -47,6 +52,10 @@ const READ_BUF_SIZE: usize = MAX_MSG_SIZE + 16;
 /// RP2040 CPU frequency in MHz (default with 12 MHz crystal).
 const CPU_FREQ_MHZ: u32 = 125;
 
+/// ADC clock divider for 11025 Hz: 48MHz / (1 + 4352 + 190/256) ≈ 11025 Hz
+const ADC_DIV_INT: u16 = 4352;
+const ADC_DIV_FRAC: u8 = 190;
+
 /// Static USB bus allocator — required for 'static lifetime of USB classes.
 static mut USB_BUS: Option<UsbBusAllocator<UsbBus>> = None;
 
@@ -60,6 +69,82 @@ fn fnv1a_hash(data: &[u8]) -> u32 {
     hash
 }
 
+/// Format an AX.25 frame as TNC2 text: `SRC-S>DST-S,DIGI1*,DIGI2:info\r\n`
+/// Returns number of bytes written to `out`.
+fn format_tnc2(frame_data: &[u8], out: &mut [u8]) -> usize {
+    if let Some(frame) = Frame::parse(frame_data) {
+        let mut pos = 0;
+
+        // Source callsign
+        pos += copy_addr(&frame.src, &mut out[pos..]);
+
+        // >
+        if pos < out.len() { out[pos] = b'>'; pos += 1; }
+
+        // Destination callsign
+        pos += copy_addr(&frame.dest, &mut out[pos..]);
+
+        // Digipeaters
+        for i in 0..frame.num_digipeaters as usize {
+            if pos < out.len() { out[pos] = b','; pos += 1; }
+            pos += copy_addr(&frame.digipeaters[i], &mut out[pos..]);
+            if frame.digipeaters[i].h_bit {
+                if pos < out.len() { out[pos] = b'*'; pos += 1; }
+            }
+        }
+
+        // :info
+        if pos < out.len() { out[pos] = b':'; pos += 1; }
+        let info_len = frame.info.len().min(out.len().saturating_sub(pos + 2));
+        out[pos..pos + info_len].copy_from_slice(&frame.info[..info_len]);
+        pos += info_len;
+
+        // \r\n
+        if pos + 1 < out.len() {
+            out[pos] = b'\r'; pos += 1;
+            out[pos] = b'\n'; pos += 1;
+        }
+
+        pos
+    } else {
+        // Fallback: hex dump
+        let prefix = b"HEX:";
+        let mut pos = prefix.len().min(out.len());
+        out[..pos].copy_from_slice(&prefix[..pos]);
+        for &b in frame_data {
+            if pos + 2 >= out.len().saturating_sub(2) { break; }
+            out[pos] = HEX_CHARS[(b >> 4) as usize]; pos += 1;
+            out[pos] = HEX_CHARS[(b & 0x0F) as usize]; pos += 1;
+        }
+        if pos + 1 < out.len() {
+            out[pos] = b'\r'; pos += 1;
+            out[pos] = b'\n'; pos += 1;
+        }
+        pos
+    }
+}
+
+const HEX_CHARS: &[u8; 16] = b"0123456789ABCDEF";
+
+/// Copy address as "CALL-SSID" to output buffer, return bytes written.
+fn copy_addr(addr: &Address, out: &mut [u8]) -> usize {
+    let call = addr.callsign_str();
+    let mut pos = 0;
+    let n = call.len().min(out.len());
+    out[..n].copy_from_slice(&call[..n]);
+    pos += n;
+    if addr.ssid != 0 && pos + 2 < out.len() {
+        out[pos] = b'-'; pos += 1;
+        if addr.ssid >= 10 {
+            out[pos] = b'1'; pos += 1;
+            out[pos] = b'0' + (addr.ssid - 10); pos += 1;
+        } else {
+            out[pos] = b'0' + addr.ssid; pos += 1;
+        }
+    }
+    pos
+}
+
 /// Corr x3 decoder state: 3 timing phases with dedup.
 struct Corr3State {
     demods: [CorrelationDemodulator; 3],
@@ -69,7 +154,7 @@ struct Corr3State {
     recent_count: usize,
 }
 
-/// Dummy TncPlatform for RX-only benchmarking (no real PTT or CSMA needed).
+/// Dummy TncPlatform for RX-only operation (no real PTT or CSMA needed).
 struct BenchPlatform;
 
 impl TncPlatform for BenchPlatform {
@@ -87,6 +172,16 @@ enum Decoder {
     Mini(MiniDecoder),
     Corr3(Corr3State),
     Tnc(TncEngine<MiniAdapter, NullModulate>, KissDecoder),
+}
+
+/// Operating mode for main loop.
+enum Mode {
+    /// USB binary protocol (existing benchmark/test mode).
+    UsbProtocol,
+    /// ADC → TncEngine → KISS over USB-CDC (standard KISS TNC).
+    AdcKiss,
+    /// ADC → MiniDecoder → TNC2 text over USB-CDC (debug).
+    AdcLive,
 }
 
 /// Benchmark statistics accumulator.
@@ -208,6 +303,10 @@ fn main() -> ! {
     // Hardware timer for cycle counting (1 us resolution)
     let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
+    // ADC setup — init peripheral and pin at boot, FIFO started on demand
+    let mut adc = hal::Adc::new(pac.ADC, &mut pac.RESETS);
+    let mut adc_pin = hal::adc::AdcPin::new(pins.gpio26.into_floating_input()).unwrap();
+
     // USB-CDC setup
     unsafe {
         USB_BUS = Some(UsbBusAllocator::new(UsbBus::new(
@@ -245,6 +344,36 @@ fn main() -> ! {
         }
     }
 
+    let mut mode = Mode::UsbProtocol;
+
+    // Main loop — branches on current mode
+    loop {
+        match mode {
+            Mode::UsbProtocol => {
+                run_usb_protocol(&mut usb, &timer, &mut led, &mut adc, &mut adc_pin, &mut mode);
+            }
+            Mode::AdcKiss => {
+                run_adc_kiss(&mut usb, &mut led, &mut adc, &mut adc_pin, &mut mode);
+            }
+            Mode::AdcLive => {
+                run_adc_live(&mut usb, &mut led, &mut adc, &mut adc_pin, &mut mode);
+            }
+        }
+    }
+}
+
+type LedPin = hal::gpio::Pin<hal::gpio::bank0::Gpio25, hal::gpio::FunctionSioOutput, hal::gpio::PullDown>;
+type AdcPinType = hal::adc::AdcPin<hal::gpio::Pin<hal::gpio::bank0::Gpio26, hal::gpio::FunctionSio<hal::gpio::SioInput>, hal::gpio::PullNone>>;
+
+/// USB binary protocol mode — existing benchmark/test harness logic.
+fn run_usb_protocol(
+    usb: &mut UsbSerial,
+    timer: &hal::Timer,
+    led: &mut LedPin,
+    _adc: &mut hal::Adc,
+    _adc_pin: &mut AdcPinType,
+    mode: &mut Mode,
+) {
     let mut decoder = Decoder::None;
     let mut stats = BenchStats::new();
     let mut read_buf = [0u8; READ_BUF_SIZE];
@@ -305,6 +434,21 @@ fn main() -> ! {
                 MSG_CONFIG => {
                     let payload = &read_buf[HEADER_SIZE..total];
                     if let Some(cfg) = ConfigPayload::parse(payload) {
+                        // Check for ADC modes — switch mode and return
+                        match cfg.decoder_mode {
+                            MODE_ADC_KISS => {
+                                usb.send_msg(MSG_READY, &[]);
+                                *mode = Mode::AdcKiss;
+                                return;
+                            }
+                            MODE_ADC_LIVE => {
+                                usb.send_msg(MSG_READY, &[]);
+                                *mode = Mode::AdcLive;
+                                return;
+                            }
+                            _ => {}
+                        }
+
                         let demod_cfg = DemodConfig {
                             sample_rate: cfg.sample_rate,
                             ..DemodConfig::default_1200()
@@ -387,7 +531,7 @@ fn main() -> ! {
                     read_pos -= total;
 
                     // Time the decode with hardware timer
-                    let start_us = read_timer_us(&timer);
+                    let start_us = read_timer_us(timer);
                     let mut chunk_frames: u32 = 0;
 
                     match &mut decoder {
@@ -516,7 +660,7 @@ fn main() -> ! {
                         }
                     }
 
-                    let elapsed_us = read_timer_us(&timer).wrapping_sub(start_us);
+                    let elapsed_us = read_timer_us(timer).wrapping_sub(start_us);
                     // Convert to synthetic cycles at 125 MHz for protocol compatibility.
                     // Host uses --cpu-freq 125 to interpret these correctly.
                     let synthetic_cycles = elapsed_us.wrapping_mul(CPU_FREQ_MHZ);
@@ -559,6 +703,156 @@ fn main() -> ! {
                 read_buf.copy_within(total..read_pos, 0);
             }
             read_pos -= total;
+        }
+    }
+}
+
+/// ADC KISS mode — standard KISS TNC over USB-CDC.
+/// ADC samples at 11025 Hz → MiniDecoder → TncEngine → KISS frames out.
+/// Incoming KISS data from USB fed to TncEngine for TX path (future).
+fn run_adc_kiss(
+    usb: &mut UsbSerial,
+    led: &mut LedPin,
+    adc: &mut hal::Adc,
+    adc_pin: &mut AdcPinType,
+    mode: &mut Mode,
+) {
+    let demod_cfg = DemodConfig {
+        sample_rate: 11025,
+        ..DemodConfig::default_1200()
+    };
+    let adapter = MiniAdapter::new(demod_cfg);
+    let mut tnc = TncEngine::new(adapter, NullModulate, TncConfig::default());
+    let mut platform = BenchPlatform;
+
+    let mut sample_buf = [0i16; MAX_CHUNK_SAMPLES];
+    let mut sample_pos: usize = 0;
+    let mut kiss_buf = [0u8; 512];
+    let mut read_byte = [0u8; 64];
+
+    // Start ADC FIFO at 11025 Hz
+    let mut fifo = adc.build_fifo()
+        .clock_divider(ADC_DIV_INT, ADC_DIV_FRAC)
+        .set_channel(adc_pin)
+        .start();
+
+    led.set_high(); // LED on — streaming
+
+    loop {
+        usb.poll();
+
+        // Check for stop command (any protocol message causes exit back to USB mode)
+        match usb.read(&mut read_byte) {
+            Ok(n) if n > 0 => {
+                // Check for MSG_STREAM_END or MSG_CONFIG — return to USB protocol mode
+                if n >= HEADER_SIZE {
+                    let hdr = Header::parse(read_byte[..HEADER_SIZE].try_into().unwrap());
+                    if hdr.msg_type == MSG_STREAM_END || hdr.msg_type == MSG_CONFIG {
+                        fifo.stop();
+                        led.set_low();
+                        *mode = Mode::UsbProtocol;
+                        return;
+                    }
+                }
+                // Feed KISS data from host to TNC (for TX path)
+                for i in 0..n {
+                    tnc.feed_kiss(read_byte[i]);
+                }
+            }
+            _ => {}
+        }
+
+        // Read ADC FIFO samples
+        while fifo.len() > 0 && sample_pos < MAX_CHUNK_SAMPLES {
+            let raw: u16 = fifo.read();
+            // 12-bit unsigned (0-4095) → signed i16 centered at 0
+            sample_buf[sample_pos] = (raw as i16) - 2048;
+            sample_pos += 1;
+        }
+
+        // Process a full buffer
+        if sample_pos >= MAX_CHUNK_SAMPLES {
+            tnc.poll_rx(&sample_buf[..sample_pos], &mut platform);
+            sample_pos = 0;
+
+            // Drain KISS output → USB
+            loop {
+                let n = tnc.read_kiss(&mut kiss_buf);
+                if n == 0 { break; }
+                usb.write_all(&kiss_buf[..n]);
+                let _ = led.toggle(); // blink on KISS output
+            }
+        }
+    }
+}
+
+/// ADC Live mode — TNC2 text output over USB-CDC for debugging.
+/// ADC samples at 11025 Hz → MiniDecoder → TNC2 text lines.
+fn run_adc_live(
+    usb: &mut UsbSerial,
+    led: &mut LedPin,
+    adc: &mut hal::Adc,
+    adc_pin: &mut AdcPinType,
+    mode: &mut Mode,
+) {
+    let demod_cfg = DemodConfig {
+        sample_rate: 11025,
+        ..DemodConfig::default_1200()
+    };
+    let mut mini = MiniDecoder::new(demod_cfg);
+
+    let mut sample_buf = [0i16; MAX_CHUNK_SAMPLES];
+    let mut sample_pos: usize = 0;
+    let mut read_byte = [0u8; 64];
+    let mut tnc2_buf = [0u8; 512];
+
+    // Start ADC FIFO at 11025 Hz
+    let mut fifo = adc.build_fifo()
+        .clock_divider(ADC_DIV_INT, ADC_DIV_FRAC)
+        .set_channel(adc_pin)
+        .start();
+
+    led.set_high(); // LED on — streaming
+
+    loop {
+        usb.poll();
+
+        // Check for stop command
+        match usb.read(&mut read_byte) {
+            Ok(n) if n > 0 => {
+                if n >= HEADER_SIZE {
+                    let hdr = Header::parse(read_byte[..HEADER_SIZE].try_into().unwrap());
+                    if hdr.msg_type == MSG_STREAM_END || hdr.msg_type == MSG_CONFIG {
+                        fifo.stop();
+                        led.set_low();
+                        *mode = Mode::UsbProtocol;
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // Read ADC FIFO samples
+        while fifo.len() > 0 && sample_pos < MAX_CHUNK_SAMPLES {
+            let raw: u16 = fifo.read();
+            sample_buf[sample_pos] = (raw as i16) - 2048;
+            sample_pos += 1;
+        }
+
+        // Process a full buffer
+        if sample_pos >= MAX_CHUNK_SAMPLES {
+            let output = mini.process_samples(&sample_buf[..sample_pos]);
+            sample_pos = 0;
+
+            for i in 0..output.len() {
+                let frame_data = output.frame(i);
+                let n = format_tnc2(frame_data, &mut tnc2_buf);
+                if n > 0 {
+                    usb.write_all(&tnc2_buf[..n]);
+                }
+                let _ = led.toggle();
+            }
         }
     }
 }

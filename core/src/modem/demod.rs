@@ -126,7 +126,9 @@ impl FastDemodulator {
     /// Select the appropriate BPF for a given sample rate.
     fn select_bpf(sample_rate: u32) -> BiquadFilter {
         match sample_rate {
+            13200 => super::filter::afsk_bandpass_13200(),
             22050 => super::filter::afsk_bandpass_22050(),
+            26400 => super::filter::afsk_bandpass_26400(),
             44100 => super::filter::afsk_bandpass_44100(),
             _ => super::filter::afsk_bandpass_11025(),
         }
@@ -652,7 +654,9 @@ impl QualityDemodulator {
     /// Create a new quality-path demodulator.
     pub fn new(config: DemodConfig) -> Self {
         let bpf = match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_13200(),
             22050 => super::filter::afsk_bandpass_22050(),
+            26400 => super::filter::afsk_bandpass_26400(),
             44100 => super::filter::afsk_bandpass_44100(),
             _ => super::filter::afsk_bandpass_11025(),
         };
@@ -984,7 +988,9 @@ impl DmDemodulator {
     fn dm_delay(sample_rate: u32) -> usize {
         match sample_rate {
             11025 => 2,  // 181 μs: mark→+0.20, space→−0.81, 2/9=22%
+            13200 => 2,  // 152 μs: mark→+0.36, space→−0.54, 2/11=18%
             22050 => 3,  // 136 μs: mark→+0.52, space→−0.30, 3/18=16%
+            26400 => 4,  // 152 μs: mark→+0.36, space→−0.54, 4/22=18%
             44100 => 7,  // 159 μs: mark→+0.37, space→−0.58, 7/37=19%
             48000 => 8,  // 167 μs: mark→+0.31, space→−0.67, 8/40=20%
             _ => {
@@ -1007,11 +1013,11 @@ impl DmDemodulator {
         // For common rates:
         match (delay, sample_rate) {
             // dm_delay (short, clean signals): all mark→positive
-            (1, _) | (2, 11025) | (3, 22050) | (7, 44100) | (8, 48000) => false,
+            (1, _) | (2, 11025) | (2, 13200) | (3, 22050) | (4, 26400) | (7, 44100) | (8, 48000) => false,
             // dm_delay_filtered (long, real-world): all mark→positive
-            (8, 11025) | (16, 22050) | (31, 44100) | (31, 48000) => false,
+            (8, 11025) | (10, 13200) | (16, 22050) | (19, 26400) | (31, 44100) | (31, 48000) => false,
             // d=5 at 11025 (alt delay): mark→negative
-            (5, 11025) | (10, 22050) | (20, 44100) => true,
+            (5, 11025) | (6, 13200) | (10, 22050) | (12, 26400) | (20, 44100) => true,
             // General case: approximate using integer check
             _ => {
                 #[cfg(feature = "std")]
@@ -1039,7 +1045,9 @@ impl DmDemodulator {
     fn dm_delay_filtered(sample_rate: u32) -> usize {
         match sample_rate {
             11025 => 8,   // 726 μs: mark→+0.66, space→−0.85, sep=1.51
+            13200 => 10,  // 758 μs: ~1 symbol at 13200 Hz (11 sps)
             22050 => 16,  // 726 μs: same τ
+            26400 => 19,  // 720 μs: ~1 symbol at 26400 Hz (22 sps)
             44100 => 31,  // 703 μs: near MAX_DELAY limit
             48000 => 31,  // 646 μs: near MAX_DELAY limit
             _ => {
@@ -1065,7 +1073,9 @@ impl DmDemodulator {
 
         let bpf = if use_bpf {
             Some(match config.sample_rate {
+                13200 => super::filter::afsk_bandpass_13200(),
                 22050 => super::filter::afsk_bandpass_22050(),
+                26400 => super::filter::afsk_bandpass_26400(),
                 44100 => super::filter::afsk_bandpass_44100(),
                 _ => super::filter::afsk_bandpass_11025(),
             })
@@ -1132,7 +1142,9 @@ impl DmDemodulator {
         let lpf = super::filter::post_detect_lpf(config.sample_rate);
         let detector = DelayMultiplyDetector::with_delay(delay, lpf);
         let bpf = Some(match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_13200(),
             22050 => super::filter::afsk_bandpass_22050(),
+            26400 => super::filter::afsk_bandpass_26400(),
             44100 => super::filter::afsk_bandpass_44100(),
             _ => super::filter::afsk_bandpass_11025(),
         });
@@ -1245,7 +1257,9 @@ impl DmDemodulator {
         let lpf = super::filter::post_detect_lpf(config.sample_rate);
         let detector = DelayMultiplyDetector::with_delay(delay, lpf);
         let bpf = Some(match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_13200(),
             22050 => super::filter::afsk_bandpass_22050(),
+            26400 => super::filter::afsk_bandpass_26400(),
             44100 => super::filter::afsk_bandpass_44100(),
             _ => super::filter::afsk_bandpass_11025(),
         });
@@ -1522,7 +1536,9 @@ impl CorrelationDemodulator {
     /// Select the appropriate BPF for a given sample rate.
     fn select_bpf(sample_rate: u32) -> BiquadFilter {
         match sample_rate {
+            13200 => super::filter::afsk_bandpass_13200(),
             22050 => super::filter::afsk_bandpass_22050(),
+            26400 => super::filter::afsk_bandpass_26400(),
             44100 => super::filter::afsk_bandpass_44100(),
             _ => super::filter::afsk_bandpass_11025(),
         }
@@ -2398,7 +2414,9 @@ mod tests {
 
             // BPF → delay-multiply with LPF → sample last output
             let bpf_fn = match sample_rate {
+                13200 => crate::modem::filter::afsk_bandpass_13200,
                 22050 => crate::modem::filter::afsk_bandpass_22050,
+                26400 => crate::modem::filter::afsk_bandpass_26400,
                 _ => crate::modem::filter::afsk_bandpass_11025,
             };
             let lpf = crate::modem::filter::post_detect_lpf(sample_rate);

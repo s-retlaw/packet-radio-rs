@@ -283,7 +283,9 @@ impl CorrSlicerDecoder {
     /// Create a new multi-slicer correlation decoder with default gains and frequency offsets.
     pub fn new(config: DemodConfig) -> Self {
         let bpf = match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_13200(),
             22050 => super::filter::afsk_bandpass_22050(),
+            26400 => super::filter::afsk_bandpass_26400(),
             44100 => super::filter::afsk_bandpass_44100(),
             _ => super::filter::afsk_bandpass_11025(),
         };

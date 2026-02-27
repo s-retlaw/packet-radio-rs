@@ -110,14 +110,26 @@ impl MultiDecoder {
     /// for de-emphasis and varying audio paths.
     pub fn new(config: DemodConfig) -> Self {
         let std_bpf = match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_13200(),
             22050 => super::filter::afsk_bandpass_22050(),
+            26400 => super::filter::afsk_bandpass_26400(),
             44100 => super::filter::afsk_bandpass_44100(),
             _ => super::filter::afsk_bandpass_11025(),
         };
+        let narrow_bpf = match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_narrow_13200(),
+            26400 => super::filter::afsk_bandpass_narrow_26400(),
+            _ => super::filter::afsk_bandpass_narrow_11025(),
+        };
+        let wide_bpf = match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_wide_13200(),
+            26400 => super::filter::afsk_bandpass_wide_26400(),
+            _ => super::filter::afsk_bandpass_wide_11025(),
+        };
         let filters = [
-            super::filter::afsk_bandpass_narrow_11025(),
+            narrow_bpf,
             std_bpf,
-            super::filter::afsk_bandpass_wide_11025(),
+            wide_bpf,
         ];
 
         // Timing offsets: 0, 1/3 symbol, 2/3 symbol (in phase accumulator units)
@@ -172,7 +184,11 @@ impl MultiDecoder {
         #[cfg(not(feature = "std"))]
         {
             // On no_std, use wide BPF with shifted Goertzel only
-            let wide_bpf = super::filter::afsk_bandpass_wide_11025();
+            let wide_bpf = match config.sample_rate {
+                13200 => super::filter::afsk_bandpass_wide_13200(),
+                26400 => super::filter::afsk_bandpass_wide_26400(),
+                _ => super::filter::afsk_bandpass_wide_11025(),
+            };
             let freq_offsets: [i32; 2] = [-50, 50];
             for &offset in &freq_offsets {
                 if idx < MAX_DECODERS {
@@ -590,7 +606,11 @@ impl MiniDecoder {
     /// Create a MiniDecoder with the 3 attribution-optimal configurations.
     pub fn new(config: DemodConfig) -> Self {
         let offsets = [0u32, config.sample_rate / 3, 2 * config.sample_rate / 3];
-        let narrow_bpf = super::filter::afsk_bandpass_narrow_11025();
+        let narrow_bpf = match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_narrow_13200(),
+            26400 => super::filter::afsk_bandpass_narrow_26400(),
+            _ => super::filter::afsk_bandpass_narrow_11025(),
+        };
 
         // Decoder 1: G:freq-50/t2 — frequency-shifted −50 Hz, timing phase 2
         let mark_shifted = (config.mark_freq as i32 - 50) as u32;
@@ -601,7 +621,11 @@ impl MiniDecoder {
             super::filter::bandpass_coeffs(config.sample_rate, center, 2000.0)
         };
         #[cfg(not(feature = "std"))]
-        let shifted_bpf = super::filter::afsk_bandpass_wide_11025();
+        let shifted_bpf = match config.sample_rate {
+            13200 => super::filter::afsk_bandpass_wide_13200(),
+            26400 => super::filter::afsk_bandpass_wide_26400(),
+            _ => super::filter::afsk_bandpass_wide_11025(),
+        };
 
         let decoders = [
             FastDemodulator::with_filter_freq_and_offset(
