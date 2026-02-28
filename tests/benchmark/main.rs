@@ -21,7 +21,7 @@ thread_local! {
 fn get_baud() -> u32 {
     BAUD_RATE.with(|b| b.get())
 }
-use packet_radio_core::modem::demod::{CorrelationDemodulator, DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
+use packet_radio_core::modem::demod::{CorrelationDemodulator, DemodSymbol, DmDemodulator, FastDemodulator, GoertzelWindow, QualityDemodulator};
 use packet_radio_core::modem::binary_xor::BinaryXorDemodulator;
 use packet_radio_core::modem::corr_slicer::CorrSlicerDecoder;
 use packet_radio_core::modem::multi::{MiniDecoder, MultiDecoder, TwistMiniDecoder};
@@ -278,6 +278,27 @@ fn main() {
             }
             run_smart3_sweep(&args[2]);
         }
+        "--window" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --window <file.wav>");
+                return;
+            }
+            run_window_sweep(&args[2]);
+        }
+        "--pll-300" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --baud 300 --pll-300 <file.wav>");
+                return;
+            }
+            run_pll_300(&args[2]);
+        }
+        "--fusion" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --fusion <file.wav>");
+                return;
+            }
+            run_fusion(&args[2]);
+        }
         "--help" | "-h" => print_usage(),
         _ => {
             eprintln!("Unknown argument: {}", args[1]);
@@ -320,6 +341,8 @@ fn print_usage() {
     println!("  benchmark --xor <file.wav>             Decode using binary XOR correlator");
     println!("  benchmark --twist <file.wav>           Sweep twist-tuned decoder configurations");
     println!("  benchmark --twist-mini <file.wav>      TwistMini multi-rate comparison");
+    println!("  benchmark --window <file.wav>          Sweep Goertzel window types (ISI reduction)");
+    println!("  benchmark --fusion <file.wav>          Cross-architecture Goertzel+Corr LLR fusion");
     println!();
     println!("The WAV files from the WA8LMF TNC Test CD are the standard benchmark.");
     println!("Download from: http://wa8lmf.net/TNCtest/");
@@ -5089,4 +5112,526 @@ fn read_wav_file(path: &str) -> Result<(u32, Vec<i16>), String> {
     }
 
     Err("No data chunk found in WAV file".to_string())
+}
+
+// ─── 300 Baud PLL Tuning ────────────────────────────────────────────────
+
+fn run_pll_300(path: &str) {
+    println!("═══ 300 Baud PLL Timing Recovery Sweep ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    let spb = sample_rate as f64 / get_baud() as f64;
+    println!("Duration: {:.1}s, {} samples at {} Hz (SPB={:.1}, baud={})",
+        duration_secs, samples.len(), sample_rate, spb, get_baud());
+    println!();
+
+    // Baselines
+    let fast = decode_fast(&samples, sample_rate);
+    let (smart3, _) = decode_smart3(&samples, sample_rate);
+    let (multi, _) = decode_multi(&samples, sample_rate);
+    println!("  Baselines:");
+    println!("    Fast (Goertzel):    {:>4}", fast.frames.len());
+    println!("    Smart3:             {:>4}", smart3.frames.len());
+    println!("    Multi (38×):        {:>4}", multi.frames.len());
+    println!();
+
+    // DM+PLL wide alpha sweep (300 baud needs much wider bandwidth)
+    println!("  DM+PLL alpha sweep (beta=0, no preemph):");
+    println!("  {:>6}  {:>5}  {:>5}", "Alpha", "Hard", "Soft");
+    println!("  {}", "─".repeat(22));
+
+    let alphas: &[i16] = &[
+        200, 400, 600, 800, 936, 1200, 1500, 2000, 2500, 3000,
+        4000, 5000, 6000, 8000, 10000, 12000, 15000, 20000,
+    ];
+
+    let mut best_hard = 0usize;
+    let mut best_hard_alpha = 0i16;
+    let mut best_soft = 0usize;
+    let mut best_soft_alpha = 0i16;
+
+    for &a in alphas {
+        let hard = decode_dm_pll_opts(&samples, sample_rate, a, 0, false, 0, 0);
+        let (soft, saves) = decode_dm_pll_soft(&samples, sample_rate, a, 0, false, 0, 0);
+        let hard_count = hard.frames.len();
+        let soft_count = soft.frames.len();
+        let marker = if hard_count >= best_hard && hard_count > 0 { " ★" } else { "" };
+        println!("  {:>6}  {:>5}  {:>5} ({} saves){}",
+            a, hard_count, soft_count, saves, marker);
+        if hard_count > best_hard {
+            best_hard = hard_count;
+            best_hard_alpha = a;
+        }
+        if soft_count > best_soft {
+            best_soft = soft_count;
+            best_soft_alpha = a;
+        }
+    }
+
+    println!();
+    println!("  Best hard: alpha={} → {} frames", best_hard_alpha, best_hard);
+    println!("  Best soft: alpha={} → {} frames", best_soft_alpha, best_soft);
+
+    // Beta sweep at best alpha
+    if best_hard_alpha > 0 {
+        println!();
+        println!("  Beta sweep at alpha={}:", best_hard_alpha);
+        let betas: &[i16] = &[0, 1, 2, 5, 10, 20, 50, 100, 200, 500];
+        for &b in betas {
+            let hard = decode_dm_pll_opts(&samples, sample_rate, best_hard_alpha, b, false, 0, 0);
+            println!("    beta={:<5} → {:>5}", b, hard.frames.len());
+        }
+    }
+
+    // Corr+PLL sweep
+    println!();
+    println!("  Corr+PLL alpha sweep:");
+    println!("  {:>6}  {:>5}", "Alpha", "Pkts");
+    println!("  {}", "─".repeat(14));
+
+    for &a in &[200i16, 400, 600, 936, 1500, 2000, 3000, 5000, 8000, 12000, 20000] {
+        let config = config_for_rate(sample_rate, get_baud());
+        let pll = packet_radio_core::modem::pll::ClockRecoveryPll::new_gardner(
+            sample_rate, get_baud(), a, 0,
+        ).with_error_shift(8);
+        let mut demod = CorrelationDemodulator::new(config)
+            .with_adaptive_gain()
+            .with_custom_pll(pll);
+        let mut hdlc = HdlcDecoder::new();
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+        for chunk in samples.chunks(1024) {
+            let n = demod.process_samples(chunk, &mut symbols);
+            for i in 0..n {
+                if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                    frames.push(frame.to_vec());
+                }
+            }
+        }
+        println!("  {:>6}  {:>5}", a, frames.len());
+    }
+
+    println!();
+}
+
+// ─── Windowed Goertzel Sweep ────────────────────────────────────────────
+
+/// Decode using FastDemodulator with a specific window type.
+fn decode_fast_windowed(samples: &[i16], sample_rate: u32, window: GoertzelWindow) -> DecodeResult {
+    let config = config_for_rate(sample_rate, get_baud());
+    let mut demod = FastDemodulator::new(config).with_adaptive_gain().with_window(window);
+    let mut hdlc = HdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+                frames.push(frame.to_vec());
+            }
+        }
+    }
+
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
+}
+
+/// Decode using FastDemodulator with window + energy LLR + soft HDLC.
+fn decode_fast_windowed_soft(samples: &[i16], sample_rate: u32, window: GoertzelWindow) -> (DecodeResult, u32) {
+    let config = config_for_rate(sample_rate, get_baud());
+    let mut demod = FastDemodulator::new(config).with_adaptive_gain().with_energy_llr().with_window(window);
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+    let start = Instant::now();
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for i in 0..n {
+            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                let data = match &result {
+                    FrameResult::Valid(d) => d,
+                    FrameResult::Recovered { data, .. } => data,
+                };
+                frames.push(data.to_vec());
+            }
+        }
+    }
+
+    let soft_recovered = soft_hdlc.stats_total_soft_recovered();
+    (
+        DecodeResult {
+            frames,
+            elapsed: start.elapsed(),
+        },
+        soft_recovered,
+    )
+}
+
+fn run_window_sweep(path: &str) {
+    println!("═══ Goertzel Window Sweep (ISI Reduction) ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    let spb = sample_rate / get_baud();
+    println!("Duration: {:.1}s, {} samples at {} Hz (SPB={})", duration_secs, samples.len(), sample_rate, spb);
+    println!();
+
+    // Baselines
+    let fast = decode_fast(&samples, sample_rate);
+    let (quality, qual_soft) = decode_quality(&samples, sample_rate);
+    println!("  Baselines:  Fast={}, Quality={} (soft={})", fast.frames.len(), quality.frames.len(), qual_soft);
+    println!();
+
+    let windows = [
+        (GoertzelWindow::Rectangular, "Rectangular"),
+        (GoertzelWindow::Hann, "Hann"),
+        (GoertzelWindow::Hamming, "Hamming"),
+        (GoertzelWindow::Blackman, "Blackman"),
+        (GoertzelWindow::EdgeTaper, "EdgeTaper"),
+    ];
+
+    println!("  {:>12}  {:>5} {:>5}  {:>5} {:>5} {:>4}", "Window", "Hard", "Δ", "Soft", "Δ", "Saves");
+    println!("  {}", "─".repeat(52));
+
+    for &(window, name) in &windows {
+        let hard = decode_fast_windowed(&samples, sample_rate, window);
+        let (soft, soft_saves) = decode_fast_windowed_soft(&samples, sample_rate, window);
+        let hard_delta = hard.frames.len() as i32 - fast.frames.len() as i32;
+        let soft_delta = soft.frames.len() as i32 - quality.frames.len() as i32;
+        println!("  {:>12}  {:>5} {:>+5}  {:>5} {:>+5} {:>4}",
+            name, hard.frames.len(), hard_delta, soft.frames.len(), soft_delta, soft_saves);
+    }
+    println!();
+}
+
+// ─── Cross-Architecture Fusion ──────────────────────────────────────────
+
+/// Decode with Goertzel+Correlation LLR fusion.
+///
+/// Runs both demodulators sample-by-sample with synchronized Bresenham timing.
+/// When both produce a symbol on the same sample, their LLR values are combined
+/// and fed to a single SoftHdlcDecoder for error recovery.
+fn decode_fusion(
+    samples: &[i16],
+    sample_rate: u32,
+    goertzel_weight: i16,
+    corr_weight: i16,
+) -> (DecodeResult, u32) {
+    let config = config_for_rate(sample_rate, get_baud());
+
+    let mut goertzel = FastDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+    let mut corr = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut g_sym = [DemodSymbol { bit: false, llr: 0 }; 1];
+    let mut c_sym = [DemodSymbol { bit: false, llr: 0 }; 1];
+
+    let start = Instant::now();
+
+    for &sample in samples {
+        let g_n = goertzel.process_samples(&[sample], &mut g_sym);
+        let c_n = corr.process_samples(&[sample], &mut c_sym);
+
+        let llr = if g_n > 0 && c_n > 0 {
+            // Both produced a symbol — fuse LLRs with weights
+            let g_llr = g_sym[0].llr as i16;
+            let c_llr = c_sym[0].llr as i16;
+            let total_weight = goertzel_weight + corr_weight;
+            ((g_llr * goertzel_weight + c_llr * corr_weight) / total_weight).clamp(-127, 127) as i8
+        } else if g_n > 0 {
+            g_sym[0].llr
+        } else if c_n > 0 {
+            c_sym[0].llr
+        } else {
+            continue;
+        };
+
+        if let Some(result) = soft_hdlc.feed_soft_bit(llr) {
+            let data = match &result {
+                FrameResult::Valid(d) => d,
+                FrameResult::Recovered { data, .. } => data,
+            };
+            frames.push(data.to_vec());
+        }
+    }
+
+    let soft_recovered = soft_hdlc.stats_total_soft_recovered();
+    (
+        DecodeResult {
+            frames,
+            elapsed: start.elapsed(),
+        },
+        soft_recovered,
+    )
+}
+
+/// Decode with Goertzel+Correlation fusion using max-confidence strategy.
+/// At each symbol boundary, use whichever demodulator's LLR has higher magnitude.
+fn decode_fusion_maxconf(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
+    let config = config_for_rate(sample_rate, get_baud());
+
+    let mut goertzel = FastDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+    let mut corr = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut g_sym = [DemodSymbol { bit: false, llr: 0 }; 1];
+    let mut c_sym = [DemodSymbol { bit: false, llr: 0 }; 1];
+
+    let start = Instant::now();
+
+    for &sample in samples {
+        let g_n = goertzel.process_samples(&[sample], &mut g_sym);
+        let c_n = corr.process_samples(&[sample], &mut c_sym);
+
+        let llr = if g_n > 0 && c_n > 0 {
+            if (g_sym[0].llr as i8).unsigned_abs() >= (c_sym[0].llr as i8).unsigned_abs() {
+                g_sym[0].llr
+            } else {
+                c_sym[0].llr
+            }
+        } else if g_n > 0 {
+            g_sym[0].llr
+        } else if c_n > 0 {
+            c_sym[0].llr
+        } else {
+            continue;
+        };
+
+        if let Some(result) = soft_hdlc.feed_soft_bit(llr) {
+            let data = match &result {
+                FrameResult::Valid(d) => d,
+                FrameResult::Recovered { data, .. } => data,
+            };
+            frames.push(data.to_vec());
+        }
+    }
+
+    let soft_recovered = soft_hdlc.stats_total_soft_recovered();
+    (
+        DecodeResult {
+            frames,
+            elapsed: start.elapsed(),
+        },
+        soft_recovered,
+    )
+}
+
+/// Decode with Goertzel+Correlation fusion using LLR sum (MRC-style).
+/// LLRs from independent observers are additive under log-likelihood theory.
+fn decode_fusion_sum(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
+    let config = config_for_rate(sample_rate, get_baud());
+
+    let mut goertzel = FastDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+    let mut corr = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut g_sym = [DemodSymbol { bit: false, llr: 0 }; 1];
+    let mut c_sym = [DemodSymbol { bit: false, llr: 0 }; 1];
+
+    let start = Instant::now();
+
+    for &sample in samples {
+        let g_n = goertzel.process_samples(&[sample], &mut g_sym);
+        let c_n = corr.process_samples(&[sample], &mut c_sym);
+
+        let llr = if g_n > 0 && c_n > 0 {
+            // Sum LLRs (theoretically optimal for independent observations)
+            let sum = g_sym[0].llr as i16 + c_sym[0].llr as i16;
+            sum.clamp(-127, 127) as i8
+        } else if g_n > 0 {
+            g_sym[0].llr
+        } else if c_n > 0 {
+            c_sym[0].llr
+        } else {
+            continue;
+        };
+
+        if let Some(result) = soft_hdlc.feed_soft_bit(llr) {
+            let data = match &result {
+                FrameResult::Valid(d) => d,
+                FrameResult::Recovered { data, .. } => data,
+            };
+            frames.push(data.to_vec());
+        }
+    }
+
+    let soft_recovered = soft_hdlc.stats_total_soft_recovered();
+    (
+        DecodeResult {
+            frames,
+            elapsed: start.elapsed(),
+        },
+        soft_recovered,
+    )
+}
+
+/// Decode with windowed Goertzel + Correlation fusion.
+fn decode_fusion_windowed(
+    samples: &[i16],
+    sample_rate: u32,
+    window: GoertzelWindow,
+    goertzel_weight: i16,
+    corr_weight: i16,
+) -> (DecodeResult, u32) {
+    let config = config_for_rate(sample_rate, get_baud());
+
+    let mut goertzel = FastDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_energy_llr()
+        .with_window(window);
+    let mut corr = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+    let mut soft_hdlc = SoftHdlcDecoder::new();
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut g_sym = [DemodSymbol { bit: false, llr: 0 }; 1];
+    let mut c_sym = [DemodSymbol { bit: false, llr: 0 }; 1];
+
+    let start = Instant::now();
+
+    for &sample in samples {
+        let g_n = goertzel.process_samples(&[sample], &mut g_sym);
+        let c_n = corr.process_samples(&[sample], &mut c_sym);
+
+        let llr = if g_n > 0 && c_n > 0 {
+            let g_llr = g_sym[0].llr as i16;
+            let c_llr = c_sym[0].llr as i16;
+            let total_weight = goertzel_weight + corr_weight;
+            ((g_llr * goertzel_weight + c_llr * corr_weight) / total_weight).clamp(-127, 127) as i8
+        } else if g_n > 0 {
+            g_sym[0].llr
+        } else if c_n > 0 {
+            c_sym[0].llr
+        } else {
+            continue;
+        };
+
+        if let Some(result) = soft_hdlc.feed_soft_bit(llr) {
+            let data = match &result {
+                FrameResult::Valid(d) => d,
+                FrameResult::Recovered { data, .. } => data,
+            };
+            frames.push(data.to_vec());
+        }
+    }
+
+    let soft_recovered = soft_hdlc.stats_total_soft_recovered();
+    (
+        DecodeResult {
+            frames,
+            elapsed: start.elapsed(),
+        },
+        soft_recovered,
+    )
+}
+
+fn run_fusion(path: &str) {
+    println!("═══ Cross-Architecture Goertzel+Correlation LLR Fusion ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    println!("Duration: {:.1}s, {} samples at {} Hz", duration_secs, samples.len(), sample_rate);
+    println!();
+
+    // Baselines
+    let fast = decode_fast(&samples, sample_rate);
+    let (quality, qual_soft) = decode_quality(&samples, sample_rate);
+    let (corr_q, corr_soft) = decode_corr_quality(&samples, sample_rate);
+    println!("  Baselines:");
+    println!("    Fast (hard):      {:>4}", fast.frames.len());
+    println!("    Quality (soft):   {:>4} (soft={})", quality.frames.len(), qual_soft);
+    println!("    Corr (soft):      {:>4} (soft={})", corr_q.frames.len(), corr_soft);
+    println!();
+
+    // Fusion strategies
+    println!("  {:>22}  {:>5} {:>+5} {:>4}", "Strategy", "Pkts", "ΔQlt", "Soft");
+    println!("  {}", "─".repeat(42));
+
+    // 1. Equal weight average
+    let (avg, avg_soft) = decode_fusion(&samples, sample_rate, 1, 1);
+    let delta = avg.frames.len() as i32 - quality.frames.len() as i32;
+    println!("  {:>22}  {:>5} {:>+5} {:>4}", "Average (1:1)", avg.frames.len(), delta, avg_soft);
+
+    // 2. Goertzel-heavy
+    let (g7c3, g7c3_soft) = decode_fusion(&samples, sample_rate, 7, 3);
+    let delta = g7c3.frames.len() as i32 - quality.frames.len() as i32;
+    println!("  {:>22}  {:>5} {:>+5} {:>4}", "G-heavy (7:3)", g7c3.frames.len(), delta, g7c3_soft);
+
+    // 3. Corr-heavy
+    let (g3c7, g3c7_soft) = decode_fusion(&samples, sample_rate, 3, 7);
+    let delta = g3c7.frames.len() as i32 - quality.frames.len() as i32;
+    println!("  {:>22}  {:>5} {:>+5} {:>4}", "C-heavy (3:7)", g3c7.frames.len(), delta, g3c7_soft);
+
+    // 4. Max confidence
+    let (maxc, maxc_soft) = decode_fusion_maxconf(&samples, sample_rate);
+    let delta = maxc.frames.len() as i32 - quality.frames.len() as i32;
+    println!("  {:>22}  {:>5} {:>+5} {:>4}", "Max-confidence", maxc.frames.len(), delta, maxc_soft);
+
+    // 5. LLR sum (MRC-style)
+    let (sum, sum_soft) = decode_fusion_sum(&samples, sample_rate);
+    let delta = sum.frames.len() as i32 - quality.frames.len() as i32;
+    println!("  {:>22}  {:>5} {:>+5} {:>4}", "LLR sum (MRC)", sum.frames.len(), delta, sum_soft);
+
+    // 6. Weight sweep for best ratio
+    println!();
+    println!("  Weight sweep (G:C ratio):");
+    println!("  {:>6}:{:<6}  {:>5} {:>+5} {:>4}", "G", "C", "Pkts", "ΔQlt", "Soft");
+    println!("  {}", "─".repeat(36));
+    let weights: &[(i16, i16)] = &[
+        (9, 1), (8, 2), (7, 3), (6, 4), (5, 5),
+        (4, 6), (3, 7), (2, 8), (1, 9),
+    ];
+    for &(gw, cw) in weights {
+        let (res, soft) = decode_fusion(&samples, sample_rate, gw, cw);
+        let delta = res.frames.len() as i32 - quality.frames.len() as i32;
+        println!("  {:>6}:{:<6}  {:>5} {:>+5} {:>4}", gw, cw, res.frames.len(), delta, soft);
+    }
+
+    // 7. Best fusion strategy with window types
+    println!();
+    println!("  Windowed Goertzel + Corr fusion (equal weight):");
+    println!("  {:>12}  {:>5} {:>+5} {:>4}", "Window", "Pkts", "ΔQlt", "Soft");
+    println!("  {}", "─".repeat(36));
+    let windows = [
+        (GoertzelWindow::Rectangular, "Rectangular"),
+        (GoertzelWindow::Hann, "Hann"),
+        (GoertzelWindow::Hamming, "Hamming"),
+        (GoertzelWindow::Blackman, "Blackman"),
+        (GoertzelWindow::EdgeTaper, "EdgeTaper"),
+    ];
+    for &(window, name) in &windows {
+        let (res, soft) = decode_fusion_windowed(&samples, sample_rate, window, 1, 1);
+        let delta = res.frames.len() as i32 - quality.frames.len() as i32;
+        println!("  {:>12}  {:>5} {:>+5} {:>4}", name, res.frames.len(), delta, soft);
+    }
+    println!();
 }

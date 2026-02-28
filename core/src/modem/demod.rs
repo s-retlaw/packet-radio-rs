@@ -43,6 +43,24 @@ const AGC_ENERGY_SHIFT: u32 = 8;
 /// N=6 → 1.5% decay per symbol, ~50% decay in 40 symbols.
 const AGC_DECAY_SHIFT: u32 = 6;
 
+/// Maximum window table length for windowed Goertzel (covers up to 48000/1200=40 SPB).
+const MAX_WINDOW_LEN: usize = 48;
+
+/// Goertzel window type for ISI reduction.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GoertzelWindow {
+    /// Standard rectangular window (no tapering). Default.
+    Rectangular,
+    /// Hann window: w[n] = 0.5*(1 - cos(2*pi*n/(N-1))). Zeros at edges.
+    Hann,
+    /// Hamming window: w[n] = 0.54 - 0.46*cos(2*pi*n/(N-1)). Non-zero at edges.
+    Hamming,
+    /// Blackman window: low sidelobes, wider main lobe.
+    Blackman,
+    /// Flat middle with cosine taper on first/last 2 samples.
+    EdgeTaper,
+}
+
 /// Fast-path AFSK demodulator (Goertzel tone detection).
 ///
 /// Suitable for Cortex-M0, RP2040, and other resource-constrained targets.
@@ -128,6 +146,14 @@ pub struct FastDemodulator {
     /// When set, the symbol timing uses this rate instead of config.baud_rate.
     /// Used for baud-rate diversity in multi-decoder (300 baud variable speed).
     timing_baud_rate: u32,
+    /// Q8 window coefficients for windowed Goertzel (256 = 1.0).
+    /// Pre-multiplying input samples by these weights reduces ISI when
+    /// Bresenham timing is slightly misaligned with symbol boundaries.
+    window_q8: [u16; MAX_WINDOW_LEN],
+    /// Length of window table (nominal samples per symbol). 0 = disabled.
+    window_len: u8,
+    /// Current sample index within symbol (resets at each boundary).
+    sym_sample_idx: u8,
 }
 
 impl FastDemodulator {
@@ -176,6 +202,9 @@ impl FastDemodulator {
             bit_phase: 0,
             space_gain_q8: 256,
             agc_enabled: false,
+            window_q8: [256; MAX_WINDOW_LEN],
+            window_len: 0,
+            sym_sample_idx: 0,
             mark_energy_peak: 1,
             space_energy_peak: 1,
             energy_llr: false,
@@ -227,6 +256,9 @@ impl FastDemodulator {
             symbols_since_last_flag: 255,
             pll: None,
             timing_baud_rate: config.baud_rate,
+            window_q8: [256; MAX_WINDOW_LEN],
+            window_len: 0,
+            sym_sample_idx: 0,
         }
     }
 
@@ -280,6 +312,9 @@ impl FastDemodulator {
             symbols_since_last_flag: 255,
             pll: None,
             timing_baud_rate: config.baud_rate,
+            window_q8: [256; MAX_WINDOW_LEN],
+            window_len: 0,
+            sym_sample_idx: 0,
         }
     }
 
@@ -330,6 +365,32 @@ impl FastDemodulator {
     /// Cost: ~5 extra ops/sample.
     pub fn with_cascade_bpf(mut self) -> Self {
         self.bpf2 = Some(self.bpf);
+        self
+    }
+
+    /// Apply a window function to the Goertzel accumulator input.
+    ///
+    /// Pre-multiplies each sample by window coefficients (Q8) before the
+    /// Goertzel recursion. Tapered windows (Hann, Hamming) reduce ISI
+    /// when Bresenham timing is slightly misaligned with symbol boundaries.
+    /// At 9.2 samples/symbol, a 1-sample timing error contributes 11% ISI
+    /// with rectangular windowing but near-zero with Hann.
+    ///
+    /// Cost: one extra integer multiply per sample.
+    pub fn with_window(mut self, window_type: GoertzelWindow) -> Self {
+        let spb = self.config.sample_rate / self.config.baud_rate;
+        if spb == 0 || spb > MAX_WINDOW_LEN as u32 {
+            return self; // too long for table, skip
+        }
+        if window_type == GoertzelWindow::Rectangular {
+            return self; // no-op
+        }
+        self.window_len = spb as u8;
+        let n = spb as usize;
+        for i in 0..n {
+            let w = compute_window_coeff(window_type, i, n);
+            self.window_q8[i] = w;
+        }
         self
     }
 
@@ -398,6 +459,7 @@ impl FastDemodulator {
         self.bit_phase = 0;
         self.mark_energy_peak = 1;
         self.space_energy_peak = 1;
+        self.sym_sample_idx = 0;
         // Reset adaptive gain state
         if self.adaptive_gain_enabled {
             self.space_gain_q8 = 256;
@@ -476,12 +538,20 @@ impl FastDemodulator {
                 }
             }
 
-            // 2. Goertzel iteration for mark and space
-            let mark_s0 = s + ((self.mark_coeff as i64 * self.mark_s1) >> 14) - self.mark_s2;
+            // 2. Apply window (if enabled) and Goertzel iteration
+            let sw = if self.window_len > 0 {
+                let idx = (self.sym_sample_idx as usize).min(self.window_len.saturating_sub(1) as usize);
+                self.sym_sample_idx = self.sym_sample_idx.saturating_add(1);
+                (s * self.window_q8[idx] as i64) >> 8
+            } else {
+                s
+            };
+
+            let mark_s0 = sw + ((self.mark_coeff as i64 * self.mark_s1) >> 14) - self.mark_s2;
             self.mark_s2 = self.mark_s1;
             self.mark_s1 = mark_s0;
 
-            let space_s0 = s + ((self.space_coeff as i64 * self.space_s1) >> 14) - self.space_s2;
+            let space_s0 = sw + ((self.space_coeff as i64 * self.space_s1) >> 14) - self.space_s2;
             self.space_s2 = self.space_s1;
             self.space_s1 = space_s0;
 
@@ -627,6 +697,7 @@ impl FastDemodulator {
                 self.mark_s2 = 0;
                 self.space_s1 = 0;
                 self.space_s2 = 0;
+                self.sym_sample_idx = 0;
             }
         }
 
@@ -695,6 +766,69 @@ pub fn goertzel_coeff(freq: u32, sample_rate: u32) -> i32 {
             }
         }
     }
+}
+
+/// Compute a single window coefficient in Q8 (256 = 1.0).
+///
+/// Uses `libm::cos` on std, integer polynomial on no_std.
+/// Only called at initialization, not in the hot path.
+fn compute_window_coeff(window_type: GoertzelWindow, i: usize, n: usize) -> u16 {
+    if n <= 1 {
+        return 256;
+    }
+    let nm1 = n - 1;
+
+    // Integer cosine helper: cos(pi * num / den) in Q8 (256 = 1.0)
+    // Uses libm on std, polynomial on no_std.
+    #[inline]
+    fn cos_q8(num: usize, den: usize) -> i16 {
+        #[cfg(feature = "std")]
+        {
+            let theta = core::f64::consts::PI * num as f64 / den as f64;
+            (libm::cos(theta) * 256.0) as i16
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            // cos(pi * num / den) via Q20 polynomial: cos(x) ≈ 1 - x²/2 + x⁴/24
+            const PI_Q20: i64 = 3_294_199;
+            let x_q20 = PI_Q20 * num as i64 / den as i64;
+            let x2 = (x_q20 * x_q20) >> 20;
+            let x4 = (x2 * x2) >> 20;
+            let cos_q20 = (1i64 << 20) - (x2 >> 1) + (x4 / 24);
+            ((cos_q20 * 256) >> 20).clamp(0, 256) as i16
+        }
+    }
+
+    let w_q8: i16 = match window_type {
+        GoertzelWindow::Rectangular => 256,
+        GoertzelWindow::Hann => {
+            // 0.5 * (1 - cos(2*pi*i/(N-1))) = 128 - cos(2*pi*i/(N-1)) * 128 / 256
+            128 - (cos_q8(2 * i, nm1) / 2)
+        }
+        GoertzelWindow::Hamming => {
+            // 0.54 - 0.46 * cos(2*pi*i/(N-1))
+            // In Q8: 138 - 118 * cos / 256
+            138 - ((cos_q8(2 * i, nm1) as i32 * 118) / 256) as i16
+        }
+        GoertzelWindow::Blackman => {
+            // 0.42 - 0.5*cos(2pi*i/(N-1)) + 0.08*cos(4pi*i/(N-1))
+            // In Q8: 108 - 128*cos1/256 + 20*cos2/256
+            let c1 = cos_q8(2 * i, nm1) as i32;
+            let c2 = cos_q8(4 * i, nm1) as i32;
+            (108 - (c1 * 128 / 256) + (c2 * 20 / 256)) as i16
+        }
+        GoertzelWindow::EdgeTaper => {
+            if i < 2 {
+                // cosine taper up: 0.5 * (1 - cos(pi*i/2))
+                128 - (cos_q8(i, 2) / 2)
+            } else if i >= n - 2 {
+                128 - (cos_q8(n - 1 - i, 2) / 2)
+            } else {
+                256
+            }
+        }
+    };
+    w_q8.clamp(0, 256) as u16
 }
 
 /// Quality-path AFSK demodulator (Hilbert + adaptive + soft decisions).

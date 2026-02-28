@@ -333,16 +333,24 @@ impl MultiDecoder {
             core::array::from_fn(|_| HdlcDecoder::new());
 
         let mut dm_idx = 0;
-        // DM+PLL decoders (Gardner TED with phase + frequency correction)
-        // Alpha=936 is optimal single-decoder; alpha=400 provides diversity.
+        // DM+PLL decoders (Gardner TED with phase + frequency correction).
         // Beta=0 universally optimal (frequency correction hurts).
-        // For 300 baud: widen max_drift from ±2% to ±5% for variable speed.
+        // 300 baud: high-alpha PLL (15000/8000) for variable-speed tracking.
+        // At 300 baud SPB=36.75, group delay is only 14-33% of symbol period,
+        // so aggressive PLL tracks ±3-5% clock drift effectively.
+        // Alpha=15000 matches DireWolf on 3% varspeed (1→31 frames).
+        // 1200 baud: standard alpha (936/400) — PLL bandwidth must be tighter.
+        let (dm_alpha_1, dm_alpha_2) = if config.baud_rate == 300 {
+            (15000i16, 8000i16)
+        } else {
+            (936i16, 400i16)
+        };
         if dm_idx < MAX_DM_DECODERS {
-            dm_decoders[dm_idx] = DmDemodulator::with_bpf_pll_custom(config, 936, 0);
+            dm_decoders[dm_idx] = DmDemodulator::with_bpf_pll_custom(config, dm_alpha_1, 0);
             dm_idx += 1;
         }
         if dm_idx < MAX_DM_DECODERS {
-            dm_decoders[dm_idx] = DmDemodulator::with_bpf_pll_custom(config, 400, 0);
+            dm_decoders[dm_idx] = DmDemodulator::with_bpf_pll_custom(config, dm_alpha_2, 0);
             dm_idx += 1;
         }
         // DM+Bresenham decoders with timing diversity (complementary to PLL)
@@ -385,9 +393,11 @@ impl MultiDecoder {
             }
             // Goertzel+PLL at nominal rate: captures packets where PLL
             // tracks intra-packet drift that fixed Bresenham cannot.
+            // Higher alpha (8000) for 300 baud to track wider drift range.
             if idx < MAX_DECODERS {
+                let goertzel_pll_alpha = if config.baud_rate == 300 { 8000 } else { 600 };
                 let pll = ClockRecoveryPll::new_gardner(
-                    config.sample_rate, config.baud_rate, 600, 0,
+                    config.sample_rate, config.baud_rate, goertzel_pll_alpha, 0,
                 ).with_error_shift(8);
                 decoders[idx] = FastDemodulator::new(config)
                     .with_custom_pll(pll);
