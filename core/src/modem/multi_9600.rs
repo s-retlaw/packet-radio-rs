@@ -742,37 +742,31 @@ pub struct Mini9600Decoder {
 
 impl Mini9600Decoder {
     /// Create a Mini9600Decoder tuned for the given sample rate.
+    ///
+    /// Branches on samples-per-symbol to select rate-optimal decoder combos:
+    /// - ≤4.3 sps (38400 Hz): low-sps-optimized combo
+    /// - 4.3-4.7 sps (44100 Hz): mid-sps-optimized combo
+    /// - >4.7 sps (48000+ Hz): original cross-rate-optimal combo
     pub fn new(config: Demod9600Config) -> Self {
+        let sps_x10 = config.sample_rate * 10 / config.baud_rate;
+
+        let (dw, gardner) = if sps_x10 <= 43 {
+            // 38400 Hz (4.0 sps): wider LPF + negative thresholds dominate.
+            // At exactly 4 sps, wider bandwidth helps because the signal fills
+            // nearly the full Nyquist range. Negative thresholds compensate for
+            // the asymmetric AGC response at very low sps.
+            Self::build_low_sps(config)
+        } else if sps_x10 <= 47 {
+            // 44100 Hz (4.59 sps): grid-search-optimal combo.
+            Self::build_mid_sps(config)
+        } else {
+            // 48000+ Hz (≥5.0 sps): original combo, unchanged.
+            Self::build_default(config)
+        };
+
         Self {
-            dw: [
-                // Slot 0: best single at 48k (64 frames)
-                Demod9600Direwolf::new(config)
-                    .with_lpf_cutoff(6000)
-                    .with_threshold(-330),
-                // Slot 1: best single at 44k (56 frames)
-                Demod9600Direwolf::new(config)
-                    .with_lpf_cutoff(6600)
-                    .with_threshold(-330),
-                // Slot 2: set-cover #2 at 48k (+4), #3 at 44k
-                Demod9600Direwolf::new(config)
-                    .with_lpf_cutoff(6600)
-                    .with_threshold(0),
-                // Slot 3: set-cover #2 at 44k (+3)
-                Demod9600Direwolf::new(config)
-                    .with_lpf_cutoff(5400)
-                    .with_threshold(0),
-                // Slot 4: 4th-order LPF diversity (set-cover #3 at 44k: +2, order diversity)
-                Demod9600Direwolf::new(config)
-                    .with_cascaded_lpf_cutoff(6600)
-                    .with_threshold(0),
-            ],
-            gardner: [
-                // Slot 5: algorithm diversity (set-cover at 44k)
-                Demod9600Gardner::new(config)
-                    .with_lpf_cutoff(4800)
-                    .with_inertia(180, 100)
-                    .with_threshold(-660),
-            ],
+            dw,
+            gardner,
             #[cfg(feature = "std")]
             hdlc: core::array::from_fn(|_| SoftHdlcDecoder::new()),
             #[cfg(not(feature = "std"))]
@@ -784,6 +778,117 @@ impl Mini9600Decoder {
             total_decoded: 0,
             total_unique: 0,
         }
+    }
+
+    /// Build decoder combo for ≤4.3 sps (38400 Hz).
+    ///
+    /// Grid-search-optimal set-cover at 38400 Hz:
+    /// #1 DW:6000/2nd/th-330 (58), #2 DW:7200/2nd/th0 (+2),
+    /// #3 DW:5400/4th/th330 (+1), #4 DW:5400/4th/th-330 (+1),
+    /// #5 G:4800/4th/i205-128/th-660 (+1) = 63 total
+    fn build_low_sps(config: Demod9600Config) -> ([Demod9600Direwolf; 5], [Demod9600Gardner; 1]) {
+        let dw = [
+            // #1: best single at 38k (58 frames)
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(6000)
+                .with_threshold(-330),
+            // #2: set-cover +2
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(7200)
+                .with_threshold(0),
+            // #3: 4th-order diversity, set-cover +1
+            Demod9600Direwolf::new(config)
+                .with_cascaded_lpf_cutoff(5400)
+                .with_threshold(330),
+            // #4: 4th-order diversity, set-cover +1
+            Demod9600Direwolf::new(config)
+                .with_cascaded_lpf_cutoff(5400)
+                .with_threshold(-330),
+            // Extra diversity: DW:6600/2nd/th-330 (58 standalone)
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(6600)
+                .with_threshold(-330),
+        ];
+        let gardner = [
+            // #5: 4th-order Gardner, set-cover +1
+            Demod9600Gardner::new(config)
+                .with_cascaded_lpf_cutoff(4800)
+                .with_inertia(205, 128)
+                .with_threshold(-660),
+        ];
+        (dw, gardner)
+    }
+
+    /// Build decoder combo for 4.3-4.7 sps (44100 Hz).
+    ///
+    /// Grid-search-optimal set-cover at 44100 Hz:
+    /// #1 DW:6600/2nd/th-660 (56), #2 DW:5400/2nd/th-330 (+3),
+    /// #3 DW:7200/2nd/th-660 (+1), #4 DW:6000/2nd/th-660 (+1),
+    /// #5 G:4800/2nd/i180-100/th-660 (+1), #6 DW:4800/4th/th-330 (+1) = 63 total
+    fn build_mid_sps(config: Demod9600Config) -> ([Demod9600Direwolf; 5], [Demod9600Gardner; 1]) {
+        let dw = [
+            // #1: best single at 44k (56 frames)
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(6600)
+                .with_threshold(-660),
+            // #2: set-cover +3
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(5400)
+                .with_threshold(-330),
+            // #3: set-cover +1
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(7200)
+                .with_threshold(-660),
+            // #4: set-cover +1
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(6000)
+                .with_threshold(-660),
+            // #6: 4th-order, set-cover +1
+            Demod9600Direwolf::new(config)
+                .with_cascaded_lpf_cutoff(4800)
+                .with_threshold(-330),
+        ];
+        let gardner = [
+            // #5: set-cover +1
+            Demod9600Gardner::new(config)
+                .with_lpf_cutoff(4800)
+                .with_inertia(180, 100)
+                .with_threshold(-660),
+        ];
+        (dw, gardner)
+    }
+
+    /// Build default decoder combo for >4.7 sps (48000+ Hz).
+    fn build_default(config: Demod9600Config) -> ([Demod9600Direwolf; 5], [Demod9600Gardner; 1]) {
+        let dw = [
+            // Slot 0: best single at 48k (64 frames)
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(6000)
+                .with_threshold(-330),
+            // Slot 1: best single at 44k (56 frames)
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(6600)
+                .with_threshold(-330),
+            // Slot 2: set-cover #2 at 48k (+4), #3 at 44k
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(6600)
+                .with_threshold(0),
+            // Slot 3: set-cover #2 at 44k (+3)
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(5400)
+                .with_threshold(0),
+            // Slot 4: 4th-order LPF diversity
+            Demod9600Direwolf::new(config)
+                .with_cascaded_lpf_cutoff(6600)
+                .with_threshold(0),
+        ];
+        let gardner = [
+            Demod9600Gardner::new(config)
+                .with_lpf_cutoff(4800)
+                .with_inertia(180, 100)
+                .with_threshold(-660),
+        ];
+        (dw, gardner)
     }
 
     /// Process a buffer of audio samples through all 6 decoders.
