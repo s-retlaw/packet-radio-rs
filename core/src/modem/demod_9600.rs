@@ -316,6 +316,12 @@ struct DwPll {
     prev_prev_sample: i16,
     /// Consecutive good symbols (for lock detection)
     good_count: u16,
+    /// Consecutive bad crossings (hysteresis before unlock)
+    bad_count: u16,
+    /// Number of consecutive bad crossings required before unlock
+    bad_threshold: u16,
+    /// Number of consecutive good crossings to transition to locked inertia
+    good_threshold: u16,
     /// Lock detection threshold (period/6 at low sps, period/8 at higher sps)
     lock_threshold: i32,
 }
@@ -339,6 +345,9 @@ impl DwPll {
             prev_sample: 0,
             prev_prev_sample: 0,
             good_count: 0,
+            bad_count: 0,
+            bad_threshold: 3,
+            good_threshold: 16,
             lock_threshold,
         }
     }
@@ -406,15 +415,21 @@ impl DwPll {
             let correction = (error as i64 * (256 - self.inertia) as i64) >> 8;
             self.phase -= correction as i32;
 
-            // Track lock state (wider window at low sps)
+            // Track lock state with hysteresis: require 3 consecutive bad
+            // crossings before unlocking to prevent momentary glitches from
+            // dropping out of locked state.
             if error.abs() < self.lock_threshold {
                 self.good_count = self.good_count.saturating_add(1);
-                if self.good_count > 16 {
+                self.bad_count = 0;
+                if self.good_count > self.good_threshold {
                     self.inertia = self.locked_inertia;
                 }
             } else {
-                self.good_count = 0;
-                self.inertia = self.searching_inertia;
+                self.bad_count = self.bad_count.saturating_add(1);
+                if self.bad_count >= self.bad_threshold {
+                    self.good_count = 0;
+                    self.inertia = self.searching_inertia;
+                }
             }
         }
         self.prev_sign = sign;
@@ -424,6 +439,18 @@ impl DwPll {
         result
     }
 
+    /// Set hysteresis threshold (consecutive bad crossings before unlock).
+    fn with_bad_threshold(mut self, threshold: u16) -> Self {
+        self.bad_threshold = threshold;
+        self
+    }
+
+    /// Set good_count threshold for locking (default: 16).
+    fn with_good_threshold(mut self, threshold: u16) -> Self {
+        self.good_threshold = threshold;
+        self
+    }
+
     fn reset(&mut self) {
         self.phase = 0;
         self.inertia = self.searching_inertia;
@@ -431,6 +458,7 @@ impl DwPll {
         self.prev_sample = 0;
         self.prev_prev_sample = 0;
         self.good_count = 0;
+        self.bad_count = 0;
     }
 }
 
@@ -503,6 +531,18 @@ impl Demod9600Direwolf {
     /// Set PLL timing phase offset for timing diversity.
     pub fn with_timing_offset(mut self, offset: i32) -> Self {
         self.pll = self.pll.with_phase_offset(offset);
+        self
+    }
+
+    /// Set PLL unlock hysteresis threshold.
+    pub fn with_bad_threshold(mut self, threshold: u16) -> Self {
+        self.pll = self.pll.with_bad_threshold(threshold);
+        self
+    }
+
+    /// Set PLL lock acquisition threshold (consecutive good crossings needed).
+    pub fn with_good_threshold(mut self, threshold: u16) -> Self {
+        self.pll = self.pll.with_good_threshold(threshold);
         self
     }
 
@@ -651,6 +691,18 @@ impl Demod9600Gardner {
     /// Set PLL timing phase offset for timing diversity.
     pub fn with_timing_offset(mut self, offset: i32) -> Self {
         self.pll = self.pll.with_phase_offset(offset);
+        self
+    }
+
+    /// Set PLL unlock hysteresis threshold.
+    pub fn with_bad_threshold(mut self, threshold: u16) -> Self {
+        self.pll = self.pll.with_bad_threshold(threshold);
+        self
+    }
+
+    /// Set PLL lock acquisition threshold (consecutive good crossings needed).
+    pub fn with_good_threshold(mut self, threshold: u16) -> Self {
+        self.pll = self.pll.with_good_threshold(threshold);
         self
     }
 
