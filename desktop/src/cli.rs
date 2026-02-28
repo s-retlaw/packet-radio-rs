@@ -78,6 +78,14 @@ pub struct Cli {
     #[arg(long = "9600-algo")]
     pub algo_9600: Option<String>,
 
+    /// Use Mini9600 decoder (6 MCU-optimal decoders for 9600 baud)
+    #[arg(long)]
+    pub mini9600: bool,
+
+    /// Auto-baud: decode both 1200 and 9600 simultaneously
+    #[arg(long)]
+    pub auto_baud: bool,
+
     /// Verbose output (repeat for more: -v, -vv, -vvv)
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,

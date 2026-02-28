@@ -17,9 +17,10 @@ use packet_radio_core::modem::soft_hdlc::{SoftHdlcDecoder, FrameResult};
 use packet_radio_core::modem::{DemodConfig, ModConfig};
 use packet_radio_core::ax25::frame::HdlcDecoder;
 use packet_radio_core::ax25::Frame;
-use packet_radio_core::tnc::{AfskModulateAdapter, NullDemod, TncConfig, TncEngine, TncPlatform};
+use packet_radio_core::tnc::{AfskModulateAdapter, Fsk9600ModulateAdapter, NullDemod, TncConfig, TncEngine, TncPlatform};
 use packet_radio_core::modem::demod_9600::Demod9600Config;
-use packet_radio_core::modem::multi_9600::{Multi9600Decoder, Single9600Decoder};
+use packet_radio_core::modem::mod_9600::Mod9600Config;
+use packet_radio_core::modem::multi_9600::{Mini9600Decoder, Multi9600Decoder, Single9600Decoder};
 use packet_radio_core::kiss;
 use packet_radio_core::aprs;
 use packet_radio_core::SampleSource;
@@ -81,7 +82,8 @@ fn main() {
 
     // Build TX pipeline if --tx-wav is specified
     let tx_pipeline = cli.tx_wav.as_ref().map(|_| {
-        TxPipeline::new(kiss_in_rx.clone(), cli.sample_rate)
+        let tx_rate = if cli.baud == 9600 && cli.sample_rate == 11025 { 48000 } else { cli.sample_rate };
+        TxPipeline::new(kiss_in_rx.clone(), tx_rate, cli.baud)
     });
 
     let config = match cli.sample_rate {
@@ -131,12 +133,19 @@ fn main() {
     }
 
     // Run the processing loop on the main thread.
-    let tx_pipeline = if cli.baud == 9600 {
+    let tx_pipeline = if cli.auto_baud {
+        // Auto-baud: run both 1200 + 9600 mini-decoders in parallel
+        let sample_rate = if cli.sample_rate == 11025 { 48000 } else { cli.sample_rate };
+        tracing::info!("auto-baud mode (1200+9600, sample rate {})", sample_rate);
+        process_loop_auto_baud(source, frame_tx, cli.wav.is_some(), sample_rate, tx_pipeline)
+    } else if cli.baud == 9600 {
         let sample_rate = if cli.sample_rate == 11025 { 48000 } else { cli.sample_rate };
         let config_9600 = Demod9600Config::with_sample_rate(sample_rate);
         tracing::info!("9600 baud mode (sample rate {})", sample_rate);
         if cli.multi {
             process_loop_9600_multi(source, frame_tx, cli.wav.is_some(), config_9600, tx_pipeline)
+        } else if cli.mini9600 {
+            process_loop_9600_mini(source, frame_tx, cli.wav.is_some(), config_9600, tx_pipeline)
         } else {
             let algo = cli.algo_9600.as_deref().unwrap_or("direwolf");
             tracing::info!("9600 algorithm: {}", algo);
@@ -162,7 +171,8 @@ fn main() {
 
     // Write TX audio to WAV if requested
     if let (Some(ref tx_wav_path), Some(pipeline)) = (&cli.tx_wav, &tx_pipeline) {
-        pipeline.write_wav(tx_wav_path, cli.sample_rate);
+        let tx_rate = if cli.baud == 9600 && cli.sample_rate == 11025 { 48000 } else { cli.sample_rate };
+        pipeline.write_wav(tx_wav_path, tx_rate);
     }
 }
 
@@ -178,27 +188,59 @@ impl TncPlatform for TxOnlyPlatform {
     fn now_ms(&self) -> u32 { 0 }
 }
 
+/// Inner TX engine — dispatches between 1200 AFSK and 9600 FSK.
+enum TxEngine {
+    Afsk1200(TncEngine<NullDemod, AfskModulateAdapter>),
+    Fsk9600(TncEngine<NullDemod, Fsk9600ModulateAdapter>),
+}
+
+impl TxEngine {
+    fn feed_kiss(&mut self, byte: u8) {
+        match self {
+            TxEngine::Afsk1200(e) => e.feed_kiss(byte),
+            TxEngine::Fsk9600(e) => e.feed_kiss(byte),
+        }
+    }
+
+    fn poll_tx(&mut self, out: &mut [i16], platform: &mut TxOnlyPlatform) -> usize {
+        match self {
+            TxEngine::Afsk1200(e) => e.poll_tx(out, platform),
+            TxEngine::Fsk9600(e) => e.poll_tx(out, platform),
+        }
+    }
+}
+
 /// TX pipeline: wraps a TX-only TncEngine, accumulates modulated audio.
 struct TxPipeline {
-    engine: TncEngine<NullDemod, AfskModulateAdapter>,
+    engine: TxEngine,
     platform: TxOnlyPlatform,
     samples: Vec<i16>,
     kiss_rx: crossbeam_channel::Receiver<Vec<u8>>,
 }
 
 impl TxPipeline {
-    fn new(kiss_rx: crossbeam_channel::Receiver<Vec<u8>>, sample_rate: u32) -> Self {
-        let mod_config = match sample_rate {
-            22050 => ModConfig { sample_rate: 22050, ..ModConfig::default_1200() },
-            44100 => ModConfig { sample_rate: 44100, ..ModConfig::default_1200() },
-            _ => ModConfig::default_1200(),
-        };
+    fn new(kiss_rx: crossbeam_channel::Receiver<Vec<u8>>, sample_rate: u32, baud: u32) -> Self {
         let mut tnc_config = TncConfig::default();
         tnc_config.full_duplex = true; // Skip CSMA
         tnc_config.txdelay = 25; // 250ms preamble (shorter for testing)
 
+        let engine = if baud == 9600 {
+            let mod_config = match sample_rate {
+                44100 => Mod9600Config::default_44k(),
+                _ => Mod9600Config::default_48k(),
+            };
+            TxEngine::Fsk9600(TncEngine::new(NullDemod, Fsk9600ModulateAdapter::new(mod_config), tnc_config))
+        } else {
+            let mod_config = match sample_rate {
+                22050 => ModConfig { sample_rate: 22050, ..ModConfig::default_1200() },
+                44100 => ModConfig { sample_rate: 44100, ..ModConfig::default_1200() },
+                _ => ModConfig::default_1200(),
+            };
+            TxEngine::Afsk1200(TncEngine::new(NullDemod, AfskModulateAdapter::new(mod_config), tnc_config))
+        };
+
         Self {
-            engine: TncEngine::new(NullDemod, AfskModulateAdapter::new(mod_config), tnc_config),
+            engine,
             platform: TxOnlyPlatform,
             samples: Vec::new(),
             kiss_rx,
@@ -1160,6 +1202,156 @@ fn process_loop_9600_multi(
 
     if let Some(ref mut pipeline) = tx { pipeline.poll(); }
     tx
+}
+
+/// 9600 baud Mini9600 decoder processing loop (6 MCU-optimal decoders).
+fn process_loop_9600_mini(
+    mut source: Box<dyn SampleSource>,
+    frame_tx: broadcast::Sender<Vec<u8>>,
+    is_wav: bool,
+    config: Demod9600Config,
+    mut tx: Option<TxPipeline>,
+) -> Option<TxPipeline> {
+    let mut decoder = Mini9600Decoder::new(config);
+    tracing::info!("9600 mini-decoder: {} parallel decoders", decoder.num_decoders());
+
+    let mut audio_buf = [0i16; 1024];
+    let mut frame_count: u64 = 0;
+
+    loop {
+        let n = source.read_samples(&mut audio_buf);
+        if n == 0 {
+            if is_wav {
+                tracing::info!("WAV file complete, decoded {frame_count} unique frames (9600 mini)");
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
+
+        let output = decoder.process_samples(&audio_buf[..n]);
+        for i in 0..output.len() {
+            frame_count += 1;
+            let frame_data = output.frame(i).to_vec();
+            print_frame(frame_count, &frame_data);
+            let _ = frame_tx.send(frame_data);
+        }
+    }
+
+    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
+    tx
+}
+
+/// Auto-baud processing loop: 1200 MiniDecoder + 9600 Mini9600Decoder in parallel.
+fn process_loop_auto_baud(
+    mut source: Box<dyn SampleSource>,
+    frame_tx: broadcast::Sender<Vec<u8>>,
+    is_wav: bool,
+    sample_rate: u32,
+    mut tx: Option<TxPipeline>,
+) -> Option<TxPipeline> {
+    // 1200 baud decoder (MiniDecoder — 3 Goertzel decoders)
+    let config_1200 = match sample_rate {
+        22050 => DemodConfig::default_1200_22k(),
+        44100 => DemodConfig::default_1200_44k(),
+        48000 => DemodConfig { sample_rate: 48000, ..DemodConfig::default_1200() },
+        _ => DemodConfig::default_1200(),
+    };
+    let mut decoder_1200 = MiniDecoder::new(config_1200);
+
+    // 9600 baud decoder (Mini9600Decoder — 6 decoders)
+    let config_9600 = Demod9600Config::with_sample_rate(sample_rate);
+    let mut decoder_9600 = Mini9600Decoder::new(config_9600);
+
+    tracing::info!(
+        "auto-baud: {} 1200-baud + {} 9600-baud decoders",
+        3, // MiniDecoder is always 3
+        decoder_9600.num_decoders(),
+    );
+
+    // Cross-architecture dedup ring (FNV-1a hashes + generation)
+    let mut recent_hashes: [(u64, u32); 32] = [(0, 0); 32];
+    let mut recent_write: usize = 0;
+    let mut recent_count: usize = 0;
+    let mut generation: u32 = 0;
+
+    let mut audio_buf = [0i16; 1024];
+    let mut frame_count: u64 = 0;
+
+    loop {
+        let n = source.read_samples(&mut audio_buf);
+        if n == 0 {
+            if is_wav {
+                tracing::info!("WAV file complete, decoded {frame_count} unique frames (auto-baud)");
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
+        generation = generation.wrapping_add(1);
+
+        let samples = &audio_buf[..n];
+
+        // Run 1200 baud decoder
+        let output_1200 = decoder_1200.process_samples(samples);
+        for i in 0..output_1200.len() {
+            let data = output_1200.frame(i);
+            let hash = fnv1a_hash(data);
+            if !is_recent_dup(hash, generation, &recent_hashes, recent_count) {
+                recent_hashes[recent_write] = (hash, generation);
+                recent_write = (recent_write + 1) % recent_hashes.len();
+                if recent_count < recent_hashes.len() { recent_count += 1; }
+                frame_count += 1;
+                let frame_data = data.to_vec();
+                print_frame(frame_count, &frame_data);
+                let _ = frame_tx.send(frame_data);
+            }
+        }
+
+        // Run 9600 baud decoder
+        let output_9600 = decoder_9600.process_samples(samples);
+        for i in 0..output_9600.len() {
+            let data = output_9600.frame(i);
+            let hash = fnv1a_hash(data);
+            if !is_recent_dup(hash, generation, &recent_hashes, recent_count) {
+                recent_hashes[recent_write] = (hash, generation);
+                recent_write = (recent_write + 1) % recent_hashes.len();
+                if recent_count < recent_hashes.len() { recent_count += 1; }
+                frame_count += 1;
+                let frame_data = data.to_vec();
+                print_frame(frame_count, &frame_data);
+                let _ = frame_tx.send(frame_data);
+            }
+        }
+    }
+
+    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
+    tx
+}
+
+/// FNV-1a 64-bit hash for frame dedup.
+fn fnv1a_hash(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in data {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Check if a hash was seen recently (within 3 generations).
+fn is_recent_dup(hash: u64, gen: u32, ring: &[(u64, u32); 32], count: usize) -> bool {
+    for i in 0..count {
+        let (h, g) = ring[i];
+        if h == hash && gen.wrapping_sub(g) < 3 {
+            return true;
+        }
+    }
+    false
 }
 
 // ── Formatting ──────────────────────────────────────────────────────────
