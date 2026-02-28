@@ -2003,6 +2003,41 @@ fn run_twist_mini(path: &str) {
         println!("  TwistMini@13k vs Smart3@13k: {:>+4} packets", gain_13k);
         println!("  TwistMini@13k vs TwistMini@native: {:>+4} packets", gain_vs_native);
     }
+
+    // --- Try 48000 Hz variant ---
+    {
+        let target_48k = 48000u32;
+        let path_48k = path.replace(".wav", "_48000.wav");
+        let loaded = read_wav_file(&path_48k);
+        if let Ok((rate_48k, samples_48k)) = loaded {
+            println!();
+            println!("At {} Hz (from {}):", rate_48k, path_48k);
+
+            let fast_48k = decode_fast(&samples_48k, rate_48k);
+            let (smart3_48k, _) = decode_smart3(&samples_48k, rate_48k);
+            let (twist_mini_48k, _) = decode_twist_mini(&samples_48k, rate_48k);
+            let (multi_48k, _) = decode_multi(&samples_48k, rate_48k);
+
+            let dur_48k = samples_48k.len() as f64 / rate_48k as f64;
+            println!("  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
+                fast_48k.frames.len(), fast_48k.elapsed.as_secs_f64(),
+                dur_48k / fast_48k.elapsed.as_secs_f64());
+            println!("  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+                smart3_48k.frames.len(), smart3_48k.elapsed.as_secs_f64(),
+                dur_48k / smart3_48k.elapsed.as_secs_f64());
+            println!("  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
+                twist_mini_48k.frames.len(), twist_mini_48k.elapsed.as_secs_f64(),
+                dur_48k / twist_mini_48k.elapsed.as_secs_f64());
+            println!("  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+                multi_48k.frames.len(), multi_48k.elapsed.as_secs_f64(),
+                dur_48k / multi_48k.elapsed.as_secs_f64());
+
+            let gain_48k = twist_mini_48k.frames.len() as i64 - smart3_48k.frames.len() as i64;
+            let gain_vs_native = twist_mini_48k.frames.len() as i64 - twist_mini.frames.len() as i64;
+            println!("  TwistMini@48k vs Smart3@48k: {:>+4} packets", gain_48k);
+            println!("  TwistMini@48k vs TwistMini@native: {:>+4} packets", gain_vs_native);
+        }
+    }
     println!();
 }
 

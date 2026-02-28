@@ -236,6 +236,22 @@ pub const fn afsk_bandpass_wide_26400() -> BiquadFilter {
     BiquadFilter::new(6161, 0, -6161, -48917, 20445)
 }
 
+/// Precomputed bandpass filter for AFSK passband at 48000 Hz sample rate.
+/// center=1700 Hz, BW=1600 Hz.
+pub const fn afsk_bandpass_48000() -> BiquadFilter {
+    BiquadFilter::new(3083, 0, -3083, -57906, 26601)
+}
+
+/// Narrow bandpass filter at 48000 Hz. center=1700 Hz, BW=1200 Hz.
+pub const fn afsk_bandpass_narrow_48000() -> BiquadFilter {
+    BiquadFilter::new(2367, 0, -2367, -59300, 28032)
+}
+
+/// Wide bandpass filter at 48000 Hz. center=1700 Hz, BW=2000 Hz.
+pub const fn afsk_bandpass_wide_48000() -> BiquadFilter {
+    BiquadFilter::new(3765, 0, -3765, -56575, 25237)
+}
+
 /// Precomputed lowpass filter for post-detection at 11025 Hz.
 /// Cutoff at 1200 Hz to smooth the delay-multiply discriminator output.
 ///
@@ -265,6 +281,11 @@ pub const fn post_detect_lpf_44100() -> BiquadFilter {
     BiquadFilter::new(213, 426, 213, -57644, 25729)
 }
 
+/// Precomputed post-detection LPF at 48000 Hz. Cutoff 1200 Hz, Q=0.707.
+pub const fn post_detect_lpf_48000() -> BiquadFilter {
+    BiquadFilter::new(181, 363, 181, -58281, 26239)
+}
+
 /// Select the post-detection LPF for a given sample rate.
 /// Uses precomputed coefficients for common rates, runtime computation
 /// on std targets for others.
@@ -275,6 +296,7 @@ pub fn post_detect_lpf(sample_rate: u32) -> BiquadFilter {
         22050 => post_detect_lpf_22050(),
         26400 => post_detect_lpf_26400(),
         44100 => post_detect_lpf_44100(),
+        48000 => post_detect_lpf_48000(),
         #[cfg(feature = "std")]
         _ => lowpass_coeffs(sample_rate, 1200.0, 0.707),
         #[cfg(not(feature = "std"))]
@@ -312,6 +334,11 @@ pub const fn corr_lpf_44100() -> BiquadFilter {
     BiquadFilter::new(39, 79, 39, -62236, 29627)
 }
 
+/// Precomputed correlation LPF at 48000 Hz. Cutoff 500 Hz, Q=0.707.
+pub const fn corr_lpf_48000() -> BiquadFilter {
+    BiquadFilter::new(33, 67, 33, -62504, 29870)
+}
+
 /// Select the correlation demodulator LPF for a given sample rate.
 pub fn corr_lpf(sample_rate: u32) -> BiquadFilter {
     match sample_rate {
@@ -320,6 +347,7 @@ pub fn corr_lpf(sample_rate: u32) -> BiquadFilter {
         22050 => corr_lpf_22050(),
         26400 => corr_lpf_26400(),
         44100 => corr_lpf_44100(),
+        48000 => corr_lpf_48000(),
         #[cfg(feature = "std")]
         _ => lowpass_coeffs(sample_rate, 500.0, 0.707),
         #[cfg(not(feature = "std"))]

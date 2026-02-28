@@ -114,16 +114,19 @@ impl MultiDecoder {
             22050 => super::filter::afsk_bandpass_22050(),
             26400 => super::filter::afsk_bandpass_26400(),
             44100 => super::filter::afsk_bandpass_44100(),
+            48000 => super::filter::afsk_bandpass_48000(),
             _ => super::filter::afsk_bandpass_11025(),
         };
         let narrow_bpf = match config.sample_rate {
             13200 => super::filter::afsk_bandpass_narrow_13200(),
             26400 => super::filter::afsk_bandpass_narrow_26400(),
+            48000 => super::filter::afsk_bandpass_narrow_48000(),
             _ => super::filter::afsk_bandpass_narrow_11025(),
         };
         let wide_bpf = match config.sample_rate {
             13200 => super::filter::afsk_bandpass_wide_13200(),
             26400 => super::filter::afsk_bandpass_wide_26400(),
+            48000 => super::filter::afsk_bandpass_wide_48000(),
             _ => super::filter::afsk_bandpass_wide_11025(),
         };
         let filters = [

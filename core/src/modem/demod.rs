@@ -130,6 +130,7 @@ impl FastDemodulator {
             22050 => super::filter::afsk_bandpass_22050(),
             26400 => super::filter::afsk_bandpass_26400(),
             44100 => super::filter::afsk_bandpass_44100(),
+            48000 => super::filter::afsk_bandpass_48000(),
             _ => super::filter::afsk_bandpass_11025(),
         }
     }
@@ -658,6 +659,7 @@ impl QualityDemodulator {
             22050 => super::filter::afsk_bandpass_22050(),
             26400 => super::filter::afsk_bandpass_26400(),
             44100 => super::filter::afsk_bandpass_44100(),
+            48000 => super::filter::afsk_bandpass_48000(),
             _ => super::filter::afsk_bandpass_11025(),
         };
         let hilbert = hilbert_31();
@@ -1540,6 +1542,7 @@ impl CorrelationDemodulator {
             22050 => super::filter::afsk_bandpass_22050(),
             26400 => super::filter::afsk_bandpass_26400(),
             44100 => super::filter::afsk_bandpass_44100(),
+            48000 => super::filter::afsk_bandpass_48000(),
             _ => super::filter::afsk_bandpass_11025(),
         }
     }
