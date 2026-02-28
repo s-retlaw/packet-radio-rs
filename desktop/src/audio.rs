@@ -162,40 +162,153 @@ impl SampleSource for WavSource {
     }
 }
 
-/// Raw i16 LE PCM audio from stdin (for pipe mode).
+/// Audio from stdin with auto-detection of WAV vs raw PCM.
+///
+/// On construction, peeks at the first 4 bytes of stdin. If they match the
+/// RIFF magic, the stream is parsed as WAV (via hound) and the sample rate,
+/// channels, and bit depth are extracted automatically. Otherwise the stream
+/// is treated as raw i16 little-endian PCM.
 pub struct StdinSource {
-    reader: std::io::BufReader<std::io::Stdin>,
+    inner: StdinInner,
+}
+
+enum StdinInner {
+    Wav {
+        reader: hound::WavReader<
+            std::io::Chain<std::io::Cursor<Vec<u8>>, std::io::BufReader<std::io::Stdin>>,
+        >,
+        channels: u16,
+        detected_rate: u32,
+        done: bool,
+    },
+    Raw {
+        reader: std::io::BufReader<std::io::Stdin>,
+        leftover: Vec<u8>,
+        leftover_pos: usize,
+    },
 }
 
 impl StdinSource {
-    /// Create a new stdin audio source.
-    pub fn new() -> Self {
-        Self {
-            reader: std::io::BufReader::new(std::io::stdin()),
+    /// Create a new stdin audio source, auto-detecting WAV vs raw PCM.
+    pub fn new() -> Result<Self, String> {
+        use std::io::Read;
+        let mut reader = std::io::BufReader::new(std::io::stdin());
+        let mut magic = [0u8; 4];
+        let mut total = 0;
+        while total < 4 {
+            match reader.read(&mut magic[total..]) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(e) => return Err(format!("reading stdin: {e}")),
+            }
+        }
+
+        if total >= 4 && &magic == b"RIFF" {
+            let peek = magic[..total].to_vec();
+            let chained = std::io::Cursor::new(peek).chain(reader);
+            match hound::WavReader::new(chained) {
+                Ok(wav_reader) => {
+                    let spec = wav_reader.spec();
+                    Ok(Self {
+                        inner: StdinInner::Wav {
+                            channels: spec.channels,
+                            detected_rate: spec.sample_rate,
+                            reader: wav_reader,
+                            done: false,
+                        },
+                    })
+                }
+                Err(e) => Err(format!(
+                    "RIFF header detected on stdin but WAV parse failed: {e}"
+                )),
+            }
+        } else {
+            Ok(Self {
+                inner: StdinInner::Raw {
+                    reader,
+                    leftover: magic[..total].to_vec(),
+                    leftover_pos: 0,
+                },
+            })
+        }
+    }
+
+    /// Returns the WAV sample rate if WAV was detected on stdin.
+    pub fn detected_sample_rate(&self) -> Option<u32> {
+        match &self.inner {
+            StdinInner::Wav { detected_rate, .. } => Some(*detected_rate),
+            StdinInner::Raw { .. } => None,
         }
     }
 }
 
 impl SampleSource for StdinSource {
     fn read_samples(&mut self, buf: &mut [i16]) -> usize {
-        use std::io::Read;
-        // Read raw bytes: 2 bytes per i16 sample, little-endian
-        let byte_count = buf.len() * 2;
-        let mut raw = vec![0u8; byte_count];
-        let mut total_read = 0;
-        while total_read < byte_count {
-            match self.reader.read(&mut raw[total_read..]) {
-                Ok(0) => break, // EOF
-                Ok(n) => total_read += n,
-                Err(_) => break,
+        match &mut self.inner {
+            StdinInner::Wav {
+                reader,
+                channels,
+                done,
+                ..
+            } => {
+                if *done {
+                    return 0;
+                }
+                let mut written = 0;
+                let ch = *channels as usize;
+                let mut samples = reader.samples::<i16>();
+                while written < buf.len() {
+                    match samples.next() {
+                        Some(Ok(s)) => {
+                            buf[written] = s;
+                            written += 1;
+                            if ch > 1 {
+                                for _ in 1..ch {
+                                    let _ = samples.next();
+                                }
+                            }
+                        }
+                        _ => {
+                            *done = true;
+                            break;
+                        }
+                    }
+                }
+                written
+            }
+            StdinInner::Raw {
+                reader,
+                leftover,
+                leftover_pos,
+            } => {
+                use std::io::Read;
+                let byte_count = buf.len() * 2;
+                let mut raw = vec![0u8; byte_count];
+                let mut total_read = 0;
+
+                // Drain leftover bytes from the magic peek
+                while total_read < byte_count && *leftover_pos < leftover.len() {
+                    raw[total_read] = leftover[*leftover_pos];
+                    *leftover_pos += 1;
+                    total_read += 1;
+                }
+
+                // Read remaining from stdin
+                while total_read < byte_count {
+                    match reader.read(&mut raw[total_read..]) {
+                        Ok(0) => break,
+                        Ok(n) => total_read += n,
+                        Err(_) => break,
+                    }
+                }
+
+                let complete_samples = total_read / 2;
+                for i in 0..complete_samples {
+                    buf[i] = i16::from_le_bytes([raw[i * 2], raw[i * 2 + 1]]);
+                }
+                complete_samples
             }
         }
-        // Convert pairs of bytes to i16 LE
-        let complete_samples = total_read / 2;
-        for i in 0..complete_samples {
-            buf[i] = i16::from_le_bytes([raw[i * 2], raw[i * 2 + 1]]);
-        }
-        complete_samples
     }
 }
 

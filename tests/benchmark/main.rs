@@ -9,9 +9,18 @@
 //!   cargo run --release -p benchmark -- --compare-approaches track1.wav
 //!   cargo run --release -p benchmark -- --synthetic
 
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use packet_radio_core::ax25::frame::HdlcDecoder;
+
+thread_local! {
+    static BAUD_RATE: Cell<u32> = const { Cell::new(1200) };
+}
+
+fn get_baud() -> u32 {
+    BAUD_RATE.with(|b| b.get())
+}
 use packet_radio_core::modem::demod::{CorrelationDemodulator, DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
 use packet_radio_core::modem::binary_xor::BinaryXorDemodulator;
 use packet_radio_core::modem::corr_slicer::CorrSlicerDecoder;
@@ -19,28 +28,107 @@ use packet_radio_core::modem::multi::{MiniDecoder, MultiDecoder, TwistMiniDecode
 use packet_radio_core::modem::soft_hdlc::{FrameResult, SoftHdlcDecoder};
 use packet_radio_core::modem::DemodConfig;
 
+/// Global arguments parsed from the command line.
+struct GlobalArgs {
+    baud: u32,
+    rate: Option<u32>,
+    all_rates: bool,
+    mcu_only: bool,
+    filtered_args: Vec<String>,
+}
+
+/// Parse global flags from args, returning GlobalArgs with filtered remaining args.
+fn parse_global_args(args: &[String]) -> GlobalArgs {
+    let mut baud = 1200u32;
+    let mut rate: Option<u32> = None;
+    let mut all_rates = false;
+    let mut mcu_only = false;
+    let mut filtered = Vec::new();
+    let mut skip_next = false;
+    for (i, arg) in args.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        match arg.as_str() {
+            "--baud" | "-B" => {
+                if let Some(val) = args.get(i + 1) {
+                    baud = val.parse().unwrap_or(1200);
+                    skip_next = true;
+                    continue;
+                }
+            }
+            "--rate" => {
+                if let Some(val) = args.get(i + 1) {
+                    rate = val.parse().ok();
+                    skip_next = true;
+                    continue;
+                }
+            }
+            "--all-rates" => {
+                all_rates = true;
+                continue;
+            }
+            "--mcu-only" => {
+                mcu_only = true;
+                continue;
+            }
+            _ => {}
+        }
+        filtered.push(arg.clone());
+    }
+    GlobalArgs {
+        baud,
+        rate,
+        all_rates,
+        mcu_only,
+        filtered_args: filtered,
+    }
+}
+
+/// Build a DemodConfig for the given sample rate and baud rate.
+fn config_for_rate(sample_rate: u32, baud: u32) -> DemodConfig {
+    match baud {
+        300 => {
+            let mut c = DemodConfig::default_300();
+            c.sample_rate = sample_rate;
+            c
+        }
+        _ => {
+            let mut c = DemodConfig::default_1200();
+            c.sample_rate = sample_rate;
+            c
+        }
+    }
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let raw_args: Vec<String> = std::env::args().collect();
+    let gargs = parse_global_args(&raw_args);
+    let args = &gargs.filtered_args;
 
     if args.len() < 2 {
         print_usage();
         return;
     }
 
+    // Store baud rate in a thread-local for decode functions
+    BAUD_RATE.with(|b| b.set(gargs.baud));
+
     match args[1].as_str() {
         "--wav" => {
             if args.len() < 3 {
-                eprintln!("Usage: benchmark --wav <file.wav>");
+                eprintln!("Usage: benchmark [--baud 300] --wav <file.wav>");
                 return;
             }
-            run_single_wav(&args[2]);
+            run_single_wav(&args[2], gargs.mcu_only);
         }
         "--suite" => {
             if args.len() < 3 {
-                eprintln!("Usage: benchmark --suite <directory>");
+                eprintln!("Usage: benchmark [--baud 300] --suite <directory>");
                 return;
             }
-            run_suite(&args[2]);
+            run_suite(&args[2], gargs.rate, gargs.all_rates, gargs.mcu_only);
         }
         "--compare-approaches" | "--compare" => {
             if args.len() < 3 {
@@ -202,7 +290,18 @@ fn print_usage() {
     println!("Packet Radio RS — Benchmark Runner");
     println!();
     println!("USAGE:");
-    println!("  benchmark --wav <file.wav>             Decode a single WAV file");
+    println!("  benchmark --wav <file.wav>             Decode a single WAV file (all decoders)");
+    println!("  benchmark --suite <directory>           Decode all WAV files, compare with Dire Wolf");
+    println!("  benchmark --compare-approaches <wav>    Compare fast vs. quality path frame-by-frame");
+    println!("  benchmark --synthetic                   Run synthetic signal benchmark");
+    println!();
+    println!("GLOBAL FLAGS:");
+    println!("  --baud <N>      Set baud rate (default: 1200)");
+    println!("  --rate <N>      Run suite at specific sample rate (e.g. 22050)");
+    println!("  --all-rates     Run suite at all discovered sample rates + best summary");
+    println!("  --mcu-only      Only run MCU-feasible decoders (Fast, Quality, Smart3, TwistMini, DM)");
+    println!();
+    println!("SPECIALIZED COMMANDS:");
     println!("  benchmark --dm <file.wav>              Decode using delay-multiply demodulator");
     println!("  benchmark --dm-pll <file.wav>          DM+PLL with all variant combinations");
     println!("  benchmark --dm-pll-sweep <file.wav>    Sweep PLL alpha/beta parameters");
@@ -220,9 +319,7 @@ fn print_usage() {
     println!("  benchmark --corr-pll-sweep <file.wav>  Sweep Corr+PLL alpha/error_shift parameters");
     println!("  benchmark --xor <file.wav>             Decode using binary XOR correlator");
     println!("  benchmark --twist <file.wav>           Sweep twist-tuned decoder configurations");
-    println!("  benchmark --suite <directory>           Decode all WAV files, compare with Dire Wolf");
-    println!("  benchmark --compare-approaches <wav>    Compare fast vs. quality path frame-by-frame");
-    println!("  benchmark --synthetic                   Run synthetic signal benchmark");
+    println!("  benchmark --twist-mini <file.wav>      TwistMini multi-rate comparison");
     println!();
     println!("The WAV files from the WA8LMF TNC Test CD are the standard benchmark.");
     println!("Download from: http://wa8lmf.net/TNCtest/");
@@ -238,8 +335,7 @@ struct DecodeResult {
 
 /// Decode audio samples using the fast demodulator + hard HDLC.
 fn decode_fast(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = FastDemodulator::new(config).with_adaptive_gain();
     let mut hdlc = HdlcDecoder::new();
@@ -265,8 +361,7 @@ fn decode_fast(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
 /// Decode audio samples using the quality demodulator + soft HDLC.
 fn decode_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = QualityDemodulator::new(config).with_adaptive_gain();
     let mut soft_hdlc = SoftHdlcDecoder::new();
@@ -300,8 +395,7 @@ fn decode_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
 
 /// Decode audio samples using the multi-decoder (9 parallel fast decoders).
 fn decode_multi(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut multi = MultiDecoder::new(config);
     let mut frames: Vec<Vec<u8>> = Vec::new();
@@ -324,8 +418,7 @@ fn decode_multi(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
 
 /// Decode audio samples using the MiniDecoder (3 attribution-optimal decoders).
 fn decode_smart3(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut mini = MiniDecoder::new(config);
     let mut frames: Vec<Vec<u8>> = Vec::new();
@@ -348,8 +441,7 @@ fn decode_smart3(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
 
 /// Decode using TwistMiniDecoder (Smart3 + 3 twist-compensated decoders).
 fn decode_twist_mini(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut decoder = TwistMiniDecoder::new(config);
     let mut frames: Vec<Vec<u8>> = Vec::new();
@@ -371,8 +463,7 @@ fn decode_twist_mini(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
 
 /// Decode using the fast demodulator with adaptive Goertzel re-tuning.
 fn decode_fast_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = FastDemodulator::new(config).with_adaptive_retune().with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
@@ -402,8 +493,7 @@ fn decode_fast_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
 /// Decode using the quality demodulator (with retune + hybrid LLR) + soft HDLC.
 fn decode_quality_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = QualityDemodulator::new(config);
     let mut soft_hdlc = SoftHdlcDecoder::new();
@@ -437,8 +527,7 @@ fn decode_quality_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
 fn decode_best_single(samples: &[i16], sample_rate: u32) -> DecodeResult {
     use packet_radio_core::modem::filter;
 
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let freq_offset: i32 = -50;
     let phase_offset = 2 * sample_rate / 3; // t2
@@ -490,8 +579,7 @@ fn decode_custom_goertzel(
 ) -> DecodeResult {
     use packet_radio_core::modem::filter;
 
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let phase_offset = timing_phase * sample_rate / 3;
     let mark = (config.mark_freq as i32 + freq_offset) as u32;
@@ -577,8 +665,7 @@ fn upsample_2x(samples: &[i16]) -> Vec<i16> {
 ///
 /// Uses BPF + LPF for real-world signals. Optionally upsamples to 22050 Hz.
 fn decode_dm(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = DmDemodulator::with_bpf(config);
     let mut hdlc = HdlcDecoder::new();
@@ -604,8 +691,7 @@ fn decode_dm(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
 /// Decode audio samples using the correlation (mixer) demodulator + hard HDLC.
 fn decode_corr(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = CorrelationDemodulator::new(config).with_adaptive_gain();
     let mut hdlc = HdlcDecoder::new();
@@ -631,8 +717,7 @@ fn decode_corr(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
 /// Decode using correlation demod + energy LLR + soft HDLC.
 fn decode_corr_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = CorrelationDemodulator::new(config)
         .with_adaptive_gain()
@@ -673,8 +758,7 @@ fn decode_corr_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32)
 /// approach — 3× compute instead of 38× but captures timing diversity.
 fn decode_corr_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let offsets = [0, sample_rate / 3, 2 * sample_rate / 3];
 
@@ -731,8 +815,7 @@ fn decode_corr_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
 /// Decode using correlation demod with 3 timing phases + energy LLR + soft HDLC.
 /// Uses time-windowed dedup (hash + sample position) to handle repeated identical packets.
 fn decode_corr_3phase_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let offsets = [0, sample_rate / 3, 2 * sample_rate / 3];
 
@@ -806,8 +889,7 @@ fn fnv1a_hash(data: &[u8]) -> u64 {
 
 /// Decode using fast demod with cascaded BPF.
 fn decode_fast_cascade(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = FastDemodulator::new(config)
         .with_adaptive_gain()
@@ -830,8 +912,7 @@ fn decode_fast_cascade(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
 /// Decode using correlation demod with cascaded BPF.
 fn decode_corr_cascade(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = CorrelationDemodulator::new(config)
         .with_adaptive_gain()
@@ -866,8 +947,7 @@ fn decode_dm_22k(samples: &[i16], sample_rate: u32) -> DecodeResult {
         samples
     };
 
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = effective_rate;
+    let config = config_for_rate(effective_rate, get_baud());
 
     let mut demod = DmDemodulator::with_bpf(config);
     let mut hdlc = HdlcDecoder::new();
@@ -891,9 +971,264 @@ fn decode_dm_22k(samples: &[i16], sample_rate: u32) -> DecodeResult {
     }
 }
 
+// ─── Unified Result & Grid Printer ────────────────────────────────────────
+
+/// Result for one WAV file across all decoder types.
+struct UnifiedResult {
+    display_name: String,
+    dw_count: Option<u32>,
+    duration_secs: f64,
+    // Each: Option<(frame_count, elapsed)> — None if decoder skipped
+    fast: Option<(usize, Duration)>,
+    quality: Option<(usize, Duration)>,
+    smart3: Option<(usize, Duration)>,
+    twist_mini: Option<(usize, Duration)>,
+    dm: Option<(usize, Duration)>,
+    multi: Option<(usize, Duration)>,
+    corr3: Option<(usize, Duration)>,
+    slicer3: Option<(usize, Duration)>,
+    combined: Option<(usize, Duration)>,
+}
+
+impl UnifiedResult {
+    fn count(&self, col: usize) -> Option<usize> {
+        match col {
+            0 => self.fast.map(|(c, _)| c),
+            1 => self.quality.map(|(c, _)| c),
+            2 => self.smart3.map(|(c, _)| c),
+            3 => self.twist_mini.map(|(c, _)| c),
+            4 => self.dm.map(|(c, _)| c),
+            5 => self.multi.map(|(c, _)| c),
+            6 => self.corr3.map(|(c, _)| c),
+            7 => self.slicer3.map(|(c, _)| c),
+            8 => self.combined.map(|(c, _)| c),
+            _ => None,
+        }
+    }
+
+    fn elapsed(&self, col: usize) -> Option<Duration> {
+        match col {
+            0 => self.fast.map(|(_, e)| e),
+            1 => self.quality.map(|(_, e)| e),
+            2 => self.smart3.map(|(_, e)| e),
+            3 => self.twist_mini.map(|(_, e)| e),
+            4 => self.dm.map(|(_, e)| e),
+            5 => self.multi.map(|(_, e)| e),
+            6 => self.corr3.map(|(_, e)| e),
+            7 => self.slicer3.map(|(_, e)| e),
+            8 => self.combined.map(|(_, e)| e),
+            _ => None,
+        }
+    }
+}
+
+const MCU_COLS: usize = 5;   // Fast, Quality, Smart3, TwistMini, DM
+const ALL_COLS: usize = 9;   // + Multi, Corr3, Slicer3, Combined
+const COL_NAMES: [&str; 9] = ["Fst", "Qlt", "S3", "TM", "DM", "Mlt", "C3", "Sl3", "Cmb"];
+
+fn num_cols(mcu_only: bool) -> usize {
+    if mcu_only { MCU_COLS } else { ALL_COLS }
+}
+
+/// Print the unified comparison grid.
+fn print_unified_grid(title: &str, results: &[UnifiedResult], mcu_only: bool) {
+    let cols = num_cols(mcu_only);
+    let have_dw = results.iter().any(|r| r.dw_count.is_some());
+
+    println!("{}", title);
+    println!();
+
+    // Header
+    let dw_hdr = if have_dw { format!("{:>5}", "DW") } else { String::new() };
+    let mut hdr = format!("{:<30} {}", "Track", dw_hdr);
+    for i in 0..cols {
+        if i == MCU_COLS && !mcu_only {
+            hdr.push_str(" \u{2502}");
+        }
+        hdr.push_str(&format!(" {:>5}", COL_NAMES[i]));
+    }
+    println!("{}", hdr);
+
+    // Separator
+    let dw_sep_w = if have_dw { 6 } else { 0 };
+    let mcu_w = 30 + dw_sep_w + MCU_COLS * 6;
+    let desk_w = if mcu_only { 0 } else { (ALL_COLS - MCU_COLS) * 6 + 2 };
+    let sep_mcu = "\u{2500}".repeat(mcu_w);
+    if mcu_only {
+        println!("{}", sep_mcu);
+    } else {
+        println!("{}\u{253c}{}", sep_mcu, "\u{2500}".repeat(desk_w));
+    }
+
+    // Rows
+    let mut totals = vec![0usize; cols];
+    let mut total_dw = 0u32;
+
+    for r in results {
+        let dw_str = if have_dw {
+            format!(" {:>5}", r.dw_count.map_or("?".to_string(), |d| d.to_string()))
+        } else {
+            String::new()
+        };
+        let mut row = format!("{:<30}{}", r.display_name, dw_str);
+        for i in 0..cols {
+            if i == MCU_COLS && !mcu_only {
+                row.push_str(" \u{2502}");
+            }
+            match r.count(i) {
+                Some(c) => {
+                    row.push_str(&format!(" {:>5}", c));
+                    totals[i] += c;
+                }
+                None => row.push_str("     -"),
+            }
+        }
+        println!("{}", row);
+
+        if let Some(dw) = r.dw_count {
+            total_dw += dw;
+        }
+    }
+
+    // Separator
+    if mcu_only {
+        println!("{}", sep_mcu);
+    } else {
+        println!("{}\u{253c}{}", sep_mcu, "\u{2500}".repeat(desk_w));
+    }
+
+    // TOTAL row
+    let dw_total_str = if have_dw {
+        format!(" {:>5}", total_dw)
+    } else {
+        String::new()
+    };
+    let mut total_row = format!("{:<30}{}", "TOTAL", dw_total_str);
+    for i in 0..cols {
+        if i == MCU_COLS && !mcu_only {
+            total_row.push_str(" \u{2502}");
+        }
+        if results.iter().any(|r| r.count(i).is_some()) {
+            total_row.push_str(&format!(" {:>5}", totals[i]));
+        } else {
+            total_row.push_str("     -");
+        }
+    }
+    println!("{}", total_row);
+
+    // %DW row
+    if have_dw && total_dw > 0 {
+        let mut pct_row = format!("{:<30}{}", "%DW", if have_dw { "      " } else { "" });
+        for i in 0..cols {
+            if i == MCU_COLS && !mcu_only {
+                pct_row.push_str(" \u{2502}");
+            }
+            if results.iter().any(|r| r.count(i).is_some()) {
+                let pct = totals[i] as f64 / total_dw as f64 * 100.0;
+                pct_row.push_str(&format!(" {:>5.1}", pct));
+            } else {
+                pct_row.push_str("     -");
+            }
+        }
+        println!("{}", pct_row);
+    }
+
+    println!();
+}
+
+/// Print timing summary for all results.
+fn print_timing_summary(results: &[UnifiedResult], mcu_only: bool) {
+    let cols = num_cols(mcu_only);
+    println!("Timing (x real-time):");
+    let mut hdr = format!("  {:<28}", "Track");
+    for i in 0..cols {
+        if i == MCU_COLS && !mcu_only {
+            hdr.push_str("  \u{2502}");
+        }
+        hdr.push_str(&format!("  {:>5}", COL_NAMES[i]));
+    }
+    println!("{}", hdr);
+    println!("  {}", "\u{2500}".repeat(28 + cols * 7 + if mcu_only { 0 } else { 3 }));
+
+    for r in results {
+        let mut row = format!("  {:<28}", r.display_name);
+        for i in 0..cols {
+            if i == MCU_COLS && !mcu_only {
+                row.push_str("  \u{2502}");
+            }
+            match r.elapsed(i) {
+                Some(e) if e.as_secs_f64() > 0.0 => {
+                    let rt = r.duration_secs / e.as_secs_f64();
+                    row.push_str(&format!("  {:>5.0}", rt));
+                }
+                _ => row.push_str("      -"),
+            }
+        }
+        println!("{}", row);
+    }
+    println!();
+}
+
+/// Run all decoders on a given set of samples, returning a UnifiedResult.
+fn decode_all_unified(
+    display_name: &str,
+    samples: &[i16],
+    sample_rate: u32,
+    dw_count: Option<u32>,
+    mcu_only: bool,
+) -> UnifiedResult {
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    let baud = get_baud();
+
+    let fast = decode_fast(samples, sample_rate);
+    let (quality, _) = decode_quality(samples, sample_rate);
+    let (smart3, _) = decode_smart3(samples, sample_rate);
+    let (twist_mini, _) = if baud != 300 {
+        decode_twist_mini(samples, sample_rate)
+    } else {
+        // TwistMiniDecoder is 1200-only
+        (DecodeResult { frames: vec![], elapsed: Duration::ZERO }, 0)
+    };
+    let dm = decode_dm(samples, sample_rate);
+
+    let (multi, corr3, slicer3, combined) = if !mcu_only {
+        let (m, _) = decode_multi(samples, sample_rate);
+        let c3 = decode_corr_3phase(samples, sample_rate);
+        let s3 = decode_corr_slicer_3phase(samples, sample_rate);
+        let (cmb, _) = decode_combined(samples, sample_rate);
+        (
+            Some((m.frames.len(), m.elapsed)),
+            Some((c3.frames.len(), c3.elapsed)),
+            Some((s3.frames.len(), s3.elapsed)),
+            Some((cmb.frames.len(), cmb.elapsed)),
+        )
+    } else {
+        (None, None, None, None)
+    };
+
+    UnifiedResult {
+        display_name: display_name.to_string(),
+        dw_count,
+        duration_secs,
+        fast: Some((fast.frames.len(), fast.elapsed)),
+        quality: Some((quality.frames.len(), quality.elapsed)),
+        smart3: Some((smart3.frames.len(), smart3.elapsed)),
+        twist_mini: if baud != 300 {
+            Some((twist_mini.frames.len(), twist_mini.elapsed))
+        } else {
+            None
+        },
+        dm: Some((dm.frames.len(), dm.elapsed)),
+        multi,
+        corr3,
+        slicer3,
+        combined,
+    }
+}
+
 // ─── Single WAV File Decode ────────────────────────────────────────────────
 
-fn run_single_wav(path: &str) {
+fn run_single_wav(path: &str, mcu_only: bool) {
     println!("File: {}", path);
 
     let (sample_rate, samples) = match read_wav_file(path) {
@@ -913,44 +1248,11 @@ fn run_single_wav(path: &str) {
     );
     println!();
 
-    let fast = decode_fast(&samples, sample_rate);
-    let (quality, qual_soft) = decode_quality(&samples, sample_rate);
-    let (smart3, smart3_soft) = decode_smart3(&samples, sample_rate);
-    let (multi, multi_soft) = decode_multi(&samples, sample_rate);
-
-    let fast_rt = duration_secs / fast.elapsed.as_secs_f64();
-    let qual_rt = duration_secs / quality.elapsed.as_secs_f64();
-    let smart3_rt = duration_secs / smart3.elapsed.as_secs_f64();
-    let multi_rt = duration_secs / multi.elapsed.as_secs_f64();
-
-    println!(
-        "  Fast path:    {:>4} packets in {:.2}s ({:.0}x real-time)",
-        fast.frames.len(),
-        fast.elapsed.as_secs_f64(),
-        fast_rt
-    );
-    println!(
-        "  Quality path: {:>4} packets in {:.2}s ({:.0}x real-time, {} soft saves)",
-        quality.frames.len(),
-        quality.elapsed.as_secs_f64(),
-        qual_rt,
-        qual_soft
-    );
-    println!(
-        "  Smart3 path:  {:>4} packets in {:.2}s ({:.0}x real-time, {} soft saves)",
-        smart3.frames.len(),
-        smart3.elapsed.as_secs_f64(),
-        smart3_rt,
-        smart3_soft
-    );
-    println!(
-        "  Multi path:   {:>4} packets in {:.2}s ({:.0}x real-time, {} soft saves)",
-        multi.frames.len(),
-        multi.elapsed.as_secs_f64(),
-        multi_rt,
-        multi_soft
-    );
-    println!();
+    let display = track_display_name(path);
+    let result = decode_all_unified(&display, &samples, sample_rate, None, mcu_only);
+    let results = vec![result];
+    print_unified_grid("═══ Single WAV Decode ═══", &results, mcu_only);
+    print_timing_summary(&results, mcu_only);
 }
 
 // ─── Smart3 Single WAV Decode ─────────────────────────────────────────────
@@ -1069,8 +1371,7 @@ fn run_corr(path: &str) {
 
 /// Decode using correlation multi-slicer (single demod, N gain slicers).
 fn decode_corr_slicer(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut decoder = CorrSlicerDecoder::new(config).with_adaptive_gain();
     let mut frames: Vec<Vec<u8>> = Vec::new();
@@ -1092,8 +1393,7 @@ fn decode_corr_slicer(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
 /// Decode using correlation multi-slicer with 3 timing phases.
 fn decode_corr_slicer_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let offsets = [0, sample_rate / 3, 2 * sample_rate / 3];
 
@@ -1142,10 +1442,69 @@ fn decode_corr_slicer_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult 
     }
 }
 
+/// Decode using MultiDecoder + CorrSlicerDecoder (3-phase) combined, with dedup merge.
+fn decode_combined(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
+    let config = config_for_rate(sample_rate, get_baud());
+
+    let start = Instant::now();
+
+    // Run MultiDecoder
+    let mut multi = MultiDecoder::new(config);
+    let mut multi_frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
+    let mut sample_pos: usize = 0;
+    for chunk in samples.chunks(1024) {
+        let output = multi.process_samples(chunk);
+        for i in 0..output.len() {
+            let data = output.frame(i).to_vec();
+            let hash = fnv1a_hash(&data);
+            multi_frames.push((hash, sample_pos, data));
+        }
+        sample_pos += chunk.len();
+    }
+    let multi_soft = multi.total_soft_recovered();
+
+    // Run CorrSlicerDecoder with 3 timing phases
+    let offsets = [0, sample_rate / 3, 2 * sample_rate / 3];
+    let mut corr_frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
+    for &offset in &offsets {
+        let mut decoder = CorrSlicerDecoder::new(config).with_adaptive_gain();
+        decoder.set_bit_phase(offset);
+        let mut sp: usize = 0;
+        for chunk in samples.chunks(1024) {
+            let output = decoder.process_samples(chunk);
+            for i in 0..output.len() {
+                let data = output.frame(i).to_vec();
+                let hash = fnv1a_hash(&data);
+                corr_frames.push((hash, sp, data));
+            }
+            sp += chunk.len();
+        }
+    }
+
+    // Merge with time-windowed dedup: Multi first (primary), then add unique CorrSlicer frames
+    let dedup_window = sample_rate as usize * 2;
+    let mut seen: Vec<(u64, usize)> = Vec::new();
+    let mut all_frames: Vec<Vec<u8>> = Vec::new();
+
+    for (hash, pos, data) in multi_frames.iter().chain(corr_frames.iter()) {
+        let is_dup = seen.iter().any(|(h, p)| {
+            *h == *hash && (*pos as i64 - *p as i64).unsigned_abs() < dedup_window as u64
+        });
+        if !is_dup {
+            seen.push((*hash, *pos));
+            all_frames.push(data.clone());
+        }
+    }
+
+    (DecodeResult {
+        frames: all_frames,
+        elapsed: start.elapsed(),
+    }, multi_soft)
+}
+
 /// Decode using corr slicer with phase scoring enabled.
 fn decode_corr_slicer_phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut decoder = CorrSlicerDecoder::new(config)
         .with_adaptive_gain()
@@ -1169,8 +1528,7 @@ fn decode_corr_slicer_phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
 /// Decode using corr slicer with adaptive retune enabled.
 fn decode_corr_slicer_retune(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut decoder = CorrSlicerDecoder::new(config)
         .with_adaptive_gain()
@@ -1194,8 +1552,7 @@ fn decode_corr_slicer_retune(samples: &[i16], sample_rate: u32) -> DecodeResult 
 
 /// Decode using corr slicer with both phase scoring and adaptive retune.
 fn decode_corr_slicer_both(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut decoder = CorrSlicerDecoder::new(config)
         .with_adaptive_gain()
@@ -1309,8 +1666,7 @@ fn run_corr_lpf_sweep(path: &str) {
         let lpf = lowpass_coeffs(sample_rate, cutoff, 0.707);
 
         // Hard decode
-        let mut config = DemodConfig::default_1200();
-        config.sample_rate = sample_rate;
+        let config = config_for_rate(sample_rate, get_baud());
         let mut demod = CorrelationDemodulator::new(config)
             .with_adaptive_gain()
             .with_corr_lpf(lpf);
@@ -1361,8 +1717,7 @@ fn run_corr_lpf_sweep(path: &str) {
 
 /// Decode using correlation demod + Gardner PLL timing recovery.
 fn decode_corr_pll(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = CorrelationDemodulator::new(config)
         .with_adaptive_gain()
@@ -1385,8 +1740,7 @@ fn decode_corr_pll(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
 /// Decode using correlation demod + Gardner PLL + energy LLR + soft HDLC.
 fn decode_corr_pll_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = CorrelationDemodulator::new(config)
         .with_adaptive_gain()
@@ -1417,8 +1771,7 @@ fn decode_corr_pll_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, 
 fn decode_corr_pll_custom(samples: &[i16], sample_rate: u32, alpha: i16, error_shift: u8) -> DecodeResult {
     use packet_radio_core::modem::pll::ClockRecoveryPll;
 
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let pll = ClockRecoveryPll::new_gardner(sample_rate, 1200, alpha, 0)
         .with_error_shift(error_shift);
@@ -1443,8 +1796,7 @@ fn decode_corr_pll_custom(samples: &[i16], sample_rate: u32, alpha: i16, error_s
 
 /// Decode using 2-phase correlation demod (two timing phases, dedup).
 fn decode_corr_2phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let offsets = [0, sample_rate / 2];
     let mut phase_frames: Vec<Vec<(u64, usize, Vec<u8>)>> = Vec::new();
@@ -1493,8 +1845,7 @@ fn decode_corr_2phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
 /// Decode using 2-phase correlation demod + PLL per phase + dedup.
 fn decode_corr_2phase_pll(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let offsets = [0, sample_rate / 2];
     let mut phase_frames: Vec<Vec<(u64, usize, Vec<u8>)>> = Vec::new();
@@ -1647,8 +1998,7 @@ fn run_soft_diag(path: &str) {
     println!();
 
     // Run quality single-decoder with detailed stats
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
     let mut demod = QualityDemodulator::new(config);
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
@@ -1718,8 +2068,7 @@ fn run_soft_diag(path: &str) {
 
 /// Decode DM without BPF/LPF (raw discriminator).
 fn decode_dm_raw(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = DmDemodulator::new(config); // no BPF
     let mut hdlc = HdlcDecoder::new();
@@ -1743,8 +2092,7 @@ fn decode_dm_custom(samples: &[i16], sample_rate: u32, delay: usize, use_bpf: bo
     use packet_radio_core::modem::delay_multiply::DelayMultiplyDetector;
     use packet_radio_core::modem::filter::BiquadFilter;
 
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let bpf = if use_bpf {
         Some(match sample_rate {
@@ -2132,8 +2480,7 @@ fn decode_twist(
 ) -> DecodeResult {
     use packet_radio_core::modem::filter;
 
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let phase_offset = timing_phase * sample_rate / 3;
 
@@ -2537,8 +2884,7 @@ fn run_smart3_sweep(path: &str) {
 
 /// Decode using Binary XOR correlator + hard HDLC.
 fn decode_xor(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = BinaryXorDemodulator::new(config);
     let mut hdlc = HdlcDecoder::new();
@@ -2564,8 +2910,7 @@ fn decode_xor(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
 /// Decode using Binary XOR correlator + energy LLR + soft HDLC.
 fn decode_xor_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = BinaryXorDemodulator::new(config).with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
@@ -2674,17 +3019,121 @@ fn run_xor(path: &str) {
     println!();
 }
 
-fn run_suite(dir: &str) {
-    println!("═══ WA8LMF TNC Test CD Benchmark Suite ═══");
+/// Known sample rates for rate suffix extraction.
+const KNOWN_RATES: [u32; 8] = [8000, 11025, 12000, 13200, 22050, 26400, 44100, 48000];
+
+/// Extract rate suffix from a filename stem.
+/// "300_noise100_22050" → Some(("300_noise100", 22050))
+/// "02_100-mic-e-bursts" → None
+fn extract_rate_suffix(stem: &str) -> Option<(&str, u32)> {
+    if let Some(pos) = stem.rfind('_') {
+        let suffix = &stem[pos + 1..];
+        if let Ok(rate) = suffix.parse::<u32>() {
+            if KNOWN_RATES.contains(&rate) {
+                return Some((&stem[..pos], rate));
+            }
+        }
+    }
+    None
+}
+
+/// Load DW baselines from direwolf_baselines.txt (generated test format).
+/// Parses lines like "56 from ./1200/1200_clean_11025.wav" from atest output.
+fn load_direwolf_baselines(dir: &str) -> Vec<DireWolfEntry> {
+    let path = format!("{}/direwolf_baselines.txt", dir);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut entries = Vec::new();
+    let mut current_file: Option<String> = None;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        // "--- 1200_clean_11025.wav ---"
+        if trimmed.starts_with("---") && trimmed.ends_with("---") {
+            let inner = trimmed.trim_start_matches('-').trim_end_matches('-').trim();
+            if inner.ends_with(".wav") {
+                current_file = Some(inner.to_string());
+            }
+            continue;
+        }
+        // "56 packets decoded in 0.123 seconds" or "N from ./path/file.wav"
+        let fname = match current_file.as_ref() {
+            Some(f) => f.clone(),
+            None => continue,
+        };
+        let mut matched = false;
+        // Try "N packets decoded" format (atest verbose output)
+        if trimmed.contains("packets decoded") {
+            if let Some(count_str) = trimmed.split_whitespace().next() {
+                if let Ok(count) = count_str.parse::<u32>() {
+                    entries.push(DireWolfEntry {
+                        track_file: fname.clone(),
+                        decoded_packets: count,
+                    });
+                    matched = true;
+                }
+            }
+        }
+        // Try "N from ./path" format
+        if !matched && trimmed.contains(" from ") {
+            if let Some(count_str) = trimmed.split_whitespace().next() {
+                if let Ok(count) = count_str.parse::<u32>() {
+                    entries.push(DireWolfEntry {
+                        track_file: fname,
+                        decoded_packets: count,
+                    });
+                    matched = true;
+                }
+            }
+        }
+        if matched {
+            current_file = None;
+        }
+    }
+
+    entries
+}
+
+/// Load DW data from either direwolf_baselines.txt or summary.csv.
+/// Baselines file is checked first (generated tests), then CSV (WA8LMF tracks).
+fn load_dw_data(dir: &str) -> Vec<DireWolfEntry> {
+    let baseline_entries = load_direwolf_baselines(dir);
+    if !baseline_entries.is_empty() {
+        return baseline_entries;
+    }
+    load_direwolf_csv(dir)
+}
+
+/// Abbreviate sample rate for display.
+fn rate_abbrev(rate: u32) -> &'static str {
+    match rate {
+        8000 => "8k",
+        11025 => "11k",
+        12000 => "12k",
+        13200 => "13k",
+        22050 => "22k",
+        26400 => "26k",
+        44100 => "44k",
+        48000 => "48k",
+        _ => "?",
+    }
+}
+
+fn run_suite(dir: &str, rate: Option<u32>, all_rates: bool, mcu_only: bool) {
+    println!("═══ Benchmark Suite ═══");
     println!();
 
-    let mut wav_files: Vec<String> = Vec::new();
+    // Collect all WAV files
+    let mut all_wav_files: Vec<String> = Vec::new();
     match std::fs::read_dir(dir) {
         Ok(entries) => {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().map(|e| e == "wav").unwrap_or(false) {
-                    wav_files.push(path.to_string_lossy().to_string());
+                    all_wav_files.push(path.to_string_lossy().to_string());
                 }
             }
         }
@@ -2693,42 +3142,113 @@ fn run_suite(dir: &str) {
             return;
         }
     }
+    all_wav_files.sort();
 
-    wav_files.sort();
-
-    if wav_files.is_empty() {
+    if all_wav_files.is_empty() {
         println!("No WAV files found in {}", dir);
         println!("Download test files from http://wa8lmf.net/TNCtest/");
         return;
     }
 
-    // Load Dire Wolf baseline
-    let dw_entries = load_direwolf_csv(dir);
-    let have_dw = !dw_entries.is_empty();
+    // Load DW baselines
+    let dw_entries = load_dw_data(dir);
 
-    // Decode all tracks
-    struct TrackResult {
-        display_name: String,
-        fast_count: usize,
-        quality_count: usize,
-        smart3_count: usize,
-        multi_count: usize,
-        dm_count: usize,
-        soft_saves: u32,
-        smart3_soft: u32,
-        multi_soft: u32,
-        dw_count: Option<u32>,
-        fast_elapsed: Duration,
-        qual_elapsed: Duration,
-        smart3_elapsed: Duration,
-        multi_elapsed: Duration,
-        dm_elapsed: Duration,
-        duration_secs: f64,
+    // Classify files: separate base files from rate-suffixed variants
+    let mut base_files: Vec<String> = Vec::new();
+    let mut rate_files: std::collections::HashMap<u32, Vec<String>> = std::collections::HashMap::new();
+
+    for wav_path in &all_wav_files {
+        let stem = std::path::Path::new(wav_path)
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        if let Some((_base, r)) = extract_rate_suffix(&stem) {
+            rate_files.entry(r).or_default().push(wav_path.clone());
+        } else {
+            base_files.push(wav_path.clone());
+        }
     }
 
-    let mut results: Vec<TrackResult> = Vec::new();
+    if all_rates {
+        // Discover all available rates
+        let mut available_rates: Vec<u32> = rate_files.keys().copied().collect();
+        available_rates.sort();
 
-    for wav_path in &wav_files {
+        // Run base files first (native rate)
+        if !base_files.is_empty() {
+            let results = run_suite_on_files(&base_files, &dw_entries, mcu_only);
+            print_unified_grid("═══ Native Rate ═══", &results, mcu_only);
+            print_timing_summary(&results, mcu_only);
+        }
+
+        // Run each discovered rate
+        let mut all_rate_results: Vec<(u32, Vec<UnifiedResult>)> = Vec::new();
+
+        if !base_files.is_empty() {
+            // Collect native rate results for best-across-rates
+            let native_results = run_suite_on_files(&base_files, &dw_entries, mcu_only);
+            all_rate_results.push((0, native_results)); // 0 = native
+        }
+
+        for &r in &available_rates {
+            if let Some(files) = rate_files.get(&r) {
+                let mut sorted = files.clone();
+                sorted.sort();
+                let results = run_suite_on_files(&sorted, &dw_entries, mcu_only);
+                let title = format!("═══ {} Hz ═══", r);
+                print_unified_grid(&title, &results, mcu_only);
+                print_timing_summary(&results, mcu_only);
+                all_rate_results.push((r, results));
+            }
+        }
+
+        // Print best-across-rates summary
+        if all_rate_results.len() > 1 {
+            print_best_across_rates(&all_rate_results, mcu_only);
+        }
+    } else if let Some(target_rate) = rate {
+        // Run only files matching the target rate
+        if let Some(files) = rate_files.get(&target_rate) {
+            let mut sorted = files.clone();
+            sorted.sort();
+            let results = run_suite_on_files(&sorted, &dw_entries, mcu_only);
+            let title = format!("═══ {} Hz ═══", target_rate);
+            print_unified_grid(&title, &results, mcu_only);
+            print_timing_summary(&results, mcu_only);
+        } else {
+            println!("No WAV files found at {} Hz in {}", target_rate, dir);
+            let available: Vec<u32> = rate_files.keys().copied().collect();
+            if !available.is_empty() {
+                let mut sorted = available;
+                sorted.sort();
+                println!("Available rates: {:?}", sorted);
+            }
+        }
+    } else {
+        // Default: only base files (no rate suffix) — same as legacy behavior
+        let wav_files = if base_files.is_empty() {
+            // If no base files, use all files (for directories with only rate-suffixed files)
+            all_wav_files.clone()
+        } else {
+            base_files
+        };
+        let results = run_suite_on_files(&wav_files, &dw_entries, mcu_only);
+        print_unified_grid("═══ Benchmark Results ═══", &results, mcu_only);
+        print_timing_summary(&results, mcu_only);
+    }
+}
+
+/// Run the suite on a set of WAV files, returning UnifiedResults.
+fn run_suite_on_files(
+    wav_files: &[String],
+    dw_entries: &[DireWolfEntry],
+    mcu_only: bool,
+) -> Vec<UnifiedResult> {
+    let mut results = Vec::new();
+
+    for wav_path in wav_files {
         let (sample_rate, samples) = match read_wav_file(wav_path) {
             Ok(v) => v,
             Err(e) => {
@@ -2737,168 +3257,149 @@ fn run_suite(dir: &str) {
             }
         };
 
-        let duration_secs = samples.len() as f64 / sample_rate as f64;
         let display = track_display_name(wav_path);
         eprint!("  Decoding {}... ", display);
 
-        let fast = decode_fast(&samples, sample_rate);
-        let (quality, qual_soft) = decode_quality(&samples, sample_rate);
-        let (smart3, smart3_soft) = decode_smart3(&samples, sample_rate);
-        let (multi, multi_soft) = decode_multi(&samples, sample_rate);
-        let dm = decode_dm(&samples, sample_rate);
-
-        eprintln!(
-            "fast={}, quality={}, smart3={}, multi={}, dm={}",
-            fast.frames.len(),
-            quality.frames.len(),
-            smart3.frames.len(),
-            multi.frames.len(),
-            dm.frames.len()
-        );
-
-        // Match against Dire Wolf data
+        // Match DW: try full filename, then try without rate suffix
         let fname = wav_filename(wav_path);
         let dw_count = dw_entries
             .iter()
             .find(|e| e.track_file == fname)
             .map(|e| e.decoded_packets);
 
-        results.push(TrackResult {
-            display_name: display,
-            fast_count: fast.frames.len(),
-            quality_count: quality.frames.len(),
-            smart3_count: smart3.frames.len(),
-            multi_count: multi.frames.len(),
-            dm_count: dm.frames.len(),
-            soft_saves: qual_soft,
-            smart3_soft,
-            multi_soft,
-            dw_count,
-            fast_elapsed: fast.elapsed,
-            qual_elapsed: quality.elapsed,
-            smart3_elapsed: smart3.elapsed,
-            multi_elapsed: multi.elapsed,
-            dm_elapsed: dm.elapsed,
-            duration_secs,
-        });
+        let result = decode_all_unified(&display, &samples, sample_rate, dw_count, mcu_only);
+
+        // Progress output
+        let mut progress = String::new();
+        if let Some((c, _)) = result.fast { progress.push_str(&format!("fast={}", c)); }
+        if let Some((c, _)) = result.smart3 {
+            if !progress.is_empty() { progress.push_str(", "); }
+            progress.push_str(&format!("smart3={}", c));
+        }
+        if let Some((c, _)) = result.multi {
+            if !progress.is_empty() { progress.push_str(", "); }
+            progress.push_str(&format!("multi={}", c));
+        }
+        if let Some((c, _)) = result.combined {
+            if !progress.is_empty() { progress.push_str(", "); }
+            progress.push_str(&format!("combined={}", c));
+        }
+        eprintln!("{}", progress);
+
+        results.push(result);
     }
 
-    println!();
+    results
+}
 
-    // Print comparison table
-    if have_dw {
-        println!(
-            "{:<30} {:>8} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
-            "Track", "DireWolf", "Fast", "Quality", "Smart3", "Multi", "DM", "Fast%", "Smart3%", "Multi%"
-        );
-        println!("{}", "─".repeat(118));
-    } else {
-        println!(
-            "{:<30} {:>7} {:>7} {:>7} {:>7} {:>7} {:>5}",
-            "Track", "Fast", "Quality", "Smart3", "Multi", "DM", "Saves"
-        );
-        println!("{}", "─".repeat(75));
-    }
+/// Print best result per decoder per track across all rates.
+fn print_best_across_rates(
+    all_rate_results: &[(u32, Vec<UnifiedResult>)],
+    mcu_only: bool,
+) {
+    let cols = num_cols(mcu_only);
 
-    let mut total_fast = 0usize;
-    let mut total_quality = 0usize;
-    let mut total_smart3 = 0usize;
-    let mut total_multi = 0usize;
-    let mut total_dm = 0usize;
-    let mut total_dw = 0u32;
-    let mut total_saves = 0u32;
-
-    for r in &results {
-        total_fast += r.fast_count;
-        total_quality += r.quality_count;
-        total_smart3 += r.smart3_count;
-        total_multi += r.multi_count;
-        total_dm += r.dm_count;
-        total_saves += r.soft_saves;
-
-        if have_dw {
-            let dw = r.dw_count.unwrap_or(0);
-            total_dw += dw;
-            let pct = |count: usize| -> String {
-                if dw > 0 {
-                    format!("{:.1}%", count as f64 / dw as f64 * 100.0)
+    // Collect all unique display names (base names, without rate suffixes)
+    let mut track_names: Vec<String> = Vec::new();
+    for (_, results) in all_rate_results {
+        for r in results {
+            // Strip rate suffix from display name for matching
+            let base = r.display_name.clone();
+            let base_name = {
+                let stem = &base;
+                if let Some((b, _)) = extract_rate_suffix(stem) {
+                    b.to_string()
                 } else {
-                    "---".to_string()
+                    stem.clone()
                 }
             };
-            println!(
-                "{:<30} {:>8} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
-                r.display_name, dw, r.fast_count, r.quality_count, r.smart3_count,
-                r.multi_count, r.dm_count,
-                pct(r.fast_count), pct(r.smart3_count), pct(r.multi_count)
-            );
-        } else {
-            println!(
-                "{:<30} {:>7} {:>7} {:>7} {:>7} {:>7} {:>5}",
-                r.display_name, r.fast_count, r.quality_count, r.smart3_count,
-                r.multi_count, r.dm_count, r.soft_saves
-            );
+            if !track_names.contains(&base_name) {
+                track_names.push(base_name);
+            }
         }
     }
 
-    // Totals
-    if have_dw {
-        println!("{}", "─".repeat(118));
-        let pct = |count: usize| -> String {
-            if total_dw > 0 {
-                format!("{:.1}%", count as f64 / total_dw as f64 * 100.0)
-            } else {
-                "---".to_string()
+    println!("═══ Best Results Across All Rates ═══");
+    println!();
+
+    // Header with DW
+    let have_dw = all_rate_results.iter().any(|(_, rs)| rs.iter().any(|r| r.dw_count.is_some()));
+    let dw_hdr = if have_dw { format!("{:>5}", "DW") } else { String::new() };
+    let mut hdr = format!("{:<30} {}", "Track", dw_hdr);
+    for i in 0..cols {
+        if i == MCU_COLS && !mcu_only {
+            hdr.push_str(" \u{2502}");
+        }
+        hdr.push_str(&format!(" {:>5}", COL_NAMES[i]));
+    }
+    println!("{}", hdr);
+
+    // Best counts row + rate annotation row
+    for track_name in &track_names {
+        let mut best_count = vec![0usize; cols];
+        let mut best_rate = vec![0u32; cols]; // 0 = native
+        let mut dw: Option<u32> = None;
+
+        for (rate, results) in all_rate_results {
+            for r in results {
+                let base = {
+                    if let Some((b, _)) = extract_rate_suffix(&r.display_name) {
+                        b.to_string()
+                    } else {
+                        r.display_name.clone()
+                    }
+                };
+                if &base != track_name { continue; }
+
+                if dw.is_none() { dw = r.dw_count; }
+
+                for i in 0..cols {
+                    if let Some(c) = r.count(i) {
+                        if c > best_count[i] {
+                            best_count[i] = c;
+                            best_rate[i] = *rate;
+                        }
+                    }
+                }
             }
+        }
+
+        // Count row
+        let dw_str = if have_dw {
+            format!(" {:>5}", dw.map_or("?".to_string(), |d| d.to_string()))
+        } else {
+            String::new()
         };
-        println!(
-            "{:<30} {:>8} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
-            "TOTAL", total_dw, total_fast, total_quality, total_smart3,
-            total_multi, total_dm,
-            pct(total_fast), pct(total_smart3), pct(total_multi)
-        );
-    } else {
-        println!("{}", "─".repeat(75));
-        println!(
-            "{:<30} {:>7} {:>7} {:>7} {:>7} {:>7} {:>5}",
-            "TOTAL", total_fast, total_quality, total_smart3, total_multi, total_dm, total_saves
-        );
-    }
+        let truncated = if track_name.len() > 30 { &track_name[..30] } else { track_name.as_str() };
+        let mut row = format!("{:<30}{}", truncated, dw_str);
+        for i in 0..cols {
+            if i == MCU_COLS && !mcu_only {
+                row.push_str(" \u{2502}");
+            }
+            if best_count[i] > 0 {
+                row.push_str(&format!(" {:>5}", best_count[i]));
+            } else {
+                row.push_str("     -");
+            }
+        }
+        println!("{}", row);
 
-    // Timing summary
-    println!();
-    println!("Timing:");
-    for r in &results {
-        let fast_rt = r.duration_secs / r.fast_elapsed.as_secs_f64();
-        let qual_rt = r.duration_secs / r.qual_elapsed.as_secs_f64();
-        let smart3_rt = r.duration_secs / r.smart3_elapsed.as_secs_f64();
-        let multi_rt = r.duration_secs / r.multi_elapsed.as_secs_f64();
-        let dm_rt = r.duration_secs / r.dm_elapsed.as_secs_f64();
-        println!(
-            "  {:<28}  fast {:.2}s ({:.0}x)  quality {:.2}s ({:.0}x)  smart3 {:.2}s ({:.0}x)  multi {:.2}s ({:.0}x)  dm {:.2}s ({:.0}x)",
-            r.display_name,
-            r.fast_elapsed.as_secs_f64(), fast_rt,
-            r.qual_elapsed.as_secs_f64(), qual_rt,
-            r.smart3_elapsed.as_secs_f64(), smart3_rt,
-            r.multi_elapsed.as_secs_f64(), multi_rt,
-            r.dm_elapsed.as_secs_f64(), dm_rt
-        );
+        // Rate annotation row
+        let mut rate_row = format!("{:<30}{}", "", if have_dw { "      " } else { "" });
+        for i in 0..cols {
+            if i == MCU_COLS && !mcu_only {
+                rate_row.push_str("  \u{2502}");
+            }
+            if best_count[i] > 0 {
+                let abbr = if best_rate[i] == 0 { "nat" } else { rate_abbrev(best_rate[i]) };
+                rate_row.push_str(&format!(" {:>5}", abbr));
+            } else {
+                rate_row.push_str("      ");
+            }
+        }
+        println!("{}", rate_row);
     }
-
-    // Soft recovery summary
-    let total_smart3_soft: u32 = results.iter().map(|r| r.smart3_soft).sum();
-    let total_multi_soft: u32 = results.iter().map(|r| r.multi_soft).sum();
     println!();
-    println!("Soft recovery saves:");
-    println!("  {:<28}  {:>6} {:>6} {:>6}", "Track", "Qual", "Smart3", "Multi");
-    println!("  {}", "─".repeat(52));
-    for r in &results {
-        println!("  {:<28}  {:>6} {:>6} {:>6}",
-            r.display_name, r.soft_saves, r.smart3_soft, r.multi_soft);
-    }
-    println!("  {}", "─".repeat(52));
-    println!("  {:<28}  {:>6} {:>6} {:>6}",
-        "TOTAL", total_saves, total_smart3_soft, total_multi_soft);
 }
 
 // ─── Compare Approaches (A/B Test) ────────────────────────────────────────
@@ -3042,7 +3543,12 @@ fn run_synthetic_benchmark() {
     ];
 
     let mut clean_audio: Vec<i16> = Vec::new();
-    let mut modulator = AfskModulator::new(ModConfig::default_1200());
+    let mod_config = if get_baud() == 300 {
+        ModConfig::default_300()
+    } else {
+        ModConfig::default_1200()
+    };
+    let mut modulator = AfskModulator::new(mod_config);
 
     for i in 0..num_packets {
         // Generate varied payload
@@ -3164,8 +3670,7 @@ fn decode_dm_pll_opts(
     preemph: i16,
     hysteresis: i16,
 ) -> DecodeResult {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = DmDemodulator::with_bpf_pll_custom(config, alpha, beta);
     if hysteresis > 0 {
@@ -3205,8 +3710,7 @@ fn decode_dm_pll_soft(
     preemph: i16,
     hysteresis: i16,
 ) -> (DecodeResult, u32) {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = DmDemodulator::with_bpf_pll_custom(config, alpha, beta);
     if hysteresis > 0 {
@@ -3248,8 +3752,7 @@ fn decode_dm_pll(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
 /// Decode DM+PLL with symbol counting for diagnostics.
 fn decode_dm_pll_counted(samples: &[i16], sample_rate: u32, alpha: i16, beta: i16) -> (DecodeResult, usize, u32) {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
     let mut demod = DmDemodulator::with_bpf_pll_custom(config, alpha, beta);
     let mut hdlc = HdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
@@ -3293,8 +3796,7 @@ fn run_dm_pll(path: &str) {
     let dm_bres = decode_dm(&samples, sample_rate);
     // DM+Bresenham with adaptive
     let dm_bres_adapt = {
-        let mut config = DemodConfig::default_1200();
-        config.sample_rate = sample_rate;
+        let config = config_for_rate(sample_rate, get_baud());
         let demod = DmDemodulator::with_bpf(config).with_adaptive();
         let mut hdlc = HdlcDecoder::new();
         let mut frames: Vec<Vec<u8>> = Vec::new();
@@ -3328,8 +3830,7 @@ fn run_dm_pll(path: &str) {
 
     // Also compare with Bresenham
     {
-        let mut config = DemodConfig::default_1200();
-        config.sample_rate = sample_rate;
+        let config = config_for_rate(sample_rate, get_baud());
         let mut demod = DmDemodulator::with_bpf(config);
         let mut symbols_buf = [DemodSymbol { bit: false, llr: 0 }; 1024];
         let mut bres_syms = 0usize;
@@ -3471,8 +3972,7 @@ fn decode_dm_pll_tuned(
     llr_shift: u8,
     use_soft: bool,
 ) -> (usize, u32) {
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut demod = DmDemodulator::with_bpf_pll_custom(config, alpha, beta)
         .with_pll_error_shift(error_shift)
@@ -4429,8 +4929,7 @@ fn run_attribution(wav_path: &str) {
     println!("Duration: {:.1}s, {} samples at {} Hz", duration_secs, samples.len(), sample_rate);
     println!();
 
-    let mut config = DemodConfig::default_1200();
-    config.sample_rate = sample_rate;
+    let config = config_for_rate(sample_rate, get_baud());
 
     let mut multi = MultiDecoder::new(config);
     let configs = multi.decoder_configs();

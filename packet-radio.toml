@@ -1,0 +1,13 @@
+[audio]
+device = "default"
+sample_rate = 11025
+
+[modem]
+mode = "smart3"
+baud_rate = 1200
+
+[kiss]
+port = 8008
+
+[station]
+callsign = "AC1TE-7"

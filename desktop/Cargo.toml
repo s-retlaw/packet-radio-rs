@@ -26,5 +26,19 @@ tracing-subscriber = "0.3"
 # Lock-free channel for audio thread -> processing thread
 crossbeam-channel = "0.5"
 
+# TUI
+ratatui = "0.26"
+crossterm = "0.27"
+
+# Config file
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Platform (safe fd manipulation for stderr redirect)
+rustix = { version = "0.38", features = ["stdio"] }
+
 # Serial port (for KISS serial TNC)
 # serialport = "4"
+
+[dev-dependencies]
+insta = "1"

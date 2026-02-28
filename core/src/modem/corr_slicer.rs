@@ -161,6 +161,10 @@ struct FreqChannel {
     mark_q_lpf: BiquadFilter,
     space_i_lpf: BiquadFilter,
     space_q_lpf: BiquadFilter,
+    /// Decimation accumulators for mixer outputs: [mark_i, mark_q, space_i, space_q].
+    decim_acc: [i32; 4],
+    /// Current count within decimation block.
+    decim_count: u8,
     /// Bresenham fractional bit timing.
     bit_phase: u32,
     /// Parallel gain slicers.
@@ -188,7 +192,7 @@ struct FreqChannel {
 }
 
 impl FreqChannel {
-    fn new(mark_freq: u32, space_freq: u32, sample_rate: u32, lpf: BiquadFilter) -> Self {
+    fn new(mark_freq: u32, space_freq: u32, sample_rate: u32, lpf: BiquadFilter, effective_rate: u32) -> Self {
         let mark_phase_inc = ((mark_freq as u64 * (1u64 << 24)) / sample_rate as u64) as u32;
         let space_phase_inc = ((space_freq as u64 * (1u64 << 24)) / sample_rate as u64) as u32;
         let slicers: [CorrSlicer; MAX_SLICERS] =
@@ -203,6 +207,8 @@ impl FreqChannel {
             mark_q_lpf: lpf,
             space_i_lpf: lpf,
             space_q_lpf: lpf,
+            decim_acc: [0; 4],
+            decim_count: 0,
             bit_phase: 0,
             slicers,
             demod_shift_reg: 0,
@@ -213,7 +219,7 @@ impl FreqChannel {
             preamble_flag_count: 0,
             symbols_since_last_flag: 255,
             phase_committed: true, // Default: disabled; enabled by with_phase_scoring()
-            candidate_phases: [0, sample_rate / 3, sample_rate * 2 / 3],
+            candidate_phases: [0, effective_rate / 3, effective_rate * 2 / 3],
             candidate_shift_regs: [0; NUM_PHASE_CANDIDATES],
             candidate_prev_nrzi: [false; NUM_PHASE_CANDIDATES],
             candidate_flag_counts: [0; NUM_PHASE_CANDIDATES],
@@ -221,13 +227,15 @@ impl FreqChannel {
         }
     }
 
-    fn reset(&mut self, sample_rate: u32, phase_scoring: bool) {
+    fn reset(&mut self, effective_rate: u32, phase_scoring: bool) {
         self.mark_phase = 0;
         self.space_phase = 0;
         self.mark_i_lpf.reset();
         self.mark_q_lpf.reset();
         self.space_i_lpf.reset();
         self.space_q_lpf.reset();
+        self.decim_acc = [0; 4];
+        self.decim_count = 0;
         self.bit_phase = 0;
         for s in &mut self.slicers {
             s.reset();
@@ -240,7 +248,7 @@ impl FreqChannel {
         self.preamble_flag_count = 0;
         self.symbols_since_last_flag = 255;
         self.phase_committed = !phase_scoring;
-        self.candidate_phases = [0, sample_rate / 3, sample_rate * 2 / 3];
+        self.candidate_phases = [0, effective_rate / 3, effective_rate * 2 / 3];
         self.candidate_shift_regs = [0; NUM_PHASE_CANDIDATES];
         self.candidate_prev_nrzi = [false; NUM_PHASE_CANDIDATES];
         self.candidate_flag_counts = [0; NUM_PHASE_CANDIDATES];
@@ -260,6 +268,10 @@ pub struct CorrSlicerDecoder {
     num_channels: usize,
     num_slicers: usize,
     samples_processed: u64,
+    /// Decimation factor for mixer outputs (1 = none, 2 or 4).
+    corr_decim_factor: u8,
+    /// Effective sample rate after decimation.
+    effective_sample_rate: u32,
     /// Adaptive preamble gain measurement (applied to channel 0 slicer 0).
     adaptive_gain_enabled: bool,
     /// Whether to produce energy-based LLR.
@@ -282,25 +294,58 @@ pub struct CorrSlicerDecoder {
 impl CorrSlicerDecoder {
     /// Create a new multi-slicer correlation decoder with default gains and frequency offsets.
     pub fn new(config: DemodConfig) -> Self {
-        let bpf = match config.sample_rate {
-            13200 => super::filter::afsk_bandpass_13200(),
-            22050 => super::filter::afsk_bandpass_22050(),
-            26400 => super::filter::afsk_bandpass_26400(),
-            44100 => super::filter::afsk_bandpass_44100(),
-            _ => super::filter::afsk_bandpass_11025(),
+        let bpf = if config.baud_rate == 300 {
+            match config.sample_rate {
+                8000 => super::filter::afsk_300_bandpass_8000(),
+                22050 => super::filter::afsk_300_bandpass_22050(),
+                44100 => super::filter::afsk_300_bandpass_44100(),
+                48000 => super::filter::afsk_300_bandpass_48000(),
+                _ => super::filter::afsk_300_bandpass_11025(),
+            }
+        } else {
+            match config.sample_rate {
+                13200 => super::filter::afsk_bandpass_13200(),
+                22050 => super::filter::afsk_bandpass_22050(),
+                26400 => super::filter::afsk_bandpass_26400(),
+                44100 => super::filter::afsk_bandpass_44100(),
+                _ => super::filter::afsk_bandpass_11025(),
+            }
         };
+
+        // For 300 baud at high sample rates, decimate mixer outputs so the LPF
+        // runs at ~11025 Hz where Q15 coefficients have adequate precision.
+        let (decim_factor, effective_rate) = if config.baud_rate == 300 {
+            if config.sample_rate >= 44100 {
+                (4u8, config.sample_rate / 4)
+            } else if config.sample_rate >= 22050 {
+                (2u8, config.sample_rate / 2)
+            } else {
+                (1u8, config.sample_rate)
+            }
+        } else {
+            (1u8, config.sample_rate)
+        };
+
+        // Select LPF for effective (decimated) sample rate
         let lpf = super::filter::corr_lpf_for_config(
-            config.mark_freq,
-            config.space_freq,
-            config.baud_rate,
-            config.sample_rate,
+            config.mark_freq, config.space_freq, config.baud_rate, effective_rate,
         );
 
+        // Narrower frequency offsets for 300 baud (200 Hz tone separation vs 1000 Hz)
+        let freq_offsets_300: [i32; MAX_FREQ_CHANNELS] = {
+            #[cfg(feature = "std")]
+            { [0, -10, 10] }
+            #[cfg(not(feature = "std"))]
+            { [0] }
+        };
+
+        let offsets = if config.baud_rate == 300 { &freq_offsets_300 } else { &FREQ_OFFSETS };
+
         let channels: [FreqChannel; MAX_FREQ_CHANNELS] = core::array::from_fn(|i| {
-            let offset = FREQ_OFFSETS[i];
+            let offset = offsets[i];
             let mark = (config.mark_freq as i32 + offset) as u32;
             let space = (config.space_freq as i32 + offset) as u32;
-            FreqChannel::new(mark, space, config.sample_rate, lpf)
+            FreqChannel::new(mark, space, config.sample_rate, lpf, effective_rate)
         });
 
         Self {
@@ -310,6 +355,8 @@ impl CorrSlicerDecoder {
             num_channels: MAX_FREQ_CHANNELS,
             num_slicers: MAX_SLICERS,
             samples_processed: 0,
+            corr_decim_factor: decim_factor,
+            effective_sample_rate: effective_rate,
             adaptive_gain_enabled: false,
             energy_llr: true,
             adaptive: None,
@@ -361,7 +408,7 @@ impl CorrSlicerDecoder {
         self.adaptive = Some(CorrAdaptiveState {
             hilbert: hilbert_31(),
             inst_freq: InstFreqDetector::new(self.config.sample_rate),
-            tracker: AdaptiveTracker::new(self.config.sample_rate),
+            tracker: AdaptiveTracker::new_for_config(&self.config),
             retuned: false,
             sample_index: 0,
         });
@@ -381,10 +428,10 @@ impl CorrSlicerDecoder {
     /// Reset all state for a new audio stream.
     pub fn reset(&mut self) {
         self.bpf.reset();
-        let sample_rate = self.config.sample_rate;
+        let effective_rate = self.effective_sample_rate;
         let phase_scoring = self.phase_scoring;
         for ch in &mut self.channels[..self.num_channels] {
-            ch.reset(sample_rate, phase_scoring);
+            ch.reset(effective_rate, phase_scoring);
         }
         self.samples_processed = 0;
         self.recent_hashes = [(0u32, 0u32); DEDUP_RING_SIZE];
@@ -429,6 +476,8 @@ impl CorrSlicerDecoder {
         let phase_scoring = self.phase_scoring;
         let mark_freq = self.config.mark_freq;
         let space_freq = self.config.space_freq;
+        let decim_factor = self.corr_decim_factor;
+        let effective_rate = self.effective_sample_rate;
 
         // Dedup state borrowed separately to avoid borrow conflicts with channels.
         let recent_hashes = &mut self.recent_hashes;
@@ -503,18 +552,36 @@ impl CorrSlicerDecoder {
                 ch.mark_phase = ch.mark_phase.wrapping_add(ch.mark_phase_inc);
                 ch.space_phase = ch.space_phase.wrapping_add(ch.space_phase_inc);
 
-                // 2b. Lowpass filter each mixer output
-                let mark_i = ch.mark_i_lpf.process(mark_i_raw as i16);
-                let mark_q = ch.mark_q_lpf.process(mark_q_raw as i16);
-                let space_i = ch.space_i_lpf.process(space_i_raw as i16);
-                let space_q = ch.space_q_lpf.process(space_q_raw as i16);
+                // 2b. Decimation + Lowpass filter
+                ch.decim_acc[0] += mark_i_raw;
+                ch.decim_acc[1] += mark_q_raw;
+                ch.decim_acc[2] += space_i_raw;
+                ch.decim_acc[3] += space_q_raw;
+                ch.decim_count += 1;
+
+                if ch.decim_count < decim_factor {
+                    continue;
+                }
+
+                let df = decim_factor as i32;
+                let dec_mi = (ch.decim_acc[0] / df) as i16;
+                let dec_mq = (ch.decim_acc[1] / df) as i16;
+                let dec_si = (ch.decim_acc[2] / df) as i16;
+                let dec_sq = (ch.decim_acc[3] / df) as i16;
+                ch.decim_acc = [0; 4];
+                ch.decim_count = 0;
+
+                let mark_i = ch.mark_i_lpf.process(dec_mi);
+                let mark_q = ch.mark_q_lpf.process(dec_mq);
+                let space_i = ch.space_i_lpf.process(dec_si);
+                let space_q = ch.space_q_lpf.process(dec_sq);
 
                 // 2c. Preamble phase scoring (3 candidate Bresenham timings)
                 if phase_scoring && !ch.phase_committed {
                     for c in 0..NUM_PHASE_CANDIDATES {
                         ch.candidate_phases[c] += baud_rate;
-                        if ch.candidate_phases[c] >= sample_rate {
-                            ch.candidate_phases[c] -= sample_rate;
+                        if ch.candidate_phases[c] >= effective_rate {
+                            ch.candidate_phases[c] -= effective_rate;
                             // Symbol boundary for candidate c — compute energy
                             let me = (mark_i as i64) * (mark_i as i64)
                                 + (mark_q as i64) * (mark_q as i64);
@@ -560,12 +627,12 @@ impl CorrSlicerDecoder {
                     }
                 }
 
-                // 2d. Bresenham symbol timing (per-channel)
+                // 2d. Bresenham symbol timing (per-channel, at effective rate)
                 ch.bit_phase += baud_rate;
-                if ch.bit_phase < sample_rate {
+                if ch.bit_phase < effective_rate {
                     continue;
                 }
-                ch.bit_phase -= sample_rate;
+                ch.bit_phase -= effective_rate;
 
                 // ── Symbol boundary ──
 

@@ -1,0 +1,13 @@
+[audio]
+device = "default"
+sample_rate = 11025
+
+[modem]
+mode = "multi"
+baud_rate = 1200
+
+[kiss]
+port = 8001
+
+[station]
+callsign = "N0CALL"

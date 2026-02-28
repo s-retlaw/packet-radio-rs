@@ -61,33 +61,56 @@ pub struct BinaryXorDemodulator {
 }
 
 impl BinaryXorDemodulator {
-    /// Select the appropriate BPF for a given sample rate.
-    fn select_bpf(sample_rate: u32) -> BiquadFilter {
-        match sample_rate {
-            13200 => super::filter::afsk_bandpass_13200(),
-            22050 => super::filter::afsk_bandpass_22050(),
-            26400 => super::filter::afsk_bandpass_26400(),
-            44100 => super::filter::afsk_bandpass_44100(),
-            _ => super::filter::afsk_bandpass_11025(),
+    /// Select the appropriate BPF based on baud rate and sample rate.
+    fn select_bpf(config: &DemodConfig) -> BiquadFilter {
+        if config.baud_rate == 300 {
+            match config.sample_rate {
+                8000 => super::filter::afsk_300_bandpass_8000(),
+                22050 => super::filter::afsk_300_bandpass_22050(),
+                44100 => super::filter::afsk_300_bandpass_44100(),
+                48000 => super::filter::afsk_300_bandpass_48000(),
+                _ => super::filter::afsk_300_bandpass_11025(),
+            }
+        } else {
+            match config.sample_rate {
+                13200 => super::filter::afsk_bandpass_13200(),
+                22050 => super::filter::afsk_bandpass_22050(),
+                26400 => super::filter::afsk_bandpass_26400(),
+                44100 => super::filter::afsk_bandpass_44100(),
+                _ => super::filter::afsk_bandpass_11025(),
+            }
         }
     }
 
     /// Optimal delay for XOR correlation with BPF+LPF smoothing.
     ///
-    /// Uses τ ≈ 726 μs (~1 symbol period), same as DM filtered delay.
-    /// At this delay, mark (1200 Hz) and space (2200 Hz) produce maximally
-    /// different XOR patterns after LPF smoothing.
-    fn xor_delay(sample_rate: u32) -> usize {
-        match sample_rate {
-            11025 => 8,   // 726 μs
-            13200 => 10,  // 758 μs
-            22050 => 16,  // 726 μs
-            26400 => 19,  // 720 μs
-            44100 => 31,  // 703 μs
-            48000 => 31,  // 646 μs
-            _ => {
-                let d = sample_rate as usize / 1400;
-                d.clamp(1, 31)
+    /// For 1200 baud: τ ≈ 726 μs (~1 symbol period).
+    /// For 300 baud: τ ≈ 3333 μs (~1 symbol period).
+    fn xor_delay(config: &DemodConfig) -> usize {
+        if config.baud_rate == 300 {
+            match config.sample_rate {
+                8000 => 27,   // 3375 μs (~1 symbol)
+                11025 => 37,  // 3356 μs (~1 symbol)
+                22050 => 37,  // 1678 μs (MAX_DELAY limited)
+                44100 => 47,  // 1066 μs (MAX_DELAY limited)
+                48000 => 47,  // 979 μs (MAX_DELAY limited)
+                _ => {
+                    let d = config.sample_rate as usize / 300;
+                    d.clamp(1, super::MAX_DELAY - 1)
+                }
+            }
+        } else {
+            match config.sample_rate {
+                11025 => 8,   // 726 μs
+                13200 => 10,  // 758 μs
+                22050 => 16,  // 726 μs
+                26400 => 19,  // 720 μs
+                44100 => 31,  // 703 μs
+                48000 => 31,  // 646 μs
+                _ => {
+                    let d = config.sample_rate as usize / 1400;
+                    d.clamp(1, super::MAX_DELAY - 1)
+                }
             }
         }
     }
@@ -136,9 +159,13 @@ impl BinaryXorDemodulator {
 
     /// Create a new Binary XOR demodulator with BPF + LPF.
     pub fn new(config: DemodConfig) -> Self {
-        let bpf = Self::select_bpf(config.sample_rate);
-        let delay = Self::xor_delay(config.sample_rate);
-        let lpf = super::filter::post_detect_lpf(config.sample_rate);
+        let bpf = Self::select_bpf(&config);
+        let delay = Self::xor_delay(&config);
+        let lpf = if config.baud_rate == 300 {
+            super::filter::post_detect_lpf_300(config.sample_rate)
+        } else {
+            super::filter::post_detect_lpf(config.sample_rate)
+        };
         let mark_is_positive = Self::is_mark_positive(delay, config.sample_rate);
 
         Self {
@@ -159,8 +186,12 @@ impl BinaryXorDemodulator {
 
     /// Create with a custom BPF filter and timing phase offset.
     pub fn with_filter_and_offset(config: DemodConfig, bpf: BiquadFilter, phase_offset: u32) -> Self {
-        let delay = Self::xor_delay(config.sample_rate);
-        let lpf = super::filter::post_detect_lpf(config.sample_rate);
+        let delay = Self::xor_delay(&config);
+        let lpf = if config.baud_rate == 300 {
+            super::filter::post_detect_lpf_300(config.sample_rate)
+        } else {
+            super::filter::post_detect_lpf(config.sample_rate)
+        };
         let mark_is_positive = Self::is_mark_positive(delay, config.sample_rate);
 
         Self {

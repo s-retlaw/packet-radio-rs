@@ -6,7 +6,9 @@
 
 mod audio;
 mod cli;
+mod config;
 mod kiss_server;
+mod tui;
 
 use clap::Parser;
 use packet_radio_core::modem::demod::{CorrelationDemodulator, DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator};
@@ -21,31 +23,464 @@ use packet_radio_core::tnc::{AfskModulateAdapter, NullDemod, TncConfig, TncEngin
 use packet_radio_core::kiss;
 use packet_radio_core::aprs;
 use packet_radio_core::SampleSource;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::broadcast;
 
 fn main() {
     let cli = cli::Cli::parse();
 
-    // Pipe modes: send tracing to stderr so stdout is clean data
-    let is_pipe = cli.rx_pipe || cli.tx_pipe;
-
-    // Init tracing
+    // Init tracing — suppress stdout in TUI mode (TUI owns the terminal)
     let level = match cli.verbose {
         0 => tracing::Level::INFO,
         1 => tracing::Level::DEBUG,
         _ => tracing::Level::TRACE,
     };
-    if is_pipe {
+
+    if !cli.is_headless() {
+        tracing_subscriber::fmt()
+            .with_max_level(level)
+            .with_writer(std::io::sink)
+            .init();
+        run_tui_mode(cli);
+    } else if cli.rx_pipe || cli.tx_pipe {
         tracing_subscriber::fmt()
             .with_max_level(level)
             .with_writer(std::io::stderr)
             .init();
+        run_headless(cli);
     } else {
         tracing_subscriber::fmt()
             .with_max_level(level)
             .init();
+        run_headless(cli);
+    }
+}
+
+// ── TUI Mode ───────────────────────────────────────────────────────────
+
+/// Launch the TUI — the default mode when no pipe/wav flags are set.
+fn run_tui_mode(cli: cli::Cli) {
+    // Resolve config path
+    let config_path = config::TncConfig::config_path(cli.config.as_deref());
+    let mut tnc_config = config::TncConfig::load_or_default(&config_path);
+
+    // CLI flags override config file values
+    if cli.device != "default" {
+        tnc_config.audio.device = cli.device.clone();
+    }
+    if cli.sample_rate != 11025 {
+        tnc_config.audio.sample_rate = cli.sample_rate;
+    }
+    let cli_mode = cli.demod_mode();
+    if cli_mode != "fast" {
+        // "fast" is the CLI default — only override if user explicitly chose something
+        tnc_config.modem.mode = cli_mode.to_string();
+    }
+    if cli.kiss_port != 8001 {
+        tnc_config.kiss.port = cli.kiss_port;
     }
 
+    // Enumerate audio devices
+    let devices = tui::list_audio_devices();
+
+    // Channels: audio thread → TUI (crossbeam) and KISS broadcast (tokio)
+    let (async_tx, async_rx) = crossbeam_channel::unbounded::<tui::state::AsyncEvent>();
+    let (kiss_frame_tx, _) = broadcast::channel::<Vec<u8>>(64);
+    let (kiss_in_tx, _kiss_in_rx) = crossbeam_channel::bounded::<Vec<u8>>(64);
+
+    // Tokio runtime for KISS TCP + TUI event loop
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+
+    // Start KISS TCP server
+    if tnc_config.kiss.port > 0 {
+        let tx = kiss_frame_tx.clone();
+        let port = tnc_config.kiss.port;
+        let kiss_in = kiss_in_tx.clone();
+        rt.spawn(async move {
+            kiss_server::run_bidirectional(port, tx, kiss_in).await;
+        });
+    }
+
+    // Build the App
+    let config_existed = config_path.exists();
+    let mut app = tui::App::new(tnc_config, config_path, devices);
+
+    // If a config file already exists, auto-start processing
+    if config_existed {
+        app.start_requested = true;
+    }
+
+    // Closure: spawn audio processing thread on demand
+    let start_audio = {
+        let async_tx = async_tx.clone();
+        let kiss_tx = kiss_frame_tx.clone();
+        move |cfg: &config::TncConfig| -> Result<(std::thread::JoinHandle<()>, Arc<AtomicBool>), String> {
+            spawn_audio_thread(cfg, async_tx.clone(), kiss_tx.clone())
+        }
+    };
+
+    // Run the TUI event loop (blocks until quit)
+    if let Err(e) = rt.block_on(tui::run_tui(app, async_rx, start_audio)) {
+        eprintln!("TUI error: {e}");
+    }
+}
+
+/// Spawn an audio processing thread. Returns the thread handle and stop signal.
+///
+/// The audio device is opened inside the spawned thread (cpal::Stream is !Send).
+/// A oneshot channel synchronizes so the caller blocks until the device is open.
+fn spawn_audio_thread(
+    cfg: &config::TncConfig,
+    async_tx: crossbeam_channel::Sender<tui::state::AsyncEvent>,
+    kiss_frame_tx: broadcast::Sender<Vec<u8>>,
+) -> Result<(std::thread::JoinHandle<()>, Arc<AtomicBool>), String> {
+    let stop_signal = Arc::new(AtomicBool::new(false));
+    let stop = stop_signal.clone();
+
+    let device_name = cfg.audio.device.clone();
+    let sample_rate = cfg.audio.sample_rate;
+    let baud_rate = cfg.modem.baud_rate;
+    let mode = cfg.modem.mode.clone();
+
+    // Oneshot to report whether audio opened successfully
+    let (result_tx, result_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
+
+    let handle = std::thread::spawn(move || {
+        let source = match audio::CpalSource::open(&device_name, sample_rate) {
+            Ok(src) => {
+                let _ = result_tx.send(Ok(()));
+                src
+            }
+            Err(e) => {
+                let _ = result_tx.send(Err(e));
+                return;
+            }
+        };
+
+        let config = demod_config_for_rate(sample_rate, baud_rate);
+        run_audio_loop(Box::new(source), config, &mode, &stop, &async_tx, &kiss_frame_tx);
+        let _ = async_tx.send(tui::state::AsyncEvent::AudioDone);
+    });
+
+    // Wait for the thread to report whether audio opened successfully
+    match result_rx.recv() {
+        Ok(Ok(())) => Ok((handle, stop_signal)),
+        Ok(Err(e)) => {
+            let _ = handle.join();
+            Err(e)
+        }
+        Err(_) => Err("audio thread exited before reporting status".to_string()),
+    }
+}
+
+/// Audio processing loop — runs in a background thread, checks `stop` flag.
+fn run_audio_loop(
+    mut source: Box<dyn SampleSource>,
+    config: DemodConfig,
+    mode: &str,
+    stop: &AtomicBool,
+    async_tx: &crossbeam_channel::Sender<tui::state::AsyncEvent>,
+    kiss_frame_tx: &broadcast::Sender<Vec<u8>>,
+) {
+    let mut frame_count: u64 = 0;
+    let mut audio_buf = [0i16; 1024];
+
+    match mode {
+        "multi" => {
+            let mut multi = MultiDecoder::new(config);
+            loop {
+                if stop.load(Ordering::Relaxed) { break; }
+                let n = source.read_samples(&mut audio_buf);
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let output = multi.process_samples(&audio_buf[..n]);
+                for i in 0..output.len() {
+                    frame_count += 1;
+                    emit_tui_frame(frame_count, output.frame(i), async_tx, kiss_frame_tx);
+                }
+            }
+        }
+        "smart3" => {
+            let mut mini = MiniDecoder::new(config);
+            loop {
+                if stop.load(Ordering::Relaxed) { break; }
+                let n = source.read_samples(&mut audio_buf);
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let output = mini.process_samples(&audio_buf[..n]);
+                for i in 0..output.len() {
+                    frame_count += 1;
+                    emit_tui_frame(frame_count, output.frame(i), async_tx, kiss_frame_tx);
+                }
+            }
+        }
+        "corr-slicer" => {
+            let mut decoder = CorrSlicerDecoder::new(config).with_adaptive_gain();
+            loop {
+                if stop.load(Ordering::Relaxed) { break; }
+                let n = source.read_samples(&mut audio_buf);
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let output = decoder.process_samples(&audio_buf[..n]);
+                for i in 0..output.len() {
+                    frame_count += 1;
+                    emit_tui_frame(frame_count, output.frame(i), async_tx, kiss_frame_tx);
+                }
+            }
+        }
+        "dm" => {
+            let mut demod = DmDemodulator::with_bpf_pll(config);
+            let mut soft_hdlc = SoftHdlcDecoder::new();
+            let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+            loop {
+                if stop.load(Ordering::Relaxed) { break; }
+                let n = source.read_samples(&mut audio_buf);
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
+                for i in 0..ns {
+                    if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                        frame_count += 1;
+                        let data = match &result {
+                            FrameResult::Valid(d) => *d,
+                            FrameResult::Recovered { data, .. } => *data,
+                        };
+                        emit_tui_frame(frame_count, data, async_tx, kiss_frame_tx);
+                    }
+                }
+            }
+        }
+        "xor" => {
+            let mut demod = BinaryXorDemodulator::new(config);
+            let mut soft_hdlc = SoftHdlcDecoder::new();
+            let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+            loop {
+                if stop.load(Ordering::Relaxed) { break; }
+                let n = source.read_samples(&mut audio_buf);
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
+                for i in 0..ns {
+                    if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                        frame_count += 1;
+                        let data = match &result {
+                            FrameResult::Valid(d) => *d,
+                            FrameResult::Recovered { data, .. } => *data,
+                        };
+                        emit_tui_frame(frame_count, data, async_tx, kiss_frame_tx);
+                    }
+                }
+            }
+        }
+        "corr" => {
+            let mut demod = CorrelationDemodulator::new(config)
+                .with_adaptive_gain()
+                .with_energy_llr();
+            let mut soft_hdlc = SoftHdlcDecoder::new();
+            let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+            loop {
+                if stop.load(Ordering::Relaxed) { break; }
+                let n = source.read_samples(&mut audio_buf);
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
+                for i in 0..ns {
+                    if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                        frame_count += 1;
+                        let data = match &result {
+                            FrameResult::Valid(d) => *d,
+                            FrameResult::Recovered { data, .. } => *data,
+                        };
+                        emit_tui_frame(frame_count, data, async_tx, kiss_frame_tx);
+                    }
+                }
+            }
+        }
+        "corr-pll" => {
+            let mut demod = CorrelationDemodulator::new(config)
+                .with_adaptive_gain()
+                .with_energy_llr()
+                .with_pll();
+            let mut soft_hdlc = SoftHdlcDecoder::new();
+            let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+            loop {
+                if stop.load(Ordering::Relaxed) { break; }
+                let n = source.read_samples(&mut audio_buf);
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
+                for i in 0..ns {
+                    if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                        frame_count += 1;
+                        let data = match &result {
+                            FrameResult::Valid(d) => *d,
+                            FrameResult::Recovered { data, .. } => *data,
+                        };
+                        emit_tui_frame(frame_count, data, async_tx, kiss_frame_tx);
+                    }
+                }
+            }
+        }
+        "quality" => {
+            let mut demod = QualityDemodulator::new(config);
+            let mut soft_hdlc = SoftHdlcDecoder::new();
+            let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+            loop {
+                if stop.load(Ordering::Relaxed) { break; }
+                let n = source.read_samples(&mut audio_buf);
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
+                for i in 0..ns {
+                    if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                        frame_count += 1;
+                        let data = match &result {
+                            FrameResult::Valid(d) => *d,
+                            FrameResult::Recovered { data, .. } => *data,
+                        };
+                        emit_tui_frame(frame_count, data, async_tx, kiss_frame_tx);
+                    }
+                }
+            }
+        }
+        _ => {
+            // Default: fast demodulator
+            let mut demod = FastDemodulator::new(config);
+            let mut hdlc = HdlcDecoder::new();
+            let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+            loop {
+                if stop.load(Ordering::Relaxed) { break; }
+                let n = source.read_samples(&mut audio_buf);
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
+                for i in 0..ns {
+                    if let Some(f) = hdlc.feed_bit(symbols[i].bit) {
+                        frame_count += 1;
+                        emit_tui_frame(frame_count, f, async_tx, kiss_frame_tx);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Convert a decoded frame to `DecodedFrameInfo` and send to TUI + KISS.
+fn emit_tui_frame(
+    count: u64,
+    data: &[u8],
+    async_tx: &crossbeam_channel::Sender<tui::state::AsyncEvent>,
+    kiss_frame_tx: &broadcast::Sender<Vec<u8>>,
+) {
+    let info = make_frame_info(count, data);
+    let _ = async_tx.try_send(tui::state::AsyncEvent::FrameDecoded(info));
+    let _ = kiss_frame_tx.send(data.to_vec());
+}
+
+/// Parse raw AX.25 bytes into a `DecodedFrameInfo` for the TUI.
+fn make_frame_info(count: u64, data: &[u8]) -> tui::state::DecodedFrameInfo {
+    let timestamp = chrono_lite_timestamp();
+
+    if let Some(frame) = Frame::parse(data) {
+        let src = core::str::from_utf8(frame.src.callsign_str()).unwrap_or("?");
+        let src_ssid = if frame.src.ssid > 0 {
+            format!("{src}-{}", frame.src.ssid)
+        } else {
+            src.to_string()
+        };
+
+        let dest = core::str::from_utf8(frame.dest.callsign_str()).unwrap_or("?");
+        let dest_ssid = if frame.dest.ssid > 0 {
+            format!("{dest}-{}", frame.dest.ssid)
+        } else {
+            dest.to_string()
+        };
+
+        let mut via = String::new();
+        for i in 0..frame.num_digipeaters as usize {
+            if !via.is_empty() { via.push(','); }
+            let digi = &frame.digipeaters[i];
+            if let Ok(call) = core::str::from_utf8(digi.callsign_str()) {
+                via.push_str(call);
+            }
+            if digi.ssid > 0 {
+                via.push('-');
+                via.push_str(&digi.ssid.to_string());
+            }
+            if digi.h_bit {
+                via.push('*');
+            }
+        }
+
+        let info_str = core::str::from_utf8(frame.info).unwrap_or("<binary>").to_string();
+
+        let aprs_summary = aprs::parse_packet(frame.info, frame.dest.callsign_str())
+            .map(|pkt| match pkt {
+                aprs::AprsPacket::Position { position, .. } => {
+                    let lat = position.lat as f64 / 1_000_000.0;
+                    let lon = position.lon as f64 / 1_000_000.0;
+                    format!("Position: {lat:.4}, {lon:.4}")
+                }
+                aprs::AprsPacket::MicE { position, speed, course, .. } => {
+                    let lat = position.lat as f64 / 1_000_000.0;
+                    let lon = position.lon as f64 / 1_000_000.0;
+                    format!("Mic-E: {lat:.4}, {lon:.4} {speed}kts {course}°")
+                }
+                aprs::AprsPacket::Message { addressee, text, .. } => {
+                    let to = core::str::from_utf8(addressee).unwrap_or("?");
+                    let msg = core::str::from_utf8(text).unwrap_or("?");
+                    format!("Msg to {to}: {msg}")
+                }
+                _ => "APRS".to_string(),
+            });
+
+        tui::state::DecodedFrameInfo {
+            frame_number: count,
+            timestamp,
+            source: src_ssid,
+            dest: dest_ssid,
+            via,
+            info: info_str,
+            aprs_summary,
+            raw_len: data.len(),
+        }
+    } else {
+        tui::state::DecodedFrameInfo {
+            frame_number: count,
+            timestamp,
+            source: "<raw>".to_string(),
+            dest: String::new(),
+            via: String::new(),
+            info: hex_preview(data, 32),
+            aprs_summary: None,
+            raw_len: data.len(),
+        }
+    }
+}
+
+// ── Headless Mode ──────────────────────────────────────────────────────
+
+/// Original processing path — console output, no TUI.
+fn run_headless(cli: cli::Cli) {
     // List devices and exit
     if cli.list_devices {
         audio::list_devices();
@@ -82,14 +517,10 @@ fn main() {
         TxPipeline::new(kiss_in_rx.clone(), cli.sample_rate)
     });
 
-    let config = match cli.sample_rate {
-        22050 => DemodConfig::default_1200_22k(),
-        44100 => DemodConfig::default_1200_44k(),
-        _ => DemodConfig::default_1200(),
-    };
-
-    // Open audio source
+    // Open audio source (stdin source created first to allow WAV auto-detection)
+    let effective_rate;
     let source: Box<dyn SampleSource> = if let Some(ref wav_path) = cli.wav {
+        effective_rate = cli.sample_rate;
         match audio::WavSource::open(wav_path, cli.sample_rate) {
             Ok(src) => Box::new(src),
             Err(e) => {
@@ -98,8 +529,30 @@ fn main() {
             }
         }
     } else if cli.rx_pipe {
-        Box::new(audio::StdinSource::new())
+        let stdin_src = match audio::StdinSource::new() {
+            Ok(src) => src,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        };
+        if let Some(detected) = stdin_src.detected_sample_rate() {
+            if detected != cli.sample_rate {
+                tracing::info!(
+                    "rx-pipe: detected WAV on stdin ({detected} Hz), overriding -s {}",
+                    cli.sample_rate,
+                );
+            } else {
+                tracing::info!("rx-pipe: detected WAV on stdin ({detected} Hz)");
+            }
+            effective_rate = detected;
+        } else {
+            tracing::info!("rx-pipe: raw PCM on stdin at {} Hz", cli.sample_rate);
+            effective_rate = cli.sample_rate;
+        }
+        Box::new(stdin_src)
     } else {
+        effective_rate = cli.sample_rate;
         match audio::CpalSource::open(&cli.device, cli.sample_rate) {
             Ok(src) => Box::new(src),
             Err(e) => {
@@ -108,6 +561,8 @@ fn main() {
             }
         }
     };
+
+    let config = demod_config_for_rate(effective_rate, cli.baud);
 
     // RX pipe mode: demod → KISS binary on stdout
     if cli.rx_pipe {
@@ -141,13 +596,14 @@ fn main() {
         cli.corr_slicer,
         cli.corr_pll,
         cli.xor,
-        cli.sample_rate,
+        effective_rate,
+        cli.baud,
         tx_pipeline,
     );
 
     // Write TX audio to WAV if requested
     if let (Some(ref tx_wav_path), Some(pipeline)) = (&cli.tx_wav, &tx_pipeline) {
-        pipeline.write_wav(tx_wav_path, cli.sample_rate);
+        pipeline.write_wav(tx_wav_path, effective_rate);
     }
 }
 
@@ -238,6 +694,35 @@ impl TxPipeline {
     }
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+/// Build a DemodConfig for the given sample rate and baud rate.
+fn demod_config_for_rate(rate: u32, baud: u32) -> DemodConfig {
+    match baud {
+        300 => {
+            match rate {
+                8000 => DemodConfig::default_300_8k(),
+                _ => {
+                    let mut c = DemodConfig::default_300();
+                    c.sample_rate = rate;
+                    c
+                }
+            }
+        }
+        _ => {
+            match rate {
+                22050 => DemodConfig::default_1200_22k(),
+                44100 => DemodConfig::default_1200_44k(),
+                _ => {
+                    let mut c = DemodConfig::default_1200();
+                    c.sample_rate = rate;
+                    c
+                }
+            }
+        }
+    }
+}
+
 // ── Process Loops ───────────────────────────────────────────────────────
 
 /// Main DSP processing loop. Returns the TX pipeline (if any) for WAV writing.
@@ -254,13 +739,10 @@ fn process_loop(
     use_corr_pll: bool,
     use_xor: bool,
     sample_rate: u32,
+    baud_rate: u32,
     tx_pipeline: Option<TxPipeline>,
 ) -> Option<TxPipeline> {
-    let config = match sample_rate {
-        22050 => DemodConfig::default_1200_22k(),
-        44100 => DemodConfig::default_1200_44k(),
-        _ => DemodConfig::default_1200(),
-    };
+    let config = demod_config_for_rate(sample_rate, baud_rate);
 
     if use_multi {
         tracing::info!("using multi-decoder ({} parallel decoders)", {

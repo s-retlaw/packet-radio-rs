@@ -59,8 +59,18 @@ pub const BAUD_RATE: u32 = 1200;
 /// Midpoint frequency between mark and space (Hz)
 pub const MID_FREQ: u32 = (MARK_FREQ + SPACE_FREQ) / 2; // 1700 Hz
 
-/// Maximum delay line length (samples) for the delay-multiply detector
-pub const MAX_DELAY: usize = 32;
+/// 300 baud mark frequency (Hz) — Bell 103/HF packet convention
+pub const MARK_FREQ_300: u32 = 1600;
+
+/// 300 baud space frequency (Hz)
+pub const SPACE_FREQ_300: u32 = 1800;
+
+/// 300 baud rate
+pub const BAUD_RATE_300: u32 = 300;
+
+/// Maximum delay line length (samples) for the delay-multiply detector.
+/// 48 supports 300 baud DM at 11025 Hz (delay=37 samples).
+pub const MAX_DELAY: usize = 48;
 
 /// Maximum number of bits in a single frame (for soft bit buffer)
 /// AX.25 max frame = 330 bytes × 8 bits + flags + stuffing ≈ 3000 bits
@@ -104,6 +114,27 @@ impl DemodConfig {
             baud_rate: BAUD_RATE,
             pll_alpha: 936,   // ~0.0286 in Q15 — moderate tracking
             pll_beta: 0,      // beta=0 universally optimal (frequency correction hurts)
+        }
+    }
+
+    /// Default configuration for 300 baud AFSK at 11025 Hz sample rate.
+    /// Uses mark=1600 Hz, space=1800 Hz (200 Hz separation).
+    pub fn default_300() -> Self {
+        Self {
+            sample_rate: 11025,
+            mark_freq: MARK_FREQ_300,
+            space_freq: SPACE_FREQ_300,
+            baud_rate: BAUD_RATE_300,
+            pll_alpha: 936,
+            pll_beta: 0,
+        }
+    }
+
+    /// Configuration for 300 baud AFSK at 8000 Hz sample rate.
+    pub fn default_300_8k() -> Self {
+        Self {
+            sample_rate: 8000,
+            ..Self::default_300()
         }
     }
 
@@ -152,6 +183,17 @@ impl ModConfig {
             mark_freq: MARK_FREQ,
             space_freq: SPACE_FREQ,
             baud_rate: BAUD_RATE,
+            amplitude: 16000,
+        }
+    }
+
+    /// Default modulator configuration for 300 baud at 11025 Hz.
+    pub fn default_300() -> Self {
+        Self {
+            sample_rate: 11025,
+            mark_freq: MARK_FREQ_300,
+            space_freq: SPACE_FREQ_300,
+            baud_rate: BAUD_RATE_300,
             amplitude: 16000,
         }
     }

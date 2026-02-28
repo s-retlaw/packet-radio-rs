@@ -7,7 +7,7 @@
 //! This allows a single decoder to adapt to each transmitter's characteristics,
 //! replacing the need for multiple parallel decoders with fixed parameters.
 
-use super::{MARK_FREQ, SPACE_FREQ, MID_FREQ};
+use super::{MARK_FREQ, SPACE_FREQ, MID_FREQ, DemodConfig};
 
 /// Tracking state machine
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,17 +66,23 @@ pub struct AdaptiveTracker {
     min_training_samples: u32,
     /// Carrier detect threshold
     carrier_threshold: i32,
+    /// Nominal mark frequency (Hz × 256) for reset
+    nominal_mark: i32,
+    /// Nominal space frequency (Hz × 256) for reset
+    nominal_space: i32,
 }
 
 impl AdaptiveTracker {
-    /// Create a new tracker with default parameters.
+    /// Create a new tracker with default 1200 baud parameters.
     pub fn new(sample_rate: u32) -> Self {
+        let nominal_mark = (MARK_FREQ as i32) * 256;
+        let nominal_space = (SPACE_FREQ as i32) * 256;
         let nominal_mid = (MID_FREQ as i32) * 256;
         let samples_per_symbol = (sample_rate as i32 * 256) / 1200;
 
         Self {
-            mark_freq_est: (MARK_FREQ as i32) * 256,
-            space_freq_est: (SPACE_FREQ as i32) * 256,
+            mark_freq_est: nominal_mark,
+            space_freq_est: nominal_space,
             threshold: nominal_mid,
             samples_per_symbol_est: samples_per_symbol,
             signal_level: 0,
@@ -94,6 +100,46 @@ impl AdaptiveTracker {
             nominal_mid,
             min_training_samples: 40,
             carrier_threshold: 200 * 256, // 200 Hz minimum deviation from mid
+            nominal_mark,
+            nominal_space,
+        }
+    }
+
+    /// Create a tracker parameterized from a DemodConfig.
+    ///
+    /// Uses the config's mark/space frequencies and baud rate instead of
+    /// hardcoded 1200 baud constants. Sets carrier threshold to tone_sep/4
+    /// (50 Hz for 300 baud, 250 Hz for 1200 baud).
+    pub fn new_for_config(config: &DemodConfig) -> Self {
+        let nominal_mark = (config.mark_freq as i32) * 256;
+        let nominal_space = (config.space_freq as i32) * 256;
+        let nominal_mid = (nominal_mark + nominal_space) / 2;
+        let samples_per_symbol = (config.sample_rate as i32 * 256) / config.baud_rate as i32;
+        let tone_sep = (config.space_freq as i32 - config.mark_freq as i32).abs();
+        let carrier_threshold = (tone_sep / 4) * 256;
+
+        Self {
+            mark_freq_est: nominal_mark,
+            space_freq_est: nominal_space,
+            threshold: nominal_mid,
+            samples_per_symbol_est: samples_per_symbol,
+            signal_level: 0,
+
+            state: TrackState::Idle,
+            mark_accum: 0,
+            mark_count: 0,
+            space_accum: 0,
+            space_count: 0,
+            transition_periods: [0u16; 16],
+            transition_idx: 0,
+            transition_count: 0,
+            last_transition_sample: 0,
+            prev_freq: 0,
+            nominal_mid,
+            min_training_samples: 40,
+            carrier_threshold,
+            nominal_mark,
+            nominal_space,
         }
     }
 
@@ -177,9 +223,9 @@ impl AdaptiveTracker {
     pub fn reset(&mut self) {
         self.state = TrackState::Idle;
         self.reset_accumulators();
-        // Restore nominal values
-        self.mark_freq_est = (MARK_FREQ as i32) * 256;
-        self.space_freq_est = (SPACE_FREQ as i32) * 256;
+        // Restore nominal values (config-appropriate for any baud rate)
+        self.mark_freq_est = self.nominal_mark;
+        self.space_freq_est = self.nominal_space;
         self.threshold = self.nominal_mid;
     }
 

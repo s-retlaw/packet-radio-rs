@@ -70,7 +70,39 @@ pub struct Cli {
     #[arg(long)]
     pub tx_pipe: bool,
 
+    /// Baud rate: 300 (HF) or 1200 (VHF, default)
+    #[arg(short = 'B', long, default_value = "1200")]
+    pub baud: u32,
+
+    /// Disable TUI — headless mode (log to stdout like before)
+    #[arg(long)]
+    pub no_tui: bool,
+
+    /// Config file path (default: ./packet-radio.toml)
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
     /// Verbose output (repeat for more: -v, -vv, -vvv)
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
+}
+
+impl Cli {
+    /// Returns true if TUI should be bypassed (pipe modes, WAV decode, --no-tui).
+    pub fn is_headless(&self) -> bool {
+        self.no_tui || self.rx_pipe || self.tx_pipe || self.wav.is_some() || self.list_devices
+    }
+
+    /// Determine the demod mode string from CLI flags.
+    pub fn demod_mode(&self) -> &str {
+        if self.multi { "multi" }
+        else if self.smart3 { "smart3" }
+        else if self.corr_slicer { "corr-slicer" }
+        else if self.corr_pll { "corr-pll" }
+        else if self.corr { "corr" }
+        else if self.dm { "dm" }
+        else if self.xor { "xor" }
+        else if self.quality { "quality" }
+        else { "fast" }
+    }
 }

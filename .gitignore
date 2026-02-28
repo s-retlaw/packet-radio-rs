@@ -17,6 +17,9 @@ Thumbs.db
 # Test WAV files (large, not committed — see tests/wav/README.md)
 tests/wav/*.wav
 tests/wav/*.raw
+tests/wav/**/*.wav
+tests/wav/**/*.raw
+tests/wav/**/direwolf_baselines.txt
 
 # ISO images and extracted test data
 iso/

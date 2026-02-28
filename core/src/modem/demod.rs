@@ -120,25 +120,43 @@ pub struct FastDemodulator {
     preamble_flag_count: u8,
     /// Symbols since last flag detection (for preamble-end detection).
     symbols_since_last_flag: u8,
+    /// Optional PLL for adaptive symbol timing (Gardner TED).
+    /// When present, replaces Bresenham fixed-rate timing.
+    /// Used for 300 baud variable-speed tracking.
+    pll: Option<ClockRecoveryPll>,
+    /// Override baud rate for Bresenham timing.
+    /// When set, the symbol timing uses this rate instead of config.baud_rate.
+    /// Used for baud-rate diversity in multi-decoder (300 baud variable speed).
+    timing_baud_rate: u32,
 }
 
 impl FastDemodulator {
-    /// Select the appropriate BPF for a given sample rate.
-    fn select_bpf(sample_rate: u32) -> BiquadFilter {
-        match sample_rate {
-            12000 => super::filter::afsk_bandpass_12000(),
-            13200 => super::filter::afsk_bandpass_13200(),
-            22050 => super::filter::afsk_bandpass_22050(),
-            26400 => super::filter::afsk_bandpass_26400(),
-            44100 => super::filter::afsk_bandpass_44100(),
-            48000 => super::filter::afsk_bandpass_48000(),
-            _ => super::filter::afsk_bandpass_11025(),
+    /// Select the appropriate BPF for a given config (baud rate + sample rate).
+    fn select_bpf(config: &DemodConfig) -> BiquadFilter {
+        if config.baud_rate == 300 {
+            match config.sample_rate {
+                8000 => super::filter::afsk_300_bandpass_8000(),
+                22050 => super::filter::afsk_300_bandpass_22050(),
+                44100 => super::filter::afsk_300_bandpass_44100(),
+                48000 => super::filter::afsk_300_bandpass_48000(),
+                _ => super::filter::afsk_300_bandpass_11025(),
+            }
+        } else {
+            match config.sample_rate {
+                12000 => super::filter::afsk_bandpass_12000(),
+                13200 => super::filter::afsk_bandpass_13200(),
+                22050 => super::filter::afsk_bandpass_22050(),
+                26400 => super::filter::afsk_bandpass_26400(),
+                44100 => super::filter::afsk_bandpass_44100(),
+                48000 => super::filter::afsk_bandpass_48000(),
+                _ => super::filter::afsk_bandpass_11025(),
+            }
         }
     }
 
     /// Create a new fast-path demodulator.
     pub fn new(config: DemodConfig) -> Self {
-        let bpf = Self::select_bpf(config.sample_rate);
+        let bpf = Self::select_bpf(&config);
 
         let mark_coeff = goertzel_coeff(config.mark_freq, config.sample_rate);
         let space_coeff = goertzel_coeff(config.space_freq, config.sample_rate);
@@ -170,6 +188,8 @@ impl FastDemodulator {
             preamble_space_count: 0,
             preamble_flag_count: 0,
             symbols_since_last_flag: 255,
+            pll: None,
+            timing_baud_rate: config.baud_rate,
         }
     }
 
@@ -205,6 +225,8 @@ impl FastDemodulator {
             preamble_space_count: 0,
             preamble_flag_count: 0,
             symbols_since_last_flag: 255,
+            pll: None,
+            timing_baud_rate: config.baud_rate,
         }
     }
 
@@ -256,7 +278,19 @@ impl FastDemodulator {
             preamble_space_count: 0,
             preamble_flag_count: 0,
             symbols_since_last_flag: 255,
+            pll: None,
+            timing_baud_rate: config.baud_rate,
         }
+    }
+
+    /// Override baud rate for Bresenham symbol timing.
+    ///
+    /// The BPF and Goertzel coefficients remain tuned for the nominal baud rate,
+    /// but the symbol timing runs at a different rate. Used for baud-rate diversity
+    /// in multi-decoder to handle variable-speed transmitters.
+    pub fn with_timing_baud_rate(mut self, baud_rate: u32) -> Self {
+        self.timing_baud_rate = baud_rate;
+        self
     }
 
     /// Set space energy gain for multi-slicer diversity.
@@ -311,10 +345,29 @@ impl FastDemodulator {
         self.adaptive = Some(AdaptiveState {
             hilbert: hilbert_31(),
             inst_freq: InstFreqDetector::new(self.config.sample_rate),
-            tracker: AdaptiveTracker::new(self.config.sample_rate),
+            tracker: AdaptiveTracker::new_for_config(&self.config),
             retuned: false,
             sample_index: 0,
         });
+        self
+    }
+
+    /// Enable Gardner PLL timing recovery with default parameters.
+    ///
+    /// Uses a normalized Goertzel energy discriminator to drive the PLL.
+    /// Particularly useful for 300 baud where 37 samples/symbol gives
+    /// PLL much better convergence than at 1200 baud (9 sps).
+    pub fn with_pll(mut self) -> Self {
+        self.pll = Some(
+            ClockRecoveryPll::new_gardner(self.config.sample_rate, self.config.baud_rate, 936, 0)
+                .with_error_shift(8)
+        );
+        self
+    }
+
+    /// Enable PLL timing recovery with custom parameters.
+    pub fn with_custom_pll(mut self, pll: ClockRecoveryPll) -> Self {
+        self.pll = Some(pll);
         self
     }
 
@@ -366,6 +419,9 @@ impl FastDemodulator {
             self.mark_coeff = goertzel_coeff(self.config.mark_freq, self.config.sample_rate);
             self.space_coeff = goertzel_coeff(self.config.space_freq, self.config.sample_rate);
         }
+        if let Some(ref mut pll) = self.pll {
+            pll.reset();
+        }
     }
 
     /// Process a buffer of audio samples.
@@ -379,7 +435,7 @@ impl FastDemodulator {
     ) -> usize {
         let mut sym_count = 0;
         let sample_rate = self.config.sample_rate;
-        let baud_rate = self.config.baud_rate;
+        let timing_baud = self.timing_baud_rate;
 
         for &sample in samples {
             self.samples_processed += 1;
@@ -429,11 +485,30 @@ impl FastDemodulator {
             self.space_s2 = self.space_s1;
             self.space_s1 = space_s0;
 
-            // 3. Bresenham symbol timing
-            self.bit_phase += baud_rate;
-            if self.bit_phase >= sample_rate {
-                self.bit_phase -= sample_rate;
+            // 3. Symbol timing: PLL or Bresenham
+            let boundary = if let Some(ref mut pll) = self.pll {
+                // Normalized discriminator from Goertzel state: bounded ±127.
+                // |mark_s1| vs |space_s1| gives instantaneous tone strength.
+                let mark_mag = self.mark_s1.abs();
+                let space_mag = self.space_s1.abs();
+                let total = mark_mag + space_mag;
+                let disc = if total > 0 {
+                    (((mark_mag - space_mag) * 127) / total).clamp(-127, 127) as i16
+                } else {
+                    0
+                };
+                pll.update(disc).is_some()
+            } else {
+                self.bit_phase += timing_baud;
+                if self.bit_phase >= sample_rate {
+                    self.bit_phase -= sample_rate;
+                    true
+                } else {
+                    false
+                }
+            };
 
+            if boundary {
                 // 4. Goertzel energy comparison for hard bit decision
                 let mark_energy = self.mark_s1 * self.mark_s1
                     + self.mark_s2 * self.mark_s2
@@ -579,6 +654,17 @@ pub fn goertzel_coeff(freq: u32, sample_rate: u32) -> i32 {
         (2200, 48000) => 31419,  // 2·cos(2π·2200/48000) × 16384
         (1200, 12000) => 26510,  // 2·cos(2π·1200/12000) × 16384
         (2200, 12000) => 13328,  // 2·cos(2π·2200/12000) × 16384
+        // 300 baud: mark=1600 Hz, space=1800 Hz
+        (1600, 8000) => 10126,   // 2·cos(2π·1600/8000) × 16384
+        (1800, 8000) => 5126,    // 2·cos(2π·1800/8000) × 16384
+        (1600, 11025) => 20063,  // 2·cos(2π·1600/11025) × 16384
+        (1800, 11025) => 16987,  // 2·cos(2π·1800/11025) × 16384
+        (1600, 22050) => 29421,  // 2·cos(2π·1600/22050) × 16384
+        (1800, 22050) => 28551,  // 2·cos(2π·1800/22050) × 16384
+        (1600, 44100) => 31920,  // 2·cos(2π·1600/44100) × 16384
+        (1800, 44100) => 31696,  // 2·cos(2π·1800/44100) × 16384
+        (1600, 48000) => 32052,  // 2·cos(2π·1600/48000) × 16384
+        (1800, 48000) => 31863,  // 2·cos(2π·1800/48000) × 16384
         _ => {
             // Approximate using integer arithmetic.
             // For unsupported rates, fall back to a rough calculation.
@@ -997,19 +1083,34 @@ impl DmDemodulator {
     /// which is critical for detecting single-symbol tones like the space in
     /// a flag pattern (MMMMMMMS). All chosen delays give mark→positive,
     /// space→negative polarity.
-    fn dm_delay(sample_rate: u32) -> usize {
-        match sample_rate {
-            11025 => 2,  // 181 μs: mark→+0.20, space→−0.81, 2/9=22%
-            13200 => 2,  // 152 μs: mark→+0.36, space→−0.54, 2/11=18%
-            22050 => 3,  // 136 μs: mark→+0.52, space→−0.30, 3/18=16%
-            26400 => 4,  // 152 μs: mark→+0.36, space→−0.54, 4/22=18%
-            44100 => 7,  // 159 μs: mark→+0.37, space→−0.58, 7/37=19%
-            48000 => 8,  // 167 μs: mark→+0.31, space→−0.67, 8/40=20%
-            _ => {
-                let approx = sample_rate / 6000;
-                if approx < 1 { 1 }
-                else if approx >= super::MAX_DELAY as u32 { super::MAX_DELAY - 1 }
-                else { approx as usize }
+    fn dm_delay(config: &DemodConfig) -> usize {
+        if config.baud_rate == 300 {
+            // 300 baud: τ ≈ 1/(1600+1800) ≈ 294 μs
+            match config.sample_rate {
+                8000 => 2,    // 250 μs
+                11025 => 3,   // 272 μs
+                22050 => 6,   // 272 μs
+                44100 => 13,  // 295 μs
+                48000 => 14,  // 292 μs
+                _ => {
+                    let approx = config.sample_rate / 3400;
+                    approx.clamp(1, super::MAX_DELAY as u32 - 1) as usize
+                }
+            }
+        } else {
+            match config.sample_rate {
+                11025 => 2,  // 181 μs: mark→+0.20, space→−0.81, 2/9=22%
+                13200 => 2,  // 152 μs: mark→+0.36, space→−0.54, 2/11=18%
+                22050 => 3,  // 136 μs: mark→+0.52, space→−0.30, 3/18=16%
+                26400 => 4,  // 152 μs: mark→+0.36, space→−0.54, 4/22=18%
+                44100 => 7,  // 159 μs: mark→+0.37, space→−0.58, 7/37=19%
+                48000 => 8,  // 167 μs: mark→+0.31, space→−0.67, 8/40=20%
+                _ => {
+                    let approx = config.sample_rate / 6000;
+                    if approx < 1 { 1 }
+                    else if approx >= super::MAX_DELAY as u32 { super::MAX_DELAY - 1 }
+                    else { approx as usize }
+                }
             }
         }
     }
@@ -1072,25 +1173,19 @@ impl DmDemodulator {
 
     fn make(config: DemodConfig, phase_offset: u32, use_bpf: bool) -> Self {
         let delay = if use_bpf {
-            Self::dm_delay_filtered(config.sample_rate)
+            Self::dm_delay_filtered_for_config(&config)
         } else {
-            Self::dm_delay(config.sample_rate)
+            Self::dm_delay(&config)
         };
         let lpf = if use_bpf {
-            super::filter::post_detect_lpf(config.sample_rate)
+            Self::post_detect_lpf_for_config(&config)
         } else {
             BiquadFilter::passthrough()
         };
         let detector = DelayMultiplyDetector::with_delay(delay, lpf);
 
         let bpf = if use_bpf {
-            Some(match config.sample_rate {
-                13200 => super::filter::afsk_bandpass_13200(),
-                22050 => super::filter::afsk_bandpass_22050(),
-                26400 => super::filter::afsk_bandpass_26400(),
-                44100 => super::filter::afsk_bandpass_44100(),
-                _ => super::filter::afsk_bandpass_11025(),
-            })
+            Some(Self::select_dm_bpf(&config))
         } else {
             None
         };
@@ -1149,17 +1244,61 @@ impl DmDemodulator {
         self
     }
 
+    /// Baud-aware filtered delay selection.
+    fn dm_delay_filtered_for_config(config: &DemodConfig) -> usize {
+        if config.baud_rate == 300 {
+            // 300 baud: delay ≈ 1 symbol period = sample_rate / 300
+            match config.sample_rate {
+                8000 => 27,   // 3375 μs (~1 symbol)
+                11025 => 37,  // 3356 μs (~1 symbol)
+                22050 => 37,  // 1678 μs (~half symbol, limited by MAX_DELAY)
+                44100 => 47,  // 1066 μs (~1/3 symbol, limited by MAX_DELAY)
+                48000 => 47,  // 979 μs (~1/3 symbol, limited by MAX_DELAY)
+                _ => {
+                    let d = config.sample_rate as usize / 300;
+                    d.clamp(1, super::MAX_DELAY - 1)
+                }
+            }
+        } else {
+            Self::dm_delay_filtered(config.sample_rate)
+        }
+    }
+
+    /// Baud-aware post-detection LPF selection.
+    fn post_detect_lpf_for_config(config: &DemodConfig) -> BiquadFilter {
+        if config.baud_rate == 300 {
+            super::filter::post_detect_lpf_300(config.sample_rate)
+        } else {
+            super::filter::post_detect_lpf(config.sample_rate)
+        }
+    }
+
+    /// Select the appropriate BPF for DM demodulator based on baud rate.
+    fn select_dm_bpf(config: &DemodConfig) -> BiquadFilter {
+        if config.baud_rate == 300 {
+            match config.sample_rate {
+                8000 => super::filter::afsk_300_bandpass_8000(),
+                22050 => super::filter::afsk_300_bandpass_22050(),
+                44100 => super::filter::afsk_300_bandpass_44100(),
+                48000 => super::filter::afsk_300_bandpass_48000(),
+                _ => super::filter::afsk_300_bandpass_11025(),
+            }
+        } else {
+            match config.sample_rate {
+                13200 => super::filter::afsk_bandpass_13200(),
+                22050 => super::filter::afsk_bandpass_22050(),
+                26400 => super::filter::afsk_bandpass_26400(),
+                44100 => super::filter::afsk_bandpass_44100(),
+                _ => super::filter::afsk_bandpass_11025(),
+            }
+        }
+    }
+
     fn make_pll(config: DemodConfig, alpha: i16, beta: i16, hysteresis: i16) -> Self {
-        let delay = Self::dm_delay_filtered(config.sample_rate);
-        let lpf = super::filter::post_detect_lpf(config.sample_rate);
+        let delay = Self::dm_delay_filtered_for_config(&config);
+        let lpf = Self::post_detect_lpf_for_config(&config);
         let detector = DelayMultiplyDetector::with_delay(delay, lpf);
-        let bpf = Some(match config.sample_rate {
-            13200 => super::filter::afsk_bandpass_13200(),
-            22050 => super::filter::afsk_bandpass_22050(),
-            26400 => super::filter::afsk_bandpass_26400(),
-            44100 => super::filter::afsk_bandpass_44100(),
-            _ => super::filter::afsk_bandpass_11025(),
-        });
+        let bpf = Some(Self::select_dm_bpf(&config));
         let mark_is_negative = Self::is_mark_negative(delay, config.sample_rate);
         let pll = ClockRecoveryPll::new_gardner(config.sample_rate, config.baud_rate, alpha, beta)
             .with_hysteresis(hysteresis);
@@ -1238,6 +1377,16 @@ impl DmDemodulator {
     pub fn with_pll_error_shift(mut self, shift: u8) -> Self {
         if let Some(ref mut pll) = self.pll {
             pll.set_error_shift(shift);
+        }
+        self
+    }
+
+    /// Set PLL maximum drift range.
+    /// `denom` is the denominator: max_drift = nominal / denom.
+    /// E.g., denom=20 → ±5%, denom=50 → ±2% (default).
+    pub fn with_pll_max_drift(mut self, denom: i32) -> Self {
+        if let Some(ref mut pll) = self.pll {
+            pll.set_max_drift(denom);
         }
         self
     }
@@ -1509,6 +1658,16 @@ pub struct CorrelationDemodulator {
     mark_q_lpf: BiquadFilter,
     space_i_lpf: BiquadFilter,
     space_q_lpf: BiquadFilter,
+    /// Decimation factor for mixer outputs (1 = none, 2 or 4).
+    /// For 300 baud at high sample rates, we decimate mixer outputs so the LPF
+    /// runs at ~11025 Hz where Q15 coefficients have adequate precision.
+    corr_decim_factor: u8,
+    /// Current count within decimation block.
+    corr_decim_count: u8,
+    /// Accumulators for mixer output decimation: [mark_i, mark_q, space_i, space_q].
+    corr_decim_acc: [i32; 4],
+    /// Effective sample rate after decimation (for Bresenham/PLL timing).
+    effective_sample_rate: u32,
     /// Bresenham fractional bit timing
     bit_phase: u32,
     prev_nrzi_bit: bool,
@@ -1545,23 +1704,52 @@ impl CorrelationDemodulator {
         ((freq as u64 * (1u64 << 24)) / sample_rate as u64) as u32
     }
 
-    /// Select the appropriate BPF for a given sample rate.
-    fn select_bpf(sample_rate: u32) -> BiquadFilter {
-        match sample_rate {
-            12000 => super::filter::afsk_bandpass_12000(),
-            13200 => super::filter::afsk_bandpass_13200(),
-            22050 => super::filter::afsk_bandpass_22050(),
-            26400 => super::filter::afsk_bandpass_26400(),
-            44100 => super::filter::afsk_bandpass_44100(),
-            48000 => super::filter::afsk_bandpass_48000(),
-            _ => super::filter::afsk_bandpass_11025(),
+    /// Select the appropriate BPF for a given config (baud rate + sample rate).
+    fn select_bpf(config: &DemodConfig) -> BiquadFilter {
+        if config.baud_rate == 300 {
+            match config.sample_rate {
+                8000 => super::filter::afsk_300_bandpass_8000(),
+                22050 => super::filter::afsk_300_bandpass_22050(),
+                44100 => super::filter::afsk_300_bandpass_44100(),
+                48000 => super::filter::afsk_300_bandpass_48000(),
+                _ => super::filter::afsk_300_bandpass_11025(),
+            }
+        } else {
+            match config.sample_rate {
+                12000 => super::filter::afsk_bandpass_12000(),
+                13200 => super::filter::afsk_bandpass_13200(),
+                22050 => super::filter::afsk_bandpass_22050(),
+                26400 => super::filter::afsk_bandpass_26400(),
+                44100 => super::filter::afsk_bandpass_44100(),
+                48000 => super::filter::afsk_bandpass_48000(),
+                _ => super::filter::afsk_bandpass_11025(),
+            }
         }
     }
 
     /// Create a new correlation demodulator.
     pub fn new(config: DemodConfig) -> Self {
-        let bpf = Self::select_bpf(config.sample_rate);
-        let lpf = super::filter::corr_lpf_for_config(config.mark_freq, config.space_freq, config.baud_rate, config.sample_rate);
+        let bpf = Self::select_bpf(&config);
+
+        // For 300 baud at high sample rates, decimate mixer outputs so the LPF
+        // runs at ~11025 Hz where Q15 coefficients have adequate precision.
+        // Without decimation, 120 Hz LPF at 44100 Hz has b0=2 (truncates to 0).
+        let (decim_factor, effective_rate) = if config.baud_rate == 300 {
+            if config.sample_rate >= 44100 {
+                (4u8, config.sample_rate / 4)  // 44100→11025, 48000→12000
+            } else if config.sample_rate >= 22050 {
+                (2u8, config.sample_rate / 2)  // 22050→11025
+            } else {
+                (1u8, config.sample_rate)
+            }
+        } else {
+            (1u8, config.sample_rate)
+        };
+
+        // Select LPF for effective (decimated) sample rate
+        let lpf = super::filter::corr_lpf_for_config(
+            config.mark_freq, config.space_freq, config.baud_rate, effective_rate,
+        );
 
         Self {
             config,
@@ -1575,6 +1763,10 @@ impl CorrelationDemodulator {
             mark_q_lpf: lpf,
             space_i_lpf: lpf,
             space_q_lpf: lpf,
+            corr_decim_factor: decim_factor,
+            corr_decim_count: 0,
+            corr_decim_acc: [0; 4],
+            effective_sample_rate: effective_rate,
             bit_phase: 0,
             prev_nrzi_bit: false,
             samples_processed: 0,
@@ -1626,6 +1818,9 @@ impl CorrelationDemodulator {
         self.mark_q_lpf = lpf;
         self.space_i_lpf = lpf;
         self.space_q_lpf = lpf;
+        // Disable decimation when explicitly overriding LPF
+        self.corr_decim_factor = 1;
+        self.effective_sample_rate = self.config.sample_rate;
         self
     }
 
@@ -1649,7 +1844,7 @@ impl CorrelationDemodulator {
     /// mismatch), unlike the failed Goertzel+DM PLL experiments.
     pub fn with_pll(mut self) -> Self {
         self.pll = Some(
-            ClockRecoveryPll::new_gardner(self.config.sample_rate, 1200, 936, 0)
+            ClockRecoveryPll::new_gardner(self.effective_sample_rate, self.config.baud_rate, 936, 0)
                 .with_error_shift(8)
         );
         self
@@ -1673,6 +1868,8 @@ impl CorrelationDemodulator {
         self.mark_q_lpf.reset();
         self.space_i_lpf.reset();
         self.space_q_lpf.reset();
+        self.corr_decim_count = 0;
+        self.corr_decim_acc = [0; 4];
         self.bit_phase = 0;
         self.prev_nrzi_bit = false;
         self.samples_processed = 0;
@@ -1701,7 +1898,6 @@ impl CorrelationDemodulator {
         symbols_out: &mut [DemodSymbol],
     ) -> usize {
         let mut sym_count = 0;
-        let sample_rate = self.config.sample_rate;
         let baud_rate = self.config.baud_rate;
 
         for &sample in samples {
@@ -1733,17 +1929,37 @@ impl CorrelationDemodulator {
             self.mark_phase = self.mark_phase.wrapping_add(self.mark_phase_inc);
             self.space_phase = self.space_phase.wrapping_add(self.space_phase_inc);
 
-            // 3. Lowpass filter each channel
-            let mark_i = self.mark_i_lpf.process(mark_i_raw as i16);
-            let mark_q = self.mark_q_lpf.process(mark_q_raw as i16);
-            let space_i = self.space_i_lpf.process(space_i_raw as i16);
-            let space_q = self.space_q_lpf.process(space_q_raw as i16);
+            // 3. Decimation + Lowpass filter
+            // For 300 baud at high sample rates, accumulate mixer outputs and
+            // process LPF/timing at the decimated rate (~11025 Hz).
+            self.corr_decim_acc[0] += mark_i_raw;
+            self.corr_decim_acc[1] += mark_q_raw;
+            self.corr_decim_acc[2] += space_i_raw;
+            self.corr_decim_acc[3] += space_q_raw;
+            self.corr_decim_count += 1;
 
-            // 4. Symbol timing: PLL or Bresenham
+            if self.corr_decim_count < self.corr_decim_factor {
+                continue;
+            }
+
+            // Decimation complete: average and reset accumulators
+            let df = self.corr_decim_factor as i32;
+            let dec_mi = (self.corr_decim_acc[0] / df) as i16;
+            let dec_mq = (self.corr_decim_acc[1] / df) as i16;
+            let dec_si = (self.corr_decim_acc[2] / df) as i16;
+            let dec_sq = (self.corr_decim_acc[3] / df) as i16;
+            self.corr_decim_acc = [0; 4];
+            self.corr_decim_count = 0;
+
+            // Lowpass filter at the decimated rate
+            let mark_i = self.mark_i_lpf.process(dec_mi);
+            let mark_q = self.mark_q_lpf.process(dec_mq);
+            let space_i = self.space_i_lpf.process(dec_si);
+            let space_q = self.space_q_lpf.process(dec_sq);
+
+            // 4. Symbol timing: PLL or Bresenham (at decimated rate)
+            let eff_rate = self.effective_sample_rate;
             let boundary = if let Some(ref mut pll) = self.pll {
-                // Normalized abs-envelope discriminator: bounded to ±127 regardless of
-                // signal level, preventing PLL overcorrection on strong signals.
-                // Cost: ~10 ops/sample (abs, add, divide).
                 let mark_env = (mark_i as i32).abs() + (mark_q as i32).abs();
                 let space_env = (space_i as i32).abs() + (space_q as i32).abs();
                 let total = mark_env + space_env;
@@ -1755,8 +1971,8 @@ impl CorrelationDemodulator {
                 pll.update(disc).is_some()
             } else {
                 self.bit_phase += baud_rate;
-                if self.bit_phase >= sample_rate {
-                    self.bit_phase -= sample_rate;
+                if self.bit_phase >= eff_rate {
+                    self.bit_phase -= eff_rate;
                     true
                 } else {
                     false
@@ -2777,5 +2993,165 @@ mod tests {
         }
 
         assert_eq!(decoded_count, 3, "DM should decode all 3 frames, got {}", decoded_count);
+    }
+
+    // ─── 300 Baud Loopback Tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_300_baud_loopback_fast() {
+        use crate::ax25::frame::{build_test_frame, hdlc_encode, HdlcDecoder};
+        use crate::modem::afsk::AfskModulator;
+        use crate::modem::ModConfig;
+
+        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test 300 baud");
+        let raw = &frame_data[..frame_len];
+        let encoded = hdlc_encode(raw);
+
+        let mut modulator = AfskModulator::new(ModConfig::default_300());
+        let mut audio = [0i16; 262144]; // 300 baud needs 4x more samples
+        let mut audio_len = 0;
+
+        // Extra preamble for 300 baud (longer symbols need more flags)
+        for _ in 0..80 {
+            let n = modulator.modulate_flag(&mut audio[audio_len..]);
+            audio_len += n;
+        }
+
+        for i in 0..encoded.bit_count {
+            let bit = encoded.bits[i] != 0;
+            let n = modulator.modulate_bit(bit, &mut audio[audio_len..]);
+            audio_len += n;
+        }
+
+        // Trailing silence
+        for _ in 0..800 {
+            if audio_len < audio.len() {
+                audio_len += 1;
+            }
+        }
+
+        let config = DemodConfig::default_300();
+        let mut demod = FastDemodulator::new(config);
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 16384];
+        let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
+
+        let mut decoder = HdlcDecoder::new();
+        let mut decoded: Option<([u8; 330], usize)> = None;
+        for i in 0..num_symbols {
+            if let Some(frame) = decoder.feed_bit(symbols[i].bit) {
+                let mut buf = [0u8; 330];
+                let len = frame.len();
+                buf[..len].copy_from_slice(frame);
+                decoded = Some((buf, len));
+            }
+        }
+
+        let (dec_buf, dec_len) = decoded.expect("300 baud fast path should decode clean signal");
+        assert_eq!(&dec_buf[..dec_len], raw,
+            "300 baud fast path decoded frame doesn't match original");
+    }
+
+    #[test]
+    fn test_300_baud_loopback_dm() {
+        use crate::ax25::frame::{build_test_frame, hdlc_encode, HdlcDecoder};
+        use crate::modem::afsk::AfskModulator;
+        use crate::modem::ModConfig;
+
+        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test 300 baud DM");
+        let raw = &frame_data[..frame_len];
+        let encoded = hdlc_encode(raw);
+
+        let mut modulator = AfskModulator::new(ModConfig::default_300());
+        let mut audio = [0i16; 262144];
+        let mut audio_len = 0;
+
+        for _ in 0..80 {
+            let n = modulator.modulate_flag(&mut audio[audio_len..]);
+            audio_len += n;
+        }
+
+        for i in 0..encoded.bit_count {
+            let bit = encoded.bits[i] != 0;
+            let n = modulator.modulate_bit(bit, &mut audio[audio_len..]);
+            audio_len += n;
+        }
+
+        for _ in 0..800 {
+            if audio_len < audio.len() {
+                audio_len += 1;
+            }
+        }
+
+        let config = DemodConfig::default_300();
+        let mut demod = DmDemodulator::with_bpf(config);
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 16384];
+        let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
+
+        let mut decoder = HdlcDecoder::new();
+        let mut decoded: Option<([u8; 330], usize)> = None;
+        for i in 0..num_symbols {
+            if let Some(frame) = decoder.feed_bit(symbols[i].bit) {
+                let mut buf = [0u8; 330];
+                let len = frame.len();
+                buf[..len].copy_from_slice(frame);
+                decoded = Some((buf, len));
+            }
+        }
+
+        let (dec_buf, dec_len) = decoded.expect("300 baud DM path should decode clean signal");
+        assert_eq!(&dec_buf[..dec_len], raw,
+            "300 baud DM decoded frame doesn't match original");
+    }
+
+    #[test]
+    fn test_300_baud_loopback_corr() {
+        use crate::ax25::frame::{build_test_frame, hdlc_encode, HdlcDecoder};
+        use crate::modem::afsk::AfskModulator;
+        use crate::modem::ModConfig;
+
+        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test 300 baud Corr");
+        let raw = &frame_data[..frame_len];
+        let encoded = hdlc_encode(raw);
+
+        let mut modulator = AfskModulator::new(ModConfig::default_300());
+        let mut audio = [0i16; 262144];
+        let mut audio_len = 0;
+
+        for _ in 0..80 {
+            let n = modulator.modulate_flag(&mut audio[audio_len..]);
+            audio_len += n;
+        }
+
+        for i in 0..encoded.bit_count {
+            let bit = encoded.bits[i] != 0;
+            let n = modulator.modulate_bit(bit, &mut audio[audio_len..]);
+            audio_len += n;
+        }
+
+        for _ in 0..800 {
+            if audio_len < audio.len() {
+                audio_len += 1;
+            }
+        }
+
+        let config = DemodConfig::default_300();
+        let mut demod = CorrelationDemodulator::new(config);
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 16384];
+        let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
+
+        let mut decoder = HdlcDecoder::new();
+        let mut decoded: Option<([u8; 330], usize)> = None;
+        for i in 0..num_symbols {
+            if let Some(frame) = decoder.feed_bit(symbols[i].bit) {
+                let mut buf = [0u8; 330];
+                let len = frame.len();
+                buf[..len].copy_from_slice(frame);
+                decoded = Some((buf, len));
+            }
+        }
+
+        let (dec_buf, dec_len) = decoded.expect("300 baud correlation path should decode clean signal");
+        assert_eq!(&dec_buf[..dec_len], raw,
+            "300 baud correlation decoded frame doesn't match original");
     }
 }

@@ -268,6 +268,145 @@ pub const fn afsk_bandpass_wide_48000() -> BiquadFilter {
     BiquadFilter::new(3765, 0, -3765, -56575, 25237)
 }
 
+// ─── 300 baud BPF (center=1700 Hz, mark=1600/space=1800 Hz) ────────────
+
+/// Precomputed bandpass filter for 300 baud AFSK at 8000 Hz.
+/// center=1700 Hz, BW=400 Hz (Q=4.25).
+pub const fn afsk_300_bandpass_8000() -> BiquadFilter {
+    BiquadFilter::new(3364, 0, -3364, -13729, 26041)
+}
+
+/// Narrow bandpass for 300 baud at 8000 Hz.
+/// center=1700 Hz, BW=300 Hz (Q=5.67).
+pub const fn afsk_300_bandpass_narrow_8000() -> BiquadFilter {
+    BiquadFilter::new(2589, 0, -2589, -14090, 27589)
+}
+
+/// Wide bandpass for 300 baud at 8000 Hz.
+/// center=1700 Hz, BW=500 Hz (Q=3.4).
+pub const fn afsk_300_bandpass_wide_8000() -> BiquadFilter {
+    BiquadFilter::new(4099, 0, -4099, -13385, 24569)
+}
+
+/// Precomputed bandpass filter for 300 baud AFSK at 11025 Hz.
+/// center=1700 Hz, BW=400 Hz (Q=4.25).
+pub const fn afsk_300_bandpass_11025() -> BiquadFilter {
+    BiquadFilter::new(2897, 0, -2897, -33830, 26975)
+}
+
+/// Narrow bandpass for 300 baud at 11025 Hz.
+/// center=1700 Hz, BW=300 Hz (Q=5.67).
+pub const fn afsk_300_bandpass_narrow_11025() -> BiquadFilter {
+    BiquadFilter::new(2222, 0, -2222, -34594, 28325)
+}
+
+/// Wide bandpass for 300 baud at 11025 Hz.
+/// center=1700 Hz, BW=500 Hz (Q=3.4).
+pub const fn afsk_300_bandpass_wide_11025() -> BiquadFilter {
+    BiquadFilter::new(3542, 0, -3542, -33099, 25683)
+}
+
+/// Precomputed bandpass filter for 300 baud AFSK at 22050 Hz.
+/// center=1700 Hz, BW=400 Hz (Q=4.25).
+pub const fn afsk_300_bandpass_22050() -> BiquadFilter {
+    BiquadFilter::new(1702, 0, -1702, -54983, 29364)
+}
+
+/// Narrow bandpass for 300 baud at 22050 Hz.
+/// center=1700 Hz, BW=300 Hz (Q=5.67).
+pub const fn afsk_300_bandpass_narrow_22050() -> BiquadFilter {
+    BiquadFilter::new(1293, 0, -1293, -55707, 30181)
+}
+
+/// Wide bandpass for 300 baud at 22050 Hz.
+/// center=1700 Hz, BW=500 Hz (Q=3.4).
+pub const fn afsk_300_bandpass_wide_22050() -> BiquadFilter {
+    BiquadFilter::new(2100, 0, -2100, -54279, 28567)
+}
+
+/// Precomputed bandpass filter for 300 baud AFSK at 44100 Hz.
+/// center=1700 Hz, BW=400 Hz (Q=4.25).
+pub const fn afsk_300_bandpass_44100() -> BiquadFilter {
+    BiquadFilter::new(899, 0, -899, -61877, 30969)
+}
+
+/// Narrow bandpass for 300 baud at 44100 Hz.
+/// center=1700 Hz, BW=300 Hz (Q=5.67).
+pub const fn afsk_300_bandpass_narrow_44100() -> BiquadFilter {
+    BiquadFilter::new(679, 0, -679, -62304, 31410)
+}
+
+/// Wide bandpass for 300 baud at 44100 Hz.
+/// center=1700 Hz, BW=500 Hz (Q=3.4).
+pub const fn afsk_300_bandpass_wide_44100() -> BiquadFilter {
+    BiquadFilter::new(1116, 0, -1116, -61455, 30535)
+}
+
+/// Precomputed bandpass filter for 300 baud AFSK at 48000 Hz.
+/// center=1700 Hz, BW=400 Hz (Q=4.25).
+pub const fn afsk_300_bandpass_48000() -> BiquadFilter {
+    BiquadFilter::new(829, 0, -829, -62302, 31109)
+}
+
+/// Narrow bandpass for 300 baud at 48000 Hz.
+/// center=1700 Hz, BW=300 Hz (Q=5.67).
+pub const fn afsk_300_bandpass_narrow_48000() -> BiquadFilter {
+    BiquadFilter::new(626, 0, -626, -62699, 31516)
+}
+
+/// Wide bandpass for 300 baud at 48000 Hz.
+/// center=1700 Hz, BW=500 Hz (Q=3.4).
+pub const fn afsk_300_bandpass_wide_48000() -> BiquadFilter {
+    BiquadFilter::new(1030, 0, -1030, -61911, 30708)
+}
+
+// ─── 300 baud post-detection LPF (cutoff=300 Hz) ──────────────────────
+
+/// Post-detection LPF for 300 baud at 8000 Hz.
+/// Butterworth LPF, cutoff=300 Hz, Q=0.707.
+pub const fn post_detect_lpf_300_8000() -> BiquadFilter {
+    BiquadFilter::new(389, 777, 389, -54696, 23483)
+}
+
+/// Post-detection LPF for 300 baud at 11025 Hz.
+/// Butterworth LPF, cutoff=300 Hz, Q=0.707.
+pub const fn post_detect_lpf_300_11025() -> BiquadFilter {
+    BiquadFilter::new(213, 426, 213, -57645, 25730)
+}
+
+/// Post-detection LPF for 300 baud at 22050 Hz.
+/// Butterworth LPF, cutoff=300 Hz, Q=0.707.
+pub const fn post_detect_lpf_300_22050() -> BiquadFilter {
+    BiquadFilter::new(56, 113, 56, -61579, 29037)
+}
+
+/// Post-detection LPF for 300 baud at 44100 Hz.
+/// Butterworth LPF, cutoff=300 Hz, Q=0.707.
+pub const fn post_detect_lpf_300_44100() -> BiquadFilter {
+    BiquadFilter::new(15, 29, 15, -63556, 30846)
+}
+
+/// Post-detection LPF for 300 baud at 48000 Hz.
+/// Butterworth LPF, cutoff=300 Hz, Q=0.707.
+pub const fn post_detect_lpf_300_48000() -> BiquadFilter {
+    BiquadFilter::new(12, 25, 12, -63717, 30998)
+}
+
+/// Select the 300 baud post-detection LPF for a given sample rate.
+pub fn post_detect_lpf_300(sample_rate: u32) -> BiquadFilter {
+    match sample_rate {
+        8000 => post_detect_lpf_300_8000(),
+        11025 => post_detect_lpf_300_11025(),
+        22050 => post_detect_lpf_300_22050(),
+        44100 => post_detect_lpf_300_44100(),
+        48000 => post_detect_lpf_300_48000(),
+        #[cfg(feature = "std")]
+        _ => lowpass_coeffs(sample_rate, 300.0, 0.707),
+        #[cfg(not(feature = "std"))]
+        _ => post_detect_lpf_300_11025(), // fallback
+    }
+}
+
 /// Precomputed lowpass filter for post-detection at 11025 Hz.
 /// Cutoff at 1200 Hz to smooth the delay-multiply discriminator output.
 ///
@@ -509,19 +648,145 @@ pub const fn corr_lpf_44100_600() -> BiquadFilter {
     BiquadFilter::new(56, 112, 56, -61578, 29036)
 }
 
+// ─── Correlation LPF for 300 baud (100 Hz and 120 Hz cutoffs) ──────────
+// For 300 baud: tone_sep=200 Hz → cutoff = max(200/2, 300*2/5) = max(100, 120) = 120 Hz.
+
+/// Correlation LPF: 100 Hz cutoff at 8000 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_8000_100() -> BiquadFilter {
+    BiquadFilter::new(48, 96, 48, -61900, 29323)
+}
+
+/// Correlation LPF: 100 Hz cutoff at 11025 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_11025_100() -> BiquadFilter {
+    BiquadFilter::new(26, 51, 26, -62896, 30231)
+}
+
+/// Correlation LPF: 100 Hz cutoff at 22050 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_22050_100() -> BiquadFilter {
+    BiquadFilter::new(7, 13, 7, -64216, 31474)
+}
+
+/// Correlation LPF: 100 Hz cutoff at 44100 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_44100_100() -> BiquadFilter {
+    BiquadFilter::new(2, 3, 2, -64876, 32114)
+}
+
+/// Correlation LPF: 100 Hz cutoff at 48000 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_48000_100() -> BiquadFilter {
+    BiquadFilter::new(1, 3, 1, -64929, 32167)
+}
+
+/// Correlation LPF: 120 Hz cutoff at 8000 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_8000_120() -> BiquadFilter {
+    BiquadFilter::new(68, 136, 68, -61174, 28679)
+}
+
+/// Correlation LPF: 120 Hz cutoff at 11025 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_11025_120() -> BiquadFilter {
+    BiquadFilter::new(37, 73, 37, -62369, 29747)
+}
+
+/// Correlation LPF: 120 Hz cutoff at 12000 Hz. Q=0.707 Butterworth.
+/// Used after 4:1 decimation from 48000 Hz for 300 baud.
+pub const fn corr_lpf_12000_120() -> BiquadFilter {
+    BiquadFilter::new(31, 62, 31, -62626, 29982)
+}
+
+/// Correlation LPF: 120 Hz cutoff at 22050 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_22050_120() -> BiquadFilter {
+    BiquadFilter::new(9, 19, 9, -63952, 31221)
+}
+
+/// Correlation LPF: 120 Hz cutoff at 44100 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_44100_120() -> BiquadFilter {
+    BiquadFilter::new(2, 5, 2, -64744, 31985)
+}
+
+/// Correlation LPF: 120 Hz cutoff at 48000 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_48000_120() -> BiquadFilter {
+    BiquadFilter::new(2, 4, 2, -64808, 32048)
+}
+
+// ─── Cascaded 240 Hz LPF for 300 baud at high sample rates ──────────────
+// Two cascaded 240 Hz biquads ≈ 170 Hz effective cutoff with ~4x better
+// Q15 coefficient resolution than a single 120 Hz biquad.
+
+/// Correlation LPF: 240 Hz cutoff at 8000 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_8000_240() -> BiquadFilter {
+    BiquadFilter::new(256, 512, 256, -56842, 25099)
+}
+
+/// Correlation LPF: 240 Hz cutoff at 11025 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_11025_240() -> BiquadFilter {
+    BiquadFilter::new(139, 279, 139, -59213, 27004)
+}
+
+/// Correlation LPF: 240 Hz cutoff at 22050 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_22050_240() -> BiquadFilter {
+    BiquadFilter::new(36, 73, 36, -62368, 29746)
+}
+
+/// Correlation LPF: 240 Hz cutoff at 44100 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_44100_240() -> BiquadFilter {
+    BiquadFilter::new(9, 18, 9, -63951, 31220)
+}
+
+/// Correlation LPF: 240 Hz cutoff at 48000 Hz. Q=0.707 Butterworth.
+pub const fn corr_lpf_48000_240() -> BiquadFilter {
+    BiquadFilter::new(7, 15, 7, -64080, 31343)
+}
+
+/// Select the 240 Hz cascaded LPF for a given sample rate (300 baud at high rates).
+pub fn corr_lpf_240(sample_rate: u32) -> BiquadFilter {
+    match sample_rate {
+        8000 => corr_lpf_8000_240(),
+        11025 => corr_lpf_11025_240(),
+        22050 => corr_lpf_22050_240(),
+        44100 => corr_lpf_44100_240(),
+        48000 => corr_lpf_48000_240(),
+        #[cfg(feature = "std")]
+        _ => lowpass_coeffs(sample_rate, 240.0, 0.707),
+        #[cfg(not(feature = "std"))]
+        _ => corr_lpf_11025_240(), // fallback
+    }
+}
+
+/// Check if 300 baud correlation LPF needs cascading at a given sample rate.
+///
+/// At high sample rates (>=22050 Hz), a single 120 Hz biquad has coefficients
+/// too small for Q15 precision (b0=2 at 44100 Hz). Two cascaded 240 Hz biquads
+/// provide equivalent rolloff with ~4x better coefficient resolution.
+pub fn corr_300_needs_cascade(sample_rate: u32) -> bool {
+    sample_rate >= 22050
+}
+
 /// Select a precomputed correlation LPF by cutoff frequency and sample rate.
 ///
-/// Supports 400/450/500/550/600 Hz cutoffs at 11025/13200/22050/26400/44100 Hz.
+/// Supports 100/120/400/450/500/550/600 Hz cutoffs at common sample rates.
 /// Falls back to runtime computation on `std`, or 500 Hz on `no_std`.
 pub fn corr_lpf_by_cutoff(sample_rate: u32, cutoff_hz: u32) -> BiquadFilter {
     // Snap to nearest supported cutoff
-    let snapped = if cutoff_hz <= 425 { 400 }
+    let snapped = if cutoff_hz <= 110 { 100 }
+        else if cutoff_hz <= 260 { 120 }
+        else if cutoff_hz <= 425 { 400 }
         else if cutoff_hz <= 475 { 450 }
         else if cutoff_hz <= 525 { 500 }
         else if cutoff_hz <= 575 { 550 }
         else { 600 };
 
     match (sample_rate, snapped) {
+        // 300 baud cutoffs
+        (8000, 100) => corr_lpf_8000_100(),
+        (11025, 100) => corr_lpf_11025_100(),
+        (22050, 100) => corr_lpf_22050_100(),
+        (44100, 100) => corr_lpf_44100_100(),
+        (48000, 100) => corr_lpf_48000_100(),
+        (8000, 120) => corr_lpf_8000_120(),
+        (11025, 120) => corr_lpf_11025_120(),
+        (22050, 120) => corr_lpf_22050_120(),
+        (44100, 120) => corr_lpf_44100_120(),
+        (48000, 120) => corr_lpf_48000_120(),
+        // 1200 baud cutoffs
         (11025, 400) => corr_lpf_11025_400(),
         (11025, 450) => corr_lpf_11025_450(),
         (11025, 500) => corr_lpf_11025(),

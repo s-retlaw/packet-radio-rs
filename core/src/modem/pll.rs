@@ -46,6 +46,9 @@ pub struct ClockRecoveryPll {
     /// Controls error magnitude: smaller shift → larger error → more aggressive.
     /// Default 8. Tunable via `with_error_shift()`.
     error_shift: u8,
+    /// Maximum drift as denominator: max_drift = nominal_freq / max_drift_denom.
+    /// Default 50 (±2%). Set to 20 for ±5% (300 baud variable speed).
+    max_drift_denom: i32,
 }
 
 /// PLL scaling factor. We multiply samples_per_symbol by this to get
@@ -77,6 +80,7 @@ impl ClockRecoveryPll {
             mid_sample: 0,
             mid_captured: false,
             error_shift: 8,
+            max_drift_denom: 50, // ±2%
         }
     }
 
@@ -104,6 +108,7 @@ impl ClockRecoveryPll {
             mid_sample: 0,
             mid_captured: false,
             error_shift: 8,
+            max_drift_denom: 50, // ±2%
         }
     }
 
@@ -122,6 +127,15 @@ impl ClockRecoveryPll {
         self.error_shift = shift;
     }
 
+    /// Set maximum drift range (builder pattern).
+    ///
+    /// `denom` is the denominator: max_drift = nominal / denom.
+    /// 50 = ±2% (default), 20 = ±5% (for 300 baud variable speed).
+    pub fn with_max_drift(mut self, denom: i32) -> Self {
+        self.max_drift_denom = denom;
+        self
+    }
+
     /// Set hysteresis threshold for transition detection (builder pattern).
     ///
     /// When > 0, a transition is only detected when the discriminator output
@@ -130,6 +144,11 @@ impl ClockRecoveryPll {
     pub fn with_hysteresis(mut self, threshold: i16) -> Self {
         self.hysteresis = threshold;
         self
+    }
+
+    /// Set max drift denominator on an existing PLL instance.
+    pub fn set_max_drift(&mut self, denom: i32) {
+        self.max_drift_denom = denom;
     }
 
     /// Set hysteresis threshold on an existing PLL instance.
@@ -178,8 +197,7 @@ impl ClockRecoveryPll {
                 let freq_correction = (error as i64 * self.beta as i64) >> 15;
                 self.freq -= freq_correction as i32;
 
-                // Clamp frequency to ±2% of nominal baud rate
-                let max_drift = self.nominal_freq / 50;
+                let max_drift = self.nominal_freq / self.max_drift_denom;
                 self.freq = self.freq.clamp(
                     self.nominal_freq - max_drift,
                     self.nominal_freq + max_drift,

@@ -15,12 +15,18 @@
 
 use super::demod::{DemodSymbol, DmDemodulator, FastDemodulator};
 use super::filter::BiquadFilter;
+#[cfg(feature = "std")]
+use super::pll::ClockRecoveryPll;
 use super::soft_hdlc::{FrameResult, SoftHdlcDecoder};
 use super::DemodConfig;
 #[cfg(not(feature = "std"))]
 use crate::ax25::frame::HdlcDecoder;
 
 /// Maximum number of parallel fast decoders.
+/// 32 base (standard diversity) + up to 10 baud-rate diversity for 300 baud.
+#[cfg(feature = "std")]
+const MAX_DECODERS: usize = 48;
+#[cfg(not(feature = "std"))]
 const MAX_DECODERS: usize = 32;
 
 /// Maximum number of parallel DM decoders.
@@ -99,6 +105,9 @@ pub struct MultiDecoder {
     pub total_decoded: u64,
     /// Total unique frames output.
     pub total_unique: u64,
+    /// Baud rate used for this decoder (for attribution labels).
+    #[allow(dead_code)]
+    baud_rate: u32,
 }
 
 impl MultiDecoder {
@@ -109,28 +118,58 @@ impl MultiDecoder {
     /// tolerance, plus gain-diverse decoders (Dire Wolf multi-slicer approach)
     /// for de-emphasis and varying audio paths.
     pub fn new(config: DemodConfig) -> Self {
-        let std_bpf = match config.sample_rate {
-            12000 => super::filter::afsk_bandpass_12000(),
-            13200 => super::filter::afsk_bandpass_13200(),
-            22050 => super::filter::afsk_bandpass_22050(),
-            26400 => super::filter::afsk_bandpass_26400(),
-            44100 => super::filter::afsk_bandpass_44100(),
-            48000 => super::filter::afsk_bandpass_48000(),
-            _ => super::filter::afsk_bandpass_11025(),
+        let std_bpf = if config.baud_rate == 300 {
+            match config.sample_rate {
+                8000 => super::filter::afsk_300_bandpass_8000(),
+                22050 => super::filter::afsk_300_bandpass_22050(),
+                44100 => super::filter::afsk_300_bandpass_44100(),
+                48000 => super::filter::afsk_300_bandpass_48000(),
+                _ => super::filter::afsk_300_bandpass_11025(),
+            }
+        } else {
+            match config.sample_rate {
+                12000 => super::filter::afsk_bandpass_12000(),
+                13200 => super::filter::afsk_bandpass_13200(),
+                22050 => super::filter::afsk_bandpass_22050(),
+                26400 => super::filter::afsk_bandpass_26400(),
+                44100 => super::filter::afsk_bandpass_44100(),
+                48000 => super::filter::afsk_bandpass_48000(),
+                _ => super::filter::afsk_bandpass_11025(),
+            }
         };
-        let narrow_bpf = match config.sample_rate {
-            12000 => super::filter::afsk_bandpass_narrow_12000(),
-            13200 => super::filter::afsk_bandpass_narrow_13200(),
-            26400 => super::filter::afsk_bandpass_narrow_26400(),
-            48000 => super::filter::afsk_bandpass_narrow_48000(),
-            _ => super::filter::afsk_bandpass_narrow_11025(),
+        let narrow_bpf = if config.baud_rate == 300 {
+            match config.sample_rate {
+                8000 => super::filter::afsk_300_bandpass_narrow_8000(),
+                22050 => super::filter::afsk_300_bandpass_narrow_22050(),
+                44100 => super::filter::afsk_300_bandpass_narrow_44100(),
+                48000 => super::filter::afsk_300_bandpass_narrow_48000(),
+                _ => super::filter::afsk_300_bandpass_narrow_11025(),
+            }
+        } else {
+            match config.sample_rate {
+                12000 => super::filter::afsk_bandpass_narrow_12000(),
+                13200 => super::filter::afsk_bandpass_narrow_13200(),
+                26400 => super::filter::afsk_bandpass_narrow_26400(),
+                48000 => super::filter::afsk_bandpass_narrow_48000(),
+                _ => super::filter::afsk_bandpass_narrow_11025(),
+            }
         };
-        let wide_bpf = match config.sample_rate {
-            12000 => super::filter::afsk_bandpass_wide_12000(),
-            13200 => super::filter::afsk_bandpass_wide_13200(),
-            26400 => super::filter::afsk_bandpass_wide_26400(),
-            48000 => super::filter::afsk_bandpass_wide_48000(),
-            _ => super::filter::afsk_bandpass_wide_11025(),
+        let wide_bpf = if config.baud_rate == 300 {
+            match config.sample_rate {
+                8000 => super::filter::afsk_300_bandpass_wide_8000(),
+                22050 => super::filter::afsk_300_bandpass_wide_22050(),
+                44100 => super::filter::afsk_300_bandpass_wide_44100(),
+                48000 => super::filter::afsk_300_bandpass_wide_48000(),
+                _ => super::filter::afsk_300_bandpass_wide_11025(),
+            }
+        } else {
+            match config.sample_rate {
+                12000 => super::filter::afsk_bandpass_wide_12000(),
+                13200 => super::filter::afsk_bandpass_wide_13200(),
+                26400 => super::filter::afsk_bandpass_wide_26400(),
+                48000 => super::filter::afsk_bandpass_wide_48000(),
+                _ => super::filter::afsk_bandpass_wide_11025(),
+            }
         };
         let filters = [
             narrow_bpf,
@@ -167,16 +206,23 @@ impl MultiDecoder {
         // frequencies to handle transmitters with crystal offset.
         // Uses runtime-computed BPF when std is available.
         // Each offset gets 3 timing variants for full diversity.
+        // Frequency offsets scaled by tone separation (1000 Hz for 1200 baud, 200 Hz for 300 baud)
         #[cfg(feature = "std")]
         {
-            let freq_offsets: [i32; 4] = [-50, 50, -100, 100];
-            for &offset in &freq_offsets {
+            let (freq_off, bpf_bw) = if config.baud_rate == 300 {
+                ([-10i32, 10, -25, 25], 500.0)
+            } else {
+                ([-50, 50, -100, 100], 2000.0)
+            };
+            let center_freq = (config.mark_freq + config.space_freq) as f64 / 2.0;
+            for &offset in &freq_off {
                 let mark = (config.mark_freq as i32 + offset) as u32;
                 let space = (config.space_freq as i32 + offset) as u32;
-                let center = (super::MID_FREQ as i32 + offset) as f64;
-                let bpf = super::filter::bandpass_coeffs(config.sample_rate, center, 2000.0);
+                let center = center_freq + offset as f64;
+                let bpf = super::filter::bandpass_coeffs(config.sample_rate, center, bpf_bw);
                 // Only first offset pair gets timing diversity (to stay within budget)
-                let timing_variants = if offset.abs() <= 50 { &offsets[..] } else { &offsets[..1] };
+                let small_limit = if config.baud_rate == 300 { 10 } else { 50 };
+                let timing_variants = if offset.abs() <= small_limit { &offsets[..] } else { &offsets[..1] };
                 for &phase in timing_variants {
                     if idx < MAX_DECODERS {
                         decoders[idx] = FastDemodulator::with_filter_freq_and_offset(
@@ -190,13 +236,8 @@ impl MultiDecoder {
         #[cfg(not(feature = "std"))]
         {
             // On no_std, use wide BPF with shifted Goertzel only
-            let wide_bpf = match config.sample_rate {
-                13200 => super::filter::afsk_bandpass_wide_13200(),
-                26400 => super::filter::afsk_bandpass_wide_26400(),
-                _ => super::filter::afsk_bandpass_wide_11025(),
-            };
-            let freq_offsets: [i32; 2] = [-50, 50];
-            for &offset in &freq_offsets {
+            let freq_off: [i32; 2] = if config.baud_rate == 300 { [-10, 10] } else { [-50, 50] };
+            for &offset in &freq_off {
                 if idx < MAX_DECODERS {
                     let mark = (config.mark_freq as i32 + offset) as u32;
                     let space = (config.space_freq as i32 + offset) as u32;
@@ -248,18 +289,28 @@ impl MultiDecoder {
         // both crystal offset AND de-emphasized audio (common in practice).
         #[cfg(feature = "std")]
         {
-            let cross_combos: [(i32, u16); 4] = [
-                (-50, 868),   // -50 Hz, +5.3 dB
-                (50, 868),    // +50 Hz, +5.3 dB
-                (-50, 1440),  // -50 Hz, +7.5 dB
-                (50, 1440),   // +50 Hz, +7.5 dB
-            ];
+            let (cross_combos, bpf_bw): ([(i32, u16); 4], f64) = if config.baud_rate == 300 {
+                ([
+                    (-10, 868),   // -10 Hz, +5.3 dB
+                    (10, 868),    // +10 Hz, +5.3 dB
+                    (-10, 1440),  // -10 Hz, +7.5 dB
+                    (10, 1440),   // +10 Hz, +7.5 dB
+                ], 500.0)
+            } else {
+                ([
+                    (-50, 868),   // -50 Hz, +5.3 dB
+                    (50, 868),    // +50 Hz, +5.3 dB
+                    (-50, 1440),  // -50 Hz, +7.5 dB
+                    (50, 1440),   // +50 Hz, +7.5 dB
+                ], 2000.0)
+            };
+            let center_freq = (config.mark_freq + config.space_freq) as f64 / 2.0;
             for &(offset, gain) in &cross_combos {
                 if idx < MAX_DECODERS {
                     let mark = (config.mark_freq as i32 + offset) as u32;
                     let space = (config.space_freq as i32 + offset) as u32;
-                    let center = (super::MID_FREQ as i32 + offset) as f64;
-                    let bpf = super::filter::bandpass_coeffs(config.sample_rate, center, 2000.0);
+                    let center = center_freq + offset as f64;
+                    let bpf = super::filter::bandpass_coeffs(config.sample_rate, center, bpf_bw);
                     decoders[idx] = FastDemodulator::with_filter_freq_and_offset(
                         config, bpf, 0, mark, space,
                     ).with_space_gain(gain);
@@ -285,8 +336,7 @@ impl MultiDecoder {
         // DM+PLL decoders (Gardner TED with phase + frequency correction)
         // Alpha=936 is optimal single-decoder; alpha=400 provides diversity.
         // Beta=0 universally optimal (frequency correction hurts).
-        // Tune sweep showed alpha=600-800 best per-track, but multi-decoder
-        // ensemble makes individual DM alpha tuning negligible (<1 frame).
+        // For 300 baud: widen max_drift from ±2% to ±5% for variable speed.
         if dm_idx < MAX_DM_DECODERS {
             dm_decoders[dm_idx] = DmDemodulator::with_bpf_pll_custom(config, 936, 0);
             dm_idx += 1;
@@ -316,6 +366,35 @@ impl MultiDecoder {
             dm_idx += 1;
         }
 
+        // Variable speed diversity for 300 baud.
+        // gen_packets -v 3,0.2 creates 0.2 Hz sinusoidal clock drift ±3%.
+        // Within a ~1s packet, speed changes by ~0.4%, so each packet has
+        // nearly constant baud rate. Baud-rate diversity (fixed Bresenham)
+        // handles inter-packet speed variation.
+        #[cfg(feature = "std")]
+        if config.baud_rate == 300 {
+            // Baud-rate diversity with fixed Bresenham: ±1-3% in 1% steps
+            let baud_offsets: [i32; 6] = [-3, 3, -6, 6, -9, 9];
+            for &offset in &baud_offsets {
+                if idx < MAX_DECODERS {
+                    let adjusted_baud = (config.baud_rate as i32 + offset) as u32;
+                    decoders[idx] = FastDemodulator::new(config)
+                        .with_timing_baud_rate(adjusted_baud);
+                    idx += 1;
+                }
+            }
+            // Goertzel+PLL at nominal rate: captures packets where PLL
+            // tracks intra-packet drift that fixed Bresenham cannot.
+            if idx < MAX_DECODERS {
+                let pll = ClockRecoveryPll::new_gardner(
+                    config.sample_rate, config.baud_rate, 600, 0,
+                ).with_error_shift(8);
+                decoders[idx] = FastDemodulator::new(config)
+                    .with_custom_pll(pll);
+                idx += 1;
+            }
+        }
+
         // On std: enable energy-based LLR on all Goertzel decoders for soft decode
         #[cfg(feature = "std")]
         {
@@ -340,6 +419,7 @@ impl MultiDecoder {
             generation: 0,
             total_decoded: 0,
             total_unique: 0,
+            baud_rate: config.baud_rate,
         }
     }
 
@@ -389,6 +469,7 @@ impl MultiDecoder {
             generation: 0,
             total_decoded: 0,
             total_unique: 0,
+            baud_rate: config.baud_rate,
         }
     }
 
@@ -612,36 +693,66 @@ impl MiniDecoder {
     /// Create a MiniDecoder with the 3 attribution-optimal configurations.
     pub fn new(config: DemodConfig) -> Self {
         let offsets = [0u32, config.sample_rate / 3, 2 * config.sample_rate / 3];
-        let narrow_bpf = match config.sample_rate {
-            13200 => super::filter::afsk_bandpass_narrow_13200(),
-            26400 => super::filter::afsk_bandpass_narrow_26400(),
-            _ => super::filter::afsk_bandpass_narrow_11025(),
+        let narrow_bpf = if config.baud_rate == 300 {
+            match config.sample_rate {
+                8000 => super::filter::afsk_300_bandpass_narrow_8000(),
+                22050 => super::filter::afsk_300_bandpass_narrow_22050(),
+                44100 => super::filter::afsk_300_bandpass_narrow_44100(),
+                48000 => super::filter::afsk_300_bandpass_narrow_48000(),
+                _ => super::filter::afsk_300_bandpass_narrow_11025(),
+            }
+        } else {
+            match config.sample_rate {
+                13200 => super::filter::afsk_bandpass_narrow_13200(),
+                26400 => super::filter::afsk_bandpass_narrow_26400(),
+                _ => super::filter::afsk_bandpass_narrow_11025(),
+            }
         };
 
-        // Decoder 1: G:freq-50/t2 — frequency-shifted −50 Hz, timing phase 2
-        let mark_shifted = (config.mark_freq as i32 - 50) as u32;
-        let space_shifted = (config.space_freq as i32 - 50) as u32;
-        #[cfg(feature = "std")]
-        let shifted_bpf = {
-            let center = (super::MID_FREQ as i32 - 50) as f64;
-            super::filter::bandpass_coeffs(config.sample_rate, center, 2000.0)
+        // 300 baud: attribution-optimal = G:std/t1, G:narrow/t0, G:narrow/t2
+        // 1200 baud: attribution-optimal = G:freq-50/t2, G:narrow/t0, G:narrow/t1
+        let decoders = if config.baud_rate == 300 {
+            let std_bpf = match config.sample_rate {
+                8000 => super::filter::afsk_300_bandpass_8000(),
+                22050 => super::filter::afsk_300_bandpass_22050(),
+                44100 => super::filter::afsk_300_bandpass_44100(),
+                48000 => super::filter::afsk_300_bandpass_48000(),
+                _ => super::filter::afsk_300_bandpass_11025(),
+            };
+            [
+                FastDemodulator::with_filter_and_offset(config, std_bpf, offsets[1])
+                    .with_energy_llr(),
+                FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[0])
+                    .with_energy_llr(),
+                FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[2])
+                    .with_energy_llr(),
+            ]
+        } else {
+            let freq_shift = -50i32;
+            let mark_shifted = (config.mark_freq as i32 + freq_shift) as u32;
+            let space_shifted = (config.space_freq as i32 + freq_shift) as u32;
+            #[cfg(feature = "std")]
+            let shifted_bpf = {
+                let center_freq = (config.mark_freq + config.space_freq) as f64 / 2.0;
+                let center = center_freq + freq_shift as f64;
+                super::filter::bandpass_coeffs(config.sample_rate, center, 2000.0)
+            };
+            #[cfg(not(feature = "std"))]
+            let shifted_bpf = match config.sample_rate {
+                13200 => super::filter::afsk_bandpass_wide_13200(),
+                26400 => super::filter::afsk_bandpass_wide_26400(),
+                _ => super::filter::afsk_bandpass_wide_11025(),
+            };
+            [
+                FastDemodulator::with_filter_freq_and_offset(
+                    config, shifted_bpf, offsets[2], mark_shifted, space_shifted,
+                ).with_energy_llr(),
+                FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[0])
+                    .with_energy_llr(),
+                FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[1])
+                    .with_energy_llr(),
+            ]
         };
-        #[cfg(not(feature = "std"))]
-        let shifted_bpf = match config.sample_rate {
-            13200 => super::filter::afsk_bandpass_wide_13200(),
-            26400 => super::filter::afsk_bandpass_wide_26400(),
-            _ => super::filter::afsk_bandpass_wide_11025(),
-        };
-
-        let decoders = [
-            FastDemodulator::with_filter_freq_and_offset(
-                config, shifted_bpf, offsets[2], mark_shifted, space_shifted,
-            ).with_energy_llr(),
-            FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[0])
-                .with_energy_llr(),
-            FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[1])
-                .with_energy_llr(),
-        ];
 
         Self {
             decoders,
@@ -1304,6 +1415,34 @@ impl MultiDecoder {
                     });
                     idx += 1;
                 }
+            }
+        }
+
+        // 300 baud variable speed diversity (baud-rate + PLL)
+        #[cfg(feature = "std")]
+        if self.baud_rate == 300 {
+            let baud_offsets: [i32; 6] = [-3, 3, -6, 6, -9, 9];
+            for &offset in &baud_offsets {
+                if idx < self.num_active {
+                    let pct = offset as f32 / 3.0;
+                    configs.push(DecoderConfig {
+                        index: idx,
+                        label: format!("G:baud{:+.1}%", pct),
+                        algorithm: "goertzel",
+                        tags: vec!["goertzel", "baud-div"],
+                    });
+                    idx += 1;
+                }
+            }
+            if idx < self.num_active {
+                configs.push(DecoderConfig {
+                    index: idx,
+                    label: String::from("G:pll/a600"),
+                    algorithm: "goertzel",
+                    tags: vec!["goertzel", "pll"],
+                });
+                #[allow(unused_assignments)]
+                { idx += 1; }
             }
         }
 
