@@ -18,6 +18,8 @@ use packet_radio_core::modem::{DemodConfig, ModConfig};
 use packet_radio_core::ax25::frame::HdlcDecoder;
 use packet_radio_core::ax25::Frame;
 use packet_radio_core::tnc::{AfskModulateAdapter, NullDemod, TncConfig, TncEngine, TncPlatform};
+use packet_radio_core::modem::demod_9600::Demod9600Config;
+use packet_radio_core::modem::multi_9600::{Multi9600Decoder, Single9600Decoder};
 use packet_radio_core::kiss;
 use packet_radio_core::aprs;
 use packet_radio_core::SampleSource;
@@ -129,21 +131,34 @@ fn main() {
     }
 
     // Run the processing loop on the main thread.
-    let tx_pipeline = process_loop(
-        source,
-        frame_tx,
-        cli.wav.is_some(),
-        cli.quality,
-        cli.multi,
-        cli.dm,
-        cli.smart3,
-        cli.corr,
-        cli.corr_slicer,
-        cli.corr_pll,
-        cli.xor,
-        cli.sample_rate,
-        tx_pipeline,
-    );
+    let tx_pipeline = if cli.baud == 9600 {
+        let sample_rate = if cli.sample_rate == 11025 { 48000 } else { cli.sample_rate };
+        let config_9600 = Demod9600Config::with_sample_rate(sample_rate);
+        tracing::info!("9600 baud mode (sample rate {})", sample_rate);
+        if cli.multi {
+            process_loop_9600_multi(source, frame_tx, cli.wav.is_some(), config_9600, tx_pipeline)
+        } else {
+            let algo = cli.algo_9600.as_deref().unwrap_or("direwolf");
+            tracing::info!("9600 algorithm: {}", algo);
+            process_loop_9600_single(source, frame_tx, cli.wav.is_some(), config_9600, algo, tx_pipeline)
+        }
+    } else {
+        process_loop(
+            source,
+            frame_tx,
+            cli.wav.is_some(),
+            cli.quality,
+            cli.multi,
+            cli.dm,
+            cli.smart3,
+            cli.corr,
+            cli.corr_slicer,
+            cli.corr_pll,
+            cli.xor,
+            cli.sample_rate,
+            tx_pipeline,
+        )
+    };
 
     // Write TX audio to WAV if requested
     if let (Some(ref tx_wav_path), Some(pipeline)) = (&cli.tx_wav, &tx_pipeline) {
@@ -1056,6 +1071,95 @@ fn process_loop_tx_pipe(sample_rate: u32) {
 
     let _ = stdout_lock.flush();
     tracing::info!("tx-pipe: done");
+}
+
+// ── 9600 Baud Process Loops ─────────────────────────────────────────────
+
+/// 9600 baud single-algorithm processing loop.
+fn process_loop_9600_single(
+    mut source: Box<dyn SampleSource>,
+    frame_tx: broadcast::Sender<Vec<u8>>,
+    is_wav: bool,
+    config: Demod9600Config,
+    algo: &str,
+    mut tx: Option<TxPipeline>,
+) -> Option<TxPipeline> {
+    let mut decoder = match algo {
+        "gardner" => Single9600Decoder::gardner(config),
+        "early-late" => Single9600Decoder::early_late(config),
+        "mm" => Single9600Decoder::mueller_muller(config),
+        "rrc" => Single9600Decoder::rrc(config),
+        _ => Single9600Decoder::direwolf(config), // default
+    };
+
+    let mut audio_buf = [0i16; 1024];
+    let mut frame_count: u64 = 0;
+
+    loop {
+        let n = source.read_samples(&mut audio_buf);
+        if n == 0 {
+            if is_wav {
+                tracing::info!("WAV file complete, decoded {frame_count} frames (9600 baud)");
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
+
+        let output = decoder.process_samples(&audio_buf[..n]);
+        for i in 0..output.len() {
+            let (buf, len) = output.frame(i);
+            frame_count += 1;
+            let frame_data = buf[..*len].to_vec();
+            print_frame(frame_count, &frame_data);
+            let _ = frame_tx.send(frame_data);
+        }
+    }
+
+    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
+    tx
+}
+
+/// 9600 baud multi-decoder processing loop.
+fn process_loop_9600_multi(
+    mut source: Box<dyn SampleSource>,
+    frame_tx: broadcast::Sender<Vec<u8>>,
+    is_wav: bool,
+    config: Demod9600Config,
+    mut tx: Option<TxPipeline>,
+) -> Option<TxPipeline> {
+    let mut decoder = Multi9600Decoder::new(config);
+    tracing::info!("9600 multi-decoder: {} parallel decoders", decoder.num_decoders());
+
+    let mut audio_buf = [0i16; 1024];
+    let mut frame_count: u64 = 0;
+
+    loop {
+        let n = source.read_samples(&mut audio_buf);
+        if n == 0 {
+            if is_wav {
+                tracing::info!("WAV file complete, decoded {frame_count} unique frames (9600 baud multi)");
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
+
+        let output = decoder.process_samples(&audio_buf[..n]);
+        for i in 0..output.len() {
+            frame_count += 1;
+            let frame_data = output.frame(i).to_vec();
+            print_frame(frame_count, &frame_data);
+            let _ = frame_tx.send(frame_data);
+        }
+    }
+
+    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
+    tx
 }
 
 // ── Formatting ──────────────────────────────────────────────────────────

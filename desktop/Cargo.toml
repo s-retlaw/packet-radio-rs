@@ -6,7 +6,7 @@ license.workspace = true
 description = "Desktop packet radio TNC — sound card I/O, KISS TCP, APRS-IS"
 
 [dependencies]
-packet-radio-core = { path = "../core", features = ["std", "float", "multi-decoder"] }
+packet-radio-core = { path = "../core", features = ["std", "float", "multi-decoder", "9600-baud"] }
 packet-radio-shared = { path = "../shared" }
 
 # Audio I/O

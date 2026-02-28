@@ -47,6 +47,16 @@ pub mod multi;
 pub mod corr_slicer;
 pub mod binary_xor;
 
+// 9600 baud G3RUH modules
+#[cfg(feature = "9600-baud")]
+pub mod scrambler;
+#[cfg(feature = "9600-baud")]
+pub mod demod_9600;
+#[cfg(feature = "9600-baud")]
+pub mod mod_9600;
+#[cfg(all(feature = "9600-baud", feature = "multi-decoder"))]
+pub mod multi_9600;
+
 /// Standard Bell 202 mark frequency (Hz)
 pub const MARK_FREQ: u32 = 1200;
 

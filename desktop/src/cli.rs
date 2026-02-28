@@ -70,6 +70,14 @@ pub struct Cli {
     #[arg(long)]
     pub tx_pipe: bool,
 
+    /// Baud rate: 1200 (AFSK, default) or 9600 (G3RUH FSK)
+    #[arg(short = 'B', long, default_value = "1200")]
+    pub baud: u32,
+
+    /// 9600 baud algorithm: direwolf, gardner, early-late, mm, rrc
+    #[arg(long = "9600-algo")]
+    pub algo_9600: Option<String>,
+
     /// Verbose output (repeat for more: -v, -vv, -vvv)
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
