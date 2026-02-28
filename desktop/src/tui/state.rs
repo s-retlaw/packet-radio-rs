@@ -163,26 +163,28 @@ pub enum FieldKind {
 
 impl SettingsFormState {
     /// Create settings form from a TncConfig.
-    /// `devices` is the list of available audio device names.
-    pub fn from_config(config: &crate::config::TncConfig, devices: Vec<String>) -> Self {
+    /// `devices` is the list of available audio devices with capability info.
+    pub fn from_config(config: &crate::config::TncConfig, devices: &[super::AudioDeviceInfo]) -> Self {
         // Find device index
         let device_idx = devices
             .iter()
-            .position(|d| *d == config.audio.device)
+            .position(|d| d.name == config.audio.device)
             .unwrap_or(0);
 
-        // Sample rate options
-        let rate_options = vec![
-            "11025".into(),
-            "22050".into(),
-            "44100".into(),
-            "48000".into(),
-        ];
+        let device_names: Vec<String> = devices.iter().map(|d| d.name.clone()).collect();
+        let device_descriptions: Vec<String> = devices.iter().map(|d| d.description.clone()).collect();
+
+        // Sample rate options from the selected device's supported rates
+        let supported_rates = devices
+            .get(device_idx)
+            .map(|d| &d.supported_rates[..])
+            .unwrap_or(&[11025, 22050, 44100, 48000]);
+        let rate_options: Vec<String> = supported_rates.iter().map(|r| r.to_string()).collect();
         let rate_str = config.audio.sample_rate.to_string();
         let rate_idx = rate_options
             .iter()
             .position(|r| *r == rate_str)
-            .unwrap_or(0);
+            .unwrap_or_else(|| Self::closest_rate_index(supported_rates, config.audio.sample_rate));
 
         // Mode options
         let mode_options: Vec<String> = crate::config::TncConfig::available_modes()
@@ -206,9 +208,9 @@ impl SettingsFormState {
             SettingsField {
                 label: "Audio Device".into(),
                 kind: FieldKind::Dropdown {
-                    options: devices,
+                    options: device_names,
                     selected: device_idx,
-                    descriptions: Vec::new(),
+                    descriptions: device_descriptions,
                 },
                 filter: None,
                 max_len: None,
@@ -264,6 +266,64 @@ impl SettingsFormState {
             editing: false,
             fields,
         }
+    }
+
+    /// Called when the audio device dropdown changes. Updates the sample rate
+    /// dropdown to only show rates supported by the new device.
+    /// Returns a notification message if the rate was changed.
+    pub fn on_device_changed(&mut self, devices: &[super::AudioDeviceInfo]) -> Option<String> {
+        // Get the newly selected device index from field 0
+        let device_idx = match &self.fields[0].kind {
+            FieldKind::Dropdown { selected, .. } => *selected,
+            _ => return None,
+        };
+
+        let supported_rates = match devices.get(device_idx) {
+            Some(dev) => &dev.supported_rates,
+            None => return None,
+        };
+
+        // Get the currently selected rate before changing
+        let old_rate: Option<u32> = self.field_value(1).and_then(|v| v.parse().ok());
+
+        // Replace field 1's options
+        if let Some(field) = self.fields.get_mut(1) {
+            if let FieldKind::Dropdown { options, selected, .. } = &mut field.kind {
+                let new_options: Vec<String> = supported_rates.iter().map(|r| r.to_string()).collect();
+
+                // Try to keep the same rate selected
+                let old_rate_str = old_rate.map(|r| r.to_string()).unwrap_or_default();
+                let new_idx = new_options.iter().position(|r| *r == old_rate_str);
+
+                *options = new_options;
+
+                if let Some(idx) = new_idx {
+                    *selected = idx;
+                    return None; // rate unchanged
+                }
+
+                // Rate not available — pick closest
+                let closest = Self::closest_rate_index(supported_rates, old_rate.unwrap_or(11025));
+                *selected = closest;
+                let new_rate = supported_rates.get(closest).copied().unwrap_or(11025);
+                return Some(format!("Sample rate changed to {} Hz (device constraint)", new_rate));
+            }
+        }
+
+        None
+    }
+
+    /// Find the index of the closest rate in a sorted list.
+    fn closest_rate_index(rates: &[u32], target: u32) -> usize {
+        if rates.is_empty() {
+            return 0;
+        }
+        rates
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, &r)| (r as i64 - target as i64).unsigned_abs())
+            .map(|(i, _)| i)
+            .unwrap_or(0)
     }
 
     pub fn select_next(&mut self) {
@@ -358,6 +418,25 @@ pub enum AsyncEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::AudioDeviceInfo;
+
+    /// Helper: build test AudioDeviceInfo from name strings (all rates supported).
+    fn test_devices(names: &[&str]) -> Vec<AudioDeviceInfo> {
+        names.iter().map(|n| AudioDeviceInfo {
+            name: n.to_string(),
+            description: format!("1ch, 8000-48000 Hz, I16"),
+            supported_rates: vec![11025, 22050, 44100, 48000],
+        }).collect()
+    }
+
+    /// Helper: build a device with restricted rates.
+    fn test_device_with_rates(name: &str, rates: &[u32]) -> AudioDeviceInfo {
+        AudioDeviceInfo {
+            name: name.to_string(),
+            description: "test".to_string(),
+            supported_rates: rates.to_vec(),
+        }
+    }
 
     #[test]
     fn test_tab_next() {
@@ -498,8 +577,8 @@ mod tests {
     #[test]
     fn test_settings_form_nav() {
         let config = crate::config::TncConfig::default();
-        let devices = vec!["default".to_string(), "hw:1,0".to_string()];
-        let mut form = SettingsFormState::from_config(&config, devices);
+        let devices = test_devices(&["default", "hw:1,0"]);
+        let mut form = SettingsFormState::from_config(&config, &devices);
 
         assert_eq!(form.selected_field, 0);
         assert_eq!(form.fields.len(), 5);
@@ -526,8 +605,8 @@ mod tests {
     #[test]
     fn test_settings_form_cycle_dropdown() {
         let config = crate::config::TncConfig::default();
-        let devices = vec!["default".to_string(), "pulse".to_string()];
-        let mut form = SettingsFormState::from_config(&config, devices);
+        let devices = test_devices(&["default", "pulse"]);
+        let mut form = SettingsFormState::from_config(&config, &devices);
 
         // Field 0 is Audio Device dropdown with 2 options
         assert_eq!(form.selected_field, 0);
@@ -549,8 +628,8 @@ mod tests {
             },
             ..Default::default()
         };
-        let devices = vec!["default".to_string()];
-        let form = SettingsFormState::from_config(&config, devices);
+        let devices = test_devices(&["default"]);
+        let form = SettingsFormState::from_config(&config, &devices);
 
         // Field 3 = KISS TCP Port (text)
         assert_eq!(form.field_value(3), Some("9600".to_string()));
@@ -576,8 +655,8 @@ mod tests {
                 callsign: "W1AW".to_string(),
             },
         };
-        let devices = vec!["default".to_string(), "pulse".to_string()];
-        let form = SettingsFormState::from_config(&config, devices);
+        let devices = test_devices(&["default", "pulse"]);
+        let form = SettingsFormState::from_config(&config, &devices);
         let result = form.to_config();
 
         assert_eq!(result.audio.device, "pulse");
@@ -590,8 +669,8 @@ mod tests {
     #[test]
     fn test_settings_form_cycle_on_text_field_is_noop() {
         let config = crate::config::TncConfig::default();
-        let devices = vec!["default".to_string()];
-        let mut form = SettingsFormState::from_config(&config, devices);
+        let devices = test_devices(&["default"]);
+        let mut form = SettingsFormState::from_config(&config, &devices);
 
         // Move to text field (field 3 = KISS port)
         form.selected_field = 3;
@@ -654,5 +733,88 @@ mod tests {
 
         let done_evt = AsyncEvent::AudioDone;
         assert!(matches!(done_evt, AsyncEvent::AudioDone));
+    }
+
+    #[test]
+    fn test_on_device_changed_rate_stays() {
+        let devices = vec![
+            test_device_with_rates("dev_a", &[11025, 22050, 44100, 48000]),
+            test_device_with_rates("dev_b", &[11025, 22050, 44100, 48000]),
+        ];
+        let config = crate::config::TncConfig::default(); // 11025
+        let mut form = SettingsFormState::from_config(&config, &devices);
+        // Select dev_b
+        form.selected_field = 0;
+        form.cycle_dropdown();
+        let msg = form.on_device_changed(&devices);
+        assert!(msg.is_none()); // rate 11025 still available
+        assert_eq!(form.field_value(1), Some("11025".to_string()));
+    }
+
+    #[test]
+    fn test_on_device_changed_rate_forced() {
+        let devices = vec![
+            test_device_with_rates("dev_a", &[11025, 22050, 44100, 48000]),
+            test_device_with_rates("dev_b", &[44100, 48000]),
+        ];
+        let config = crate::config::TncConfig::default(); // 11025
+        let mut form = SettingsFormState::from_config(&config, &devices);
+        assert_eq!(form.field_value(1), Some("11025".to_string()));
+
+        // Switch to dev_b (only supports 44100/48000)
+        form.selected_field = 0;
+        form.cycle_dropdown();
+        let msg = form.on_device_changed(&devices);
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("44100")); // closest to 11025
+
+        // Rate options should now be [44100, 48000]
+        if let FieldKind::Dropdown { options, .. } = &form.fields[1].kind {
+            assert_eq!(options.len(), 2);
+            assert_eq!(options[0], "44100");
+            assert_eq!(options[1], "48000");
+        } else {
+            panic!("expected dropdown");
+        }
+    }
+
+    #[test]
+    fn test_device_description_shown() {
+        let devices = vec![AudioDeviceInfo {
+            name: "hw:0,0".to_string(),
+            description: "1ch, 8000-48000 Hz, I16".to_string(),
+            supported_rates: vec![11025, 22050, 44100, 48000],
+        }];
+        let config = crate::config::TncConfig::default();
+        let form = SettingsFormState::from_config(&config, &devices);
+        // Field 0 (Audio Device) should have a description
+        let desc = form.field_description(0);
+        assert!(desc.is_some());
+        assert!(desc.unwrap().contains("8000-48000"));
+    }
+
+    #[test]
+    fn test_closest_rate_index() {
+        assert_eq!(SettingsFormState::closest_rate_index(&[44100, 48000], 11025), 0);
+        assert_eq!(SettingsFormState::closest_rate_index(&[44100, 48000], 48000), 1);
+        assert_eq!(SettingsFormState::closest_rate_index(&[11025, 48000], 22050), 0);
+        assert_eq!(SettingsFormState::closest_rate_index(&[], 11025), 0);
+    }
+
+    #[test]
+    fn test_initial_rate_filtered_by_device() {
+        // Device only supports 48000
+        let devices = vec![test_device_with_rates("narrow_dev", &[48000])];
+        let mut config = crate::config::TncConfig::default();
+        config.audio.sample_rate = 11025; // not supported by device
+        config.audio.device = "narrow_dev".to_string();
+        let form = SettingsFormState::from_config(&config, &devices);
+
+        // Rate should be auto-selected to closest (48000)
+        assert_eq!(form.field_value(1), Some("48000".to_string()));
+        // Only 1 rate option
+        if let FieldKind::Dropdown { options, .. } = &form.fields[1].kind {
+            assert_eq!(options.len(), 1);
+        }
     }
 }

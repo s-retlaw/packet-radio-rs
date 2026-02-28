@@ -81,8 +81,8 @@ fn run_tui_mode(cli: cli::Cli) {
         tnc_config.kiss.port = cli.kiss_port;
     }
 
-    // Enumerate audio devices
-    let devices = tui::list_audio_devices();
+    // Enumerate audio devices with capability info
+    let devices = tui::enumerate_audio_devices();
 
     // Channels: audio thread → TUI (crossbeam) and KISS broadcast (tokio)
     let (async_tx, async_rx) = crossbeam_channel::unbounded::<tui::state::AsyncEvent>();
@@ -489,7 +489,7 @@ fn run_headless(cli: cli::Cli) {
 
     // TX pipe mode: read KISS from stdin, write raw PCM to stdout
     if cli.tx_pipe {
-        process_loop_tx_pipe(cli.sample_rate);
+        process_loop_tx_pipe(cli.sample_rate, cli.baud);
         return;
     }
 
@@ -514,7 +514,7 @@ fn run_headless(cli: cli::Cli) {
 
     // Build TX pipeline if --tx-wav is specified
     let tx_pipeline = cli.tx_wav.as_ref().map(|_| {
-        TxPipeline::new(kiss_in_rx.clone(), cli.sample_rate)
+        TxPipeline::new(kiss_in_rx.clone(), cli.sample_rate, cli.baud)
     });
 
     // Open audio source (stdin source created first to allow WAV auto-detection)
@@ -628,13 +628,11 @@ struct TxPipeline {
 }
 
 impl TxPipeline {
-    fn new(kiss_rx: crossbeam_channel::Receiver<Vec<u8>>, sample_rate: u32) -> Self {
-        let mod_config = match sample_rate {
-            22050 => ModConfig { sample_rate: 22050, ..ModConfig::default_1200() },
-            44100 => ModConfig { sample_rate: 44100, ..ModConfig::default_1200() },
-            _ => ModConfig::default_1200(),
-        };
+    fn new(kiss_rx: crossbeam_channel::Receiver<Vec<u8>>, sample_rate: u32, baud_rate: u32) -> Self {
+        let base = if baud_rate == 300 { ModConfig::default_300() } else { ModConfig::default_1200() };
+        let mod_config = ModConfig { sample_rate, ..base };
         let mut tnc_config = TncConfig::default();
+        tnc_config.baud_rate = baud_rate;
         tnc_config.full_duplex = true; // Skip CSMA
         tnc_config.txdelay = 25; // 250ms preamble (shorter for testing)
 
@@ -1475,15 +1473,13 @@ fn process_loop_rx_pipe(
 // ── TX Pipe Mode ────────────────────────────────────────────────────────
 
 /// TX pipe mode: read KISS from stdin, write raw i16 LE PCM to stdout.
-fn process_loop_tx_pipe(sample_rate: u32) {
+fn process_loop_tx_pipe(sample_rate: u32, baud_rate: u32) {
     use std::io::{Read, Write};
 
-    let mod_config = match sample_rate {
-        22050 => ModConfig { sample_rate: 22050, ..ModConfig::default_1200() },
-        44100 => ModConfig { sample_rate: 44100, ..ModConfig::default_1200() },
-        _ => ModConfig::default_1200(),
-    };
+    let base = if baud_rate == 300 { ModConfig::default_300() } else { ModConfig::default_1200() };
+    let mod_config = ModConfig { sample_rate, ..base };
     let mut tnc_config = TncConfig::default();
+    tnc_config.baud_rate = baud_rate;
     tnc_config.full_duplex = true;
     tnc_config.txdelay = 25;
 

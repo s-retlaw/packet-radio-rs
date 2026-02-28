@@ -25,6 +25,19 @@ use self::event::{Event, EventHandler};
 use self::state::*;
 use self::widgets::SelectableList;
 
+/// Audio device info collected at enumeration time.
+#[derive(Debug, Clone)]
+pub struct AudioDeviceInfo {
+    pub name: String,
+    /// Human-readable capability summary (e.g. "1ch, 8000-48000 Hz, I16/F32")
+    pub description: String,
+    /// Sample rates supported by BOTH the device AND our demodulator
+    pub supported_rates: Vec<u32>,
+}
+
+/// Demodulator-supported rates we expose to users.
+const USER_SAMPLE_RATES: [u32; 4] = [11025, 22050, 44100, 48000];
+
 /// The main TUI application.
 pub struct App {
     pub tab: Tab,
@@ -46,12 +59,14 @@ pub struct App {
     pub frame_tx: Option<crossbeam_channel::Sender<AsyncEvent>>,
     /// Set to true when user requests audio processing to start.
     pub start_requested: bool,
+    /// Audio device info for device-aware settings.
+    pub devices: Vec<AudioDeviceInfo>,
 }
 
 impl App {
     /// Create a new App from config.
-    pub fn new(config: TncConfig, config_path: std::path::PathBuf, devices: Vec<String>) -> Self {
-        let settings = SettingsFormState::from_config(&config, devices);
+    pub fn new(config: TncConfig, config_path: std::path::PathBuf, devices: Vec<AudioDeviceInfo>) -> Self {
+        let settings = SettingsFormState::from_config(&config, &devices);
         Self {
             tab: Tab::Packets,
             view: View::Main,
@@ -70,6 +85,7 @@ impl App {
             start_time: Instant::now(),
             frame_tx: None,
             start_requested: false,
+            devices,
         }
     }
 
@@ -77,7 +93,18 @@ impl App {
     #[cfg(test)]
     pub fn new_for_testing() -> Self {
         let config = TncConfig::default();
-        let devices = vec!["default".to_string(), "test_device".to_string()];
+        let devices = vec![
+            AudioDeviceInfo {
+                name: "default".to_string(),
+                description: "1ch, 8000-48000 Hz, I16".to_string(),
+                supported_rates: vec![11025, 22050, 44100, 48000],
+            },
+            AudioDeviceInfo {
+                name: "test_device".to_string(),
+                description: "2ch, 44100-48000 Hz, F32".to_string(),
+                supported_rates: vec![44100, 48000],
+            },
+        ];
         Self::new(config, std::path::PathBuf::from("./test-config.toml"), devices)
     }
 
@@ -246,7 +273,14 @@ impl App {
                 if let Some(field) = self.settings.fields.get(self.settings.selected_field) {
                     match field.kind {
                         FieldKind::Dropdown { .. } => {
+                            let is_device_field = self.settings.selected_field == 0;
                             self.settings.cycle_dropdown();
+                            if is_device_field {
+                                if let Some(msg) = self.settings.on_device_changed(&self.devices) {
+                                    self.error_message = Some(msg);
+                                    self.show_error_dialog = true;
+                                }
+                            }
                         }
                         FieldKind::Text { .. } => {
                             self.settings.editing = true;
@@ -256,7 +290,14 @@ impl App {
                 true
             }
             KeyCode::Char(' ') => {
+                let is_device_field = self.settings.selected_field == 0;
                 self.settings.cycle_dropdown();
+                if is_device_field {
+                    if let Some(msg) = self.settings.on_device_changed(&self.devices) {
+                        self.error_message = Some(msg);
+                        self.show_error_dialog = true;
+                    }
+                }
                 true
             }
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -547,29 +588,124 @@ where
     Ok(())
 }
 
-/// Enumerate available audio input devices.
-pub fn list_audio_devices() -> Vec<String> {
+/// Enumerate available audio input devices with capability info.
+pub fn enumerate_audio_devices() -> Vec<AudioDeviceInfo> {
     use cpal::traits::{DeviceTrait, HostTrait};
+    use cpal::SampleFormat;
     let host = cpal::default_host();
+    let mut seen_names = Vec::new();
     let mut devices = Vec::new();
+
+    // Collect devices, default first
+    let mut raw_devices = Vec::new();
     if let Some(dev) = host.default_input_device() {
         if let Ok(name) = dev.name() {
-            devices.push(name);
+            seen_names.push(name);
+            raw_devices.push(dev);
         }
     }
     if let Ok(input_devices) = host.input_devices() {
         for dev in input_devices {
             if let Ok(name) = dev.name() {
-                if !devices.contains(&name) {
-                    devices.push(name);
+                if !seen_names.contains(&name) {
+                    seen_names.push(name);
+                    raw_devices.push(dev);
                 }
             }
         }
     }
+
+    for dev in &raw_devices {
+        let name = dev.name().unwrap_or_else(|_| "unknown".into());
+        let (description, supported_rates) = match dev.supported_input_configs() {
+            Ok(configs) => {
+                let configs: Vec<_> = configs.collect();
+                if configs.is_empty() {
+                    ("no config info".to_string(), USER_SAMPLE_RATES.to_vec())
+                } else {
+                    // Collect channel counts, rate range, sample formats
+                    let mut min_rate = u32::MAX;
+                    let mut max_rate = 0u32;
+                    let mut channels = std::collections::BTreeSet::new();
+                    let mut formats = std::collections::BTreeSet::new();
+
+                    for cfg in &configs {
+                        channels.insert(cfg.channels());
+                        let lo = cfg.min_sample_rate().0;
+                        let hi = cfg.max_sample_rate().0;
+                        if lo < min_rate { min_rate = lo; }
+                        if hi > max_rate { max_rate = hi; }
+                        formats.insert(match cfg.sample_format() {
+                            SampleFormat::I8 => "I8",
+                            SampleFormat::I16 => "I16",
+                            SampleFormat::I32 => "I32",
+                            SampleFormat::I64 => "I64",
+                            SampleFormat::U8 => "U8",
+                            SampleFormat::U16 => "U16",
+                            SampleFormat::U32 => "U32",
+                            SampleFormat::U64 => "U64",
+                            SampleFormat::F32 => "F32",
+                            SampleFormat::F64 => "F64",
+                            _ => "?",
+                        });
+                    }
+
+                    let ch_str: Vec<String> = channels.iter().map(|c| format!("{}ch", c)).collect();
+                    let fmt_str: Vec<&str> = formats.into_iter().collect();
+                    let desc = format!(
+                        "{}, {}-{} Hz, {}",
+                        ch_str.join("/"),
+                        min_rate,
+                        max_rate,
+                        fmt_str.join("/"),
+                    );
+
+                    // Intersect USER_SAMPLE_RATES with device-supported ranges
+                    let mut rates: Vec<u32> = USER_SAMPLE_RATES
+                        .iter()
+                        .copied()
+                        .filter(|&rate| {
+                            configs.iter().any(|cfg| {
+                                rate >= cfg.min_sample_rate().0
+                                    && rate <= cfg.max_sample_rate().0
+                            })
+                        })
+                        .collect();
+
+                    // Fallback: if no intersection, show all rates
+                    if rates.is_empty() {
+                        rates = USER_SAMPLE_RATES.to_vec();
+                    }
+
+                    (desc, rates)
+                }
+            }
+            Err(_) => {
+                ("unable to query".to_string(), USER_SAMPLE_RATES.to_vec())
+            }
+        };
+
+        devices.push(AudioDeviceInfo {
+            name,
+            description,
+            supported_rates,
+        });
+    }
+
     if devices.is_empty() {
-        devices.push("default".to_string());
+        devices.push(AudioDeviceInfo {
+            name: "default".to_string(),
+            description: "no devices found".to_string(),
+            supported_rates: USER_SAMPLE_RATES.to_vec(),
+        });
     }
     devices
+}
+
+/// Enumerate available audio input devices (names only).
+/// Thin wrapper for backward compatibility with non-TUI codepaths.
+pub fn list_audio_devices() -> Vec<String> {
+    enumerate_audio_devices().into_iter().map(|d| d.name).collect()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
