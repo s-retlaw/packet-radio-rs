@@ -183,6 +183,13 @@ fn main() {
             }
             run_twist_mini(&args[2]);
         }
+        "--smart3-sweep" => {
+            if args.len() < 3 {
+                eprintln!("Usage: benchmark --smart3-sweep <file.wav>");
+                return;
+            }
+            run_smart3_sweep(&args[2]);
+        }
         "--help" | "-h" => print_usage(),
         _ => {
             eprintln!("Unknown argument: {}", args[1]);
@@ -2071,6 +2078,40 @@ fn run_twist_mini(path: &str) {
             println!("  TwistMini@48k vs TwistMini@native: {:>+4} packets", gain_vs_native);
         }
     }
+
+    // --- Try 26400 Hz variant (48k ÷ 2 decimation target, or 2× oversampled) ---
+    {
+        let path_26k = path.replace(".wav", "_26400.wav");
+        if let Ok((rate_26k, samples_26k)) = read_wav_file(&path_26k) {
+            println!();
+            println!("At {} Hz (from {}):", rate_26k, path_26k);
+
+            let fast_26k = decode_fast(&samples_26k, rate_26k);
+            let (smart3_26k, _) = decode_smart3(&samples_26k, rate_26k);
+            let (twist_mini_26k, _) = decode_twist_mini(&samples_26k, rate_26k);
+            let (multi_26k, _) = decode_multi(&samples_26k, rate_26k);
+
+            let dur_26k = samples_26k.len() as f64 / rate_26k as f64;
+            println!("  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
+                fast_26k.frames.len(), fast_26k.elapsed.as_secs_f64(),
+                dur_26k / fast_26k.elapsed.as_secs_f64());
+            println!("  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+                smart3_26k.frames.len(), smart3_26k.elapsed.as_secs_f64(),
+                dur_26k / smart3_26k.elapsed.as_secs_f64());
+            println!("  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
+                twist_mini_26k.frames.len(), twist_mini_26k.elapsed.as_secs_f64(),
+                dur_26k / twist_mini_26k.elapsed.as_secs_f64());
+            println!("  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+                multi_26k.frames.len(), multi_26k.elapsed.as_secs_f64(),
+                dur_26k / multi_26k.elapsed.as_secs_f64());
+
+            let gain_26k = twist_mini_26k.frames.len() as i64 - smart3_26k.frames.len() as i64;
+            let gain_vs_native = twist_mini_26k.frames.len() as i64 - twist_mini.frames.len() as i64;
+            println!("  TwistMini@26k vs Smart3@26k: {:>+4} packets", gain_26k);
+            println!("  TwistMini@26k vs TwistMini@native: {:>+4} packets", gain_vs_native);
+        }
+    }
+
     println!();
 }
 
@@ -2164,13 +2205,15 @@ fn run_twist_sweep(path: &str) {
     let smart3_set: HashSet<Vec<u8>> = smart3.frames.iter().cloned().collect();
 
     // Sweep parameters:
-    // BPF center offsets: -200, -100, 0, +100, +200 Hz
-    // Space gains (Q8): 128 (-3dB), 181 (-1.5dB), 256 (0dB), 362 (+1.5dB), 512 (+3dB), 868 (+5.3dB)
+    // BPF center offsets: -200 to +300 Hz in 100 Hz steps
+    // Space gains (Q8): 0.75 dB steps from -3dB to +6dB (13 values)
     // Timing phases: 0, 1, 2
     let bpf_offsets = [-200i32, -100, 0, 100, 200, 300];
-    let gains: [(u16, &str); 6] = [
-        (128, "-3dB"), (181, "-1.5dB"), (256, "0dB"),
-        (362, "+1.5dB"), (512, "+3dB"), (868, "+5.3dB"),
+    let gains: [(u16, &str); 13] = [
+        (128, "-3.0dB"), (152, "-2.25dB"), (181, "-1.5dB"), (215, "-0.75dB"),
+        (256, " 0.0dB"), (304, "+0.75dB"), (362, "+1.5dB"), (430, "+2.25dB"),
+        (512, "+3.0dB"), (608, "+3.75dB"), (724, "+4.5dB"), (868, "+5.3dB"),
+        (1024, "+6.0dB"),
     ];
     let timing_phases = [0u32, 1, 2];
 
@@ -2246,6 +2289,247 @@ fn run_twist_sweep(path: &str) {
         println!("  Smart3 + top {} twist decoders: {} unique (Smart3 alone: {})",
             added, combined_set.len(), smart3.frames.iter().cloned().collect::<HashSet<_>>().len());
     }
+    println!();
+}
+
+// ─── Smart3 Parameter Sweep ─────────────────────────────────────────────
+
+/// Sweep Smart3 base decoder parameters to find optimal configs at current sample rate.
+/// Smart3 = D1(freq-50/wide/t2) + D2(narrow/t0) + D3(narrow/t1).
+/// This sweeps freq offsets, BPF types, and timing phases for each slot.
+fn run_smart3_sweep(path: &str) {
+    use std::collections::HashSet;
+    use packet_radio_core::modem::filter;
+
+    println!("═══ Smart3 Parameter Sweep ═══");
+    println!("File: {}", path);
+
+    let (sample_rate, samples) = match read_wav_file(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
+    };
+
+    let duration_secs = samples.len() as f64 / sample_rate as f64;
+    println!("Duration: {:.1}s, {} samples at {} Hz\n", duration_secs, samples.len(), sample_rate);
+
+    // Baselines
+    let fast = decode_fast(&samples, sample_rate);
+    let (smart3, _) = decode_smart3(&samples, sample_rate);
+    println!("  Baselines:  Fast={}, Smart3={}\n", fast.frames.len(), smart3.frames.len());
+
+    let smart3_set: HashSet<Vec<u8>> = smart3.frames.iter().cloned().collect();
+
+    // Parameters to sweep
+    let freq_offsets = [-125i32, -100, -75, -50, -25, 0, 25, 50, 75, 100, 125];
+    let bpf_types: [(&str, Box<dyn Fn(u32, f64) -> packet_radio_core::modem::filter::BiquadFilter>); 3] = [
+        ("narrow", Box::new(|sr, center| filter::bandpass_coeffs(sr, center, 1200.0))),
+        ("std",    Box::new(|sr, center| filter::bandpass_coeffs(sr, center, 1600.0))),
+        ("wide",   Box::new(|sr, center| filter::bandpass_coeffs(sr, center, 2000.0))),
+    ];
+    let timing_phases = [0u32, 1, 2];
+
+    struct SweepResult {
+        freq_off: i32,
+        bpf_type: String,
+        timing: u32,
+        count: usize,
+        exclusive: usize,
+    }
+    let mut results: Vec<SweepResult> = Vec::new();
+
+    println!("  {:>6} {:>6} {:>2}  {:>5}  not-in-S3", "Freq", "BPF", "T", "Pkts");
+    println!("  {}", "─".repeat(40));
+
+    // Sweep single decoders across all parameter combos
+    for &freq_off in &freq_offsets {
+        for (bpf_name, bpf_fn) in &bpf_types {
+            for &t in &timing_phases {
+                let mut config = DemodConfig::default_1200();
+                config.sample_rate = sample_rate;
+
+                let mark = (config.mark_freq as i32 + freq_off) as u32;
+                let space = (config.space_freq as i32 + freq_off) as u32;
+                let center = (1700i32 + freq_off) as f64;
+                let bpf = bpf_fn(sample_rate, center);
+                let phase_offset = t * sample_rate / 3;
+
+                let mut demod = FastDemodulator::with_filter_freq_and_offset(
+                    config, bpf, phase_offset, mark, space,
+                ).with_energy_llr();
+                let mut soft_hdlc = SoftHdlcDecoder::new();
+                let mut frames: Vec<Vec<u8>> = Vec::new();
+                let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+                for chunk in samples.chunks(1024) {
+                    let n = demod.process_samples(chunk, &mut symbols);
+                    for i in 0..n {
+                        if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                            let data = match &result {
+                                FrameResult::Valid(d) => d,
+                                FrameResult::Recovered { data, .. } => data,
+                            };
+                            frames.push(data.to_vec());
+                        }
+                    }
+                }
+
+                let frame_set: HashSet<Vec<u8>> = frames.iter().cloned().collect();
+                let exclusive = frame_set.difference(&smart3_set).count();
+
+                results.push(SweepResult {
+                    freq_off,
+                    bpf_type: bpf_name.to_string(),
+                    timing: t,
+                    count: frames.len(),
+                    exclusive,
+                });
+            }
+        }
+    }
+
+    // Sort by packet count descending
+    results.sort_by(|a, b| b.count.cmp(&a.count).then(b.exclusive.cmp(&a.exclusive)));
+
+    for r in &results {
+        let marker = if r.exclusive > 0 { " ★" } else { "" };
+        println!("  {:>+4} Hz {:>6} t{}  {:>5}  {:>4}{}",
+            r.freq_off, r.bpf_type, r.timing, r.count, r.exclusive, marker);
+    }
+
+    // Show top 15 by packet count
+    println!("\n  Top 15 single decoders by packet count:");
+    for (i, r) in results.iter().take(15).enumerate() {
+        println!("    {:>2}. freq={:>+4} bpf={:>6} t{}: {} pkts ({} exclusive)",
+            i + 1, r.freq_off, r.bpf_type, r.timing, r.count, r.exclusive);
+    }
+
+    // Now test 3-decoder ensembles: sweep D1 freq offset and timing, keep D2/D3 as best narrow pair
+    println!("\n  ─── 3-Decoder Ensemble Sweep ───");
+    println!("  Sweep D1 (freq+bpf+timing), D2/D3 as narrow at best timing pair\n");
+
+    // Find best narrow timing pair for D2+D3
+    let narrow_results: Vec<&SweepResult> = results.iter()
+        .filter(|r| r.bpf_type == "narrow" && r.freq_off == 0)
+        .collect();
+    println!("  Narrow decoders (freq=0):");
+    for r in &narrow_results {
+        println!("    t{}: {} pkts", r.timing, r.count);
+    }
+
+    // Test all 3-decoder combos with dedup
+    struct EnsembleResult {
+        d1_freq: i32,
+        d1_bpf: String,
+        d1_timing: u32,
+        d2_timing: u32,
+        d3_timing: u32,
+        total: usize,
+    }
+    let mut ensembles: Vec<EnsembleResult> = Vec::new();
+
+    // Sweep D1 across top configs, D2/D3 as narrow with timing diversity
+    let d1_freq_offsets = [-125i32, -100, -75, -50, -25, 0, 25, 50, 75, 100];
+    let d1_bpf_types: [(&str, Box<dyn Fn(u32, f64) -> filter::BiquadFilter>); 2] = [
+        ("std",  Box::new(|sr, center| filter::bandpass_coeffs(sr, center, 1600.0))),
+        ("wide", Box::new(|sr, center| filter::bandpass_coeffs(sr, center, 2000.0))),
+    ];
+    // D2/D3 timing pairs (distinct phases)
+    let d23_pairs = [(0u32, 1u32), (0, 2), (1, 2)];
+
+    for &d1_freq in &d1_freq_offsets {
+        for (d1_bpf_name, d1_bpf_fn) in &d1_bpf_types {
+            for &d1_t in &timing_phases {
+                for &(d2_t, d3_t) in &d23_pairs {
+                    // Skip if D1 timing overlaps D2 or D3
+                    if d1_t == d2_t || d1_t == d3_t { continue; }
+
+                    let mut config = DemodConfig::default_1200();
+                    config.sample_rate = sample_rate;
+
+                    // D1: freq-shifted + chosen BPF
+                    let mark1 = (config.mark_freq as i32 + d1_freq) as u32;
+                    let space1 = (config.space_freq as i32 + d1_freq) as u32;
+                    let center1 = (1700i32 + d1_freq) as f64;
+                    let bpf1 = d1_bpf_fn(sample_rate, center1);
+                    let off1 = d1_t * sample_rate / 3;
+
+                    // D2, D3: narrow, freq=0
+                    let narrow = filter::bandpass_coeffs(sample_rate, 1700.0, 1200.0);
+                    let off2 = d2_t * sample_rate / 3;
+                    let off3 = d3_t * sample_rate / 3;
+
+                    let mut d1 = FastDemodulator::with_filter_freq_and_offset(config, bpf1, off1, mark1, space1).with_energy_llr();
+                    let mut d2 = FastDemodulator::with_filter_and_offset(config, narrow, off2).with_energy_llr();
+                    let mut d3 = FastDemodulator::with_filter_and_offset(config, narrow.clone(), off3).with_energy_llr();
+                    let mut h1 = SoftHdlcDecoder::new();
+                    let mut h2 = SoftHdlcDecoder::new();
+                    let mut h3 = SoftHdlcDecoder::new();
+
+                    let mut all_frames: HashSet<Vec<u8>> = HashSet::new();
+                    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+
+                    for chunk in samples.chunks(1024) {
+                        let n1 = d1.process_samples(chunk, &mut symbols);
+                        for i in 0..n1 {
+                            if let Some(result) = h1.feed_soft_bit(symbols[i].llr) {
+                                let data = match &result {
+                                    FrameResult::Valid(d) => d,
+                                    FrameResult::Recovered { data, .. } => data,
+                                };
+                                all_frames.insert(data.to_vec());
+                            }
+                        }
+                        let n2 = d2.process_samples(chunk, &mut symbols);
+                        for i in 0..n2 {
+                            if let Some(result) = h2.feed_soft_bit(symbols[i].llr) {
+                                let data = match &result {
+                                    FrameResult::Valid(d) => d,
+                                    FrameResult::Recovered { data, .. } => data,
+                                };
+                                all_frames.insert(data.to_vec());
+                            }
+                        }
+                        let n3 = d3.process_samples(chunk, &mut symbols);
+                        for i in 0..n3 {
+                            if let Some(result) = h3.feed_soft_bit(symbols[i].llr) {
+                                let data = match &result {
+                                    FrameResult::Valid(d) => d,
+                                    FrameResult::Recovered { data, .. } => data,
+                                };
+                                all_frames.insert(data.to_vec());
+                            }
+                        }
+                    }
+
+                    ensembles.push(EnsembleResult {
+                        d1_freq: d1_freq,
+                        d1_bpf: d1_bpf_name.to_string(),
+                        d1_timing: d1_t,
+                        d2_timing: d2_t,
+                        d3_timing: d3_t,
+                        total: all_frames.len(),
+                    });
+                }
+            }
+        }
+    }
+
+    ensembles.sort_by(|a, b| b.total.cmp(&a.total));
+
+    println!("\n  Top 20 ensembles (3 decoders, deduped):");
+    println!("  {:>6} {:>5} {:>8} {:>8}  {:>5}", "D1freq", "D1bpf", "D1/D2/D3", "timings", "Total");
+    println!("  {}", "─".repeat(45));
+    for (i, e) in ensembles.iter().take(20).enumerate() {
+        println!("  {:>+4}Hz {:>5} t{}/t{}/t{}            {:>5}{}",
+            e.d1_freq, e.d1_bpf, e.d1_timing, e.d2_timing, e.d3_timing,
+            e.total,
+            if i == 0 { " ★" } else { "" });
+    }
+
+    println!("\n  Current Smart3: freq-50/wide/t2 + narrow/t0 + narrow/t1 = {}", smart3_set.len());
     println!();
 }
 

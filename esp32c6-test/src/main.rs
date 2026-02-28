@@ -28,7 +28,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 use packet_radio_core::modem::demod::{DemodSymbol, FastDemodulator, CorrelationDemodulator};
 use packet_radio_core::modem::soft_hdlc::{FrameResult, SoftHdlcDecoder};
 use packet_radio_core::ax25::frame::HdlcDecoder;
-use packet_radio_core::modem::multi::MiniDecoder;
+use packet_radio_core::modem::multi::{MiniDecoder, TwistMiniDecoder};
 use packet_radio_core::modem::DemodConfig;
 use packet_radio_core::tnc::{TncEngine, MiniAdapter, NullModulate, TncConfig, TncPlatform};
 use packet_radio_core::kiss::{KissDecoder, Command};
@@ -74,6 +74,35 @@ impl TncPlatform for BenchPlatform {
     fn now_ms(&self) -> u32 { 0 }
 }
 
+/// Simple ÷4 decimator: averages 4 input samples to produce 1 output sample.
+/// For 48000 → 12000 Hz conversion.
+struct Decimator4 {
+    buf: [i16; 4],
+    pos: u8,
+}
+
+impl Decimator4 {
+    fn new() -> Self {
+        Self { buf: [0; 4], pos: 0 }
+    }
+
+    /// Feed one 48k sample. Returns Some(decimated sample) every 4th input.
+    #[inline]
+    fn feed(&mut self, sample: i16) -> Option<i16> {
+        self.buf[self.pos as usize] = sample;
+        self.pos += 1;
+        if self.pos >= 4 {
+            self.pos = 0;
+            // Average of 4 samples (simple boxcar anti-alias)
+            let sum = self.buf[0] as i32 + self.buf[1] as i32
+                + self.buf[2] as i32 + self.buf[3] as i32;
+            Some((sum / 4) as i16)
+        } else {
+            None
+        }
+    }
+}
+
 /// Decoder state — created on CONFIG message.
 enum Decoder {
     None,
@@ -82,6 +111,8 @@ enum Decoder {
     Mini(MiniDecoder),
     Corr3(Corr3State),
     Tnc(TncEngine<MiniAdapter, NullModulate>, KissDecoder),
+    TwistMini(TwistMiniDecoder),
+    TwistMini48k(TwistMiniDecoder, Decimator4),
 }
 
 /// Benchmark statistics accumulator.
@@ -269,6 +300,20 @@ fn main() -> ! {
                                 let tnc = TncEngine::new(adapter, NullModulate, TncConfig::default());
                                 Decoder::Tnc(tnc, KissDecoder::new())
                             }
+                            MODE_TWIST_MINI => {
+                                Decoder::TwistMini(TwistMiniDecoder::new(demod_cfg))
+                            }
+                            MODE_TWIST_MINI_48K => {
+                                // Decimate 48k → 12k on-chip, decode at 12k
+                                let cfg_12k = DemodConfig {
+                                    sample_rate: 12000,
+                                    ..DemodConfig::default_1200()
+                                };
+                                Decoder::TwistMini48k(
+                                    TwistMiniDecoder::new(cfg_12k),
+                                    Decimator4::new(),
+                                )
+                            }
                             MODE_CORR3 => {
                                 let offsets = [0, cfg.sample_rate / 3, 2 * cfg.sample_rate / 3];
                                 let mut d0 = CorrelationDemodulator::new(demod_cfg).with_adaptive_gain();
@@ -356,6 +401,57 @@ fn main() -> ! {
                                 led_state = !led_state;
                                 let c = if led_state { &led_on } else { &led_off };
                                 let _ = led.write(c.iter().cloned());
+                            }
+                        }
+
+                        Decoder::TwistMini(twist) => {
+                            let output = twist.process_samples(&sample_buf[..n_samples]);
+                            for i in 0..output.len() {
+                                let frame_data = output.frame(i);
+                                let mut frame_payload = [0u8; 340];
+                                let fp_len = FramePayload::encode(
+                                    seq, frame_data, &mut frame_payload,
+                                );
+                                send_msg(
+                                    &mut serial,
+                                    MSG_FRAME,
+                                    &frame_payload[..fp_len],
+                                );
+                                chunk_frames += 1;
+                                led_state = !led_state;
+                                let c = if led_state { &led_on } else { &led_off };
+                                let _ = led.write(c.iter().cloned());
+                            }
+                        }
+
+                        Decoder::TwistMini48k(twist, decimator) => {
+                            // Decimate 48k samples to 12k, then decode
+                            let mut dec_buf = [0i16; MAX_CHUNK_SAMPLES / 4 + 1];
+                            let mut dec_count = 0usize;
+                            for j in 0..n_samples {
+                                if let Some(s) = decimator.feed(sample_buf[j]) {
+                                    dec_buf[dec_count] = s;
+                                    dec_count += 1;
+                                }
+                            }
+                            if dec_count > 0 {
+                                let output = twist.process_samples(&dec_buf[..dec_count]);
+                                for i in 0..output.len() {
+                                    let frame_data = output.frame(i);
+                                    let mut frame_payload = [0u8; 340];
+                                    let fp_len = FramePayload::encode(
+                                        seq, frame_data, &mut frame_payload,
+                                    );
+                                    send_msg(
+                                        &mut serial,
+                                        MSG_FRAME,
+                                        &frame_payload[..fp_len],
+                                    );
+                                    chunk_frames += 1;
+                                    led_state = !led_state;
+                                    let c = if led_state { &led_on } else { &led_off };
+                                    let _ = led.write(c.iter().cloned());
+                                }
                             }
                         }
 

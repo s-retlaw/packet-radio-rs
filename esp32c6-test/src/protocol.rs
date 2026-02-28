@@ -32,6 +32,8 @@ pub const MODE_QUALITY: u8 = 0x01;
 pub const MODE_MINI: u8 = 0x02;
 pub const MODE_CORR3: u8 = 0x03;
 pub const MODE_TNC: u8 = 0x04;
+pub const MODE_TWIST_MINI: u8 = 0x05;
+pub const MODE_TWIST_MINI_48K: u8 = 0x06;
 
 /// Parsed message header.
 #[derive(Debug, Clone, Copy)]

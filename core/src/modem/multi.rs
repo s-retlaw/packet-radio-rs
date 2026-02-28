@@ -805,9 +805,13 @@ impl TwistMiniDecoder {
             _ => super::filter::afsk_bandpass_wide_11025(),
         };
 
-        // Twist decoder BPFs — tuned per sample rate
-        // At 12000 Hz (10 sps), timing phases shift: t2 dominates T2, t1 dominates T1
-        // At 11025 Hz (9.19 sps), t0 is optimal for most twist decoders
+        // Twist decoder BPFs, gains, and timing — tuned per sample rate.
+        // Default diversity pattern: BPF+0/+200/-200 × mixed timing × moderate gain.
+        // This maximizes ensemble diversity (BPF spread + timing spread), which
+        // empirically outperforms configs optimized for single-decoder exclusives.
+        //
+        // 12000 Hz is rate-tuned: t2/t1 phases, BPF+300 replaces BPF+200.
+        // 11025/13200/26400/48000 all use the same diversity-optimal defaults.
         let is_12k = config.sample_rate == 12000;
 
         // Twist decoder 4 BPF: +0Hz (standard)
@@ -818,7 +822,7 @@ impl TwistMiniDecoder {
             _ => super::filter::afsk_bandpass_11025(),
         };
 
-        // Twist decoder 5 BPF: +200Hz at 11025, +300Hz at 12000
+        // Twist decoder 5 BPF: +200Hz at most rates, +300Hz at 12000
         #[cfg(feature = "std")]
         let bpf_twist5 = if is_12k {
             super::filter::bandpass_coeffs(config.sample_rate, 2000.0, 2000.0) // +300Hz
@@ -857,17 +861,16 @@ impl TwistMiniDecoder {
             FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[1])
                 .with_energy_llr(),
             // Twist decoder 4: BPF+0Hz, gain=+1.5dB (362 Q8)
-            // At 12k: t2 (top T2 winner); at 11025: t0
+            // At 12k: t2 (top T2 winner); otherwise: t0
             FastDemodulator::with_filter_and_offset(config, std_bpf, twist4_phase)
                 .with_space_gain(362)
                 .with_energy_llr(),
-            // Twist decoder 5: BPF+300Hz@12k / BPF+200Hz@11025, gain=+1.5dB (362 Q8), t2
-            // Strong de-emphasis — shifted BPF + gain stacks for T2 priority
+            // Twist decoder 5: BPF+200Hz (or +300Hz@12k), gain=+1.5dB (362 Q8), t2
             FastDemodulator::with_filter_and_offset(config, bpf_twist5, twist5_phase)
                 .with_space_gain(362)
                 .with_energy_llr(),
             // Twist decoder 6: BPF-200Hz, gain=0dB
-            // At 12k: t1 (top T1 winner); at 11025: t0
+            // At 12k: t1; otherwise: t0
             FastDemodulator::with_filter_and_offset(config, bpf_minus200, twist6_phase)
                 .with_energy_llr(),
         ];

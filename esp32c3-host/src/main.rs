@@ -201,6 +201,8 @@ fn decoder_mode_byte(mode: &str) -> u8 {
         "mini" => MODE_MINI,
         "corr3" => MODE_CORR3,
         "tnc" => MODE_TNC,
+        "twist-mini" => MODE_TWIST_MINI,
+        "twist-mini-48k" => MODE_TWIST_MINI_48K,
         _ => {
             eprintln!("Unknown mode '{}', using mini", mode);
             MODE_MINI
