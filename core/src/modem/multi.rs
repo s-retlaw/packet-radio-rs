@@ -110,6 +110,7 @@ impl MultiDecoder {
     /// for de-emphasis and varying audio paths.
     pub fn new(config: DemodConfig) -> Self {
         let std_bpf = match config.sample_rate {
+            12000 => super::filter::afsk_bandpass_12000(),
             13200 => super::filter::afsk_bandpass_13200(),
             22050 => super::filter::afsk_bandpass_22050(),
             26400 => super::filter::afsk_bandpass_26400(),
@@ -118,12 +119,14 @@ impl MultiDecoder {
             _ => super::filter::afsk_bandpass_11025(),
         };
         let narrow_bpf = match config.sample_rate {
+            12000 => super::filter::afsk_bandpass_narrow_12000(),
             13200 => super::filter::afsk_bandpass_narrow_13200(),
             26400 => super::filter::afsk_bandpass_narrow_26400(),
             48000 => super::filter::afsk_bandpass_narrow_48000(),
             _ => super::filter::afsk_bandpass_narrow_11025(),
         };
         let wide_bpf = match config.sample_rate {
+            12000 => super::filter::afsk_bandpass_wide_12000(),
             13200 => super::filter::afsk_bandpass_wide_13200(),
             26400 => super::filter::afsk_bandpass_wide_26400(),
             48000 => super::filter::afsk_bandpass_wide_48000(),
@@ -802,18 +805,34 @@ impl TwistMiniDecoder {
             _ => super::filter::afsk_bandpass_wide_11025(),
         };
 
-        // Twist decoder BPFs
-        // BPF+200Hz: center at 1900 Hz (favors space tone for de-emphasis compensation)
+        // Twist decoder BPFs — tuned per sample rate
+        // At 12000 Hz (10 sps), timing phases shift: t2 dominates T2, t1 dominates T1
+        // At 11025 Hz (9.19 sps), t0 is optimal for most twist decoders
+        let is_12k = config.sample_rate == 12000;
+
+        // Twist decoder 4 BPF: +0Hz (standard)
+        let std_bpf = match config.sample_rate {
+            12000 => super::filter::afsk_bandpass_12000(),
+            13200 => super::filter::afsk_bandpass_13200(),
+            26400 => super::filter::afsk_bandpass_26400(),
+            _ => super::filter::afsk_bandpass_11025(),
+        };
+
+        // Twist decoder 5 BPF: +200Hz at 11025, +300Hz at 12000
         #[cfg(feature = "std")]
-        let bpf_plus200 = super::filter::bandpass_coeffs(config.sample_rate, 1900.0, 2000.0);
+        let bpf_twist5 = if is_12k {
+            super::filter::bandpass_coeffs(config.sample_rate, 2000.0, 2000.0) // +300Hz
+        } else {
+            super::filter::bandpass_coeffs(config.sample_rate, 1900.0, 2000.0) // +200Hz
+        };
         #[cfg(not(feature = "std"))]
-        let bpf_plus200 = match config.sample_rate {
+        let bpf_twist5 = match config.sample_rate {
             13200 => super::filter::afsk_bandpass_wide_13200(),
             26400 => super::filter::afsk_bandpass_wide_26400(),
             _ => super::filter::afsk_bandpass_wide_11025(),
         };
 
-        // BPF-200Hz: center at 1500 Hz (favors mark tone for opposite-twist)
+        // Twist decoder 6 BPF: -200Hz (center 1500 Hz)
         #[cfg(feature = "std")]
         let bpf_minus200 = super::filter::bandpass_coeffs(config.sample_rate, 1500.0, 2000.0);
         #[cfg(not(feature = "std"))]
@@ -823,12 +842,10 @@ impl TwistMiniDecoder {
             _ => super::filter::afsk_bandpass_narrow_11025(),
         };
 
-        // Standard BPF for +0Hz offset twist decoder
-        let std_bpf = match config.sample_rate {
-            13200 => super::filter::afsk_bandpass_13200(),
-            26400 => super::filter::afsk_bandpass_26400(),
-            _ => super::filter::afsk_bandpass_11025(),
-        };
+        // Timing phase indices: at 12k, twist decoders prefer t2 (T2) and t1 (T1)
+        let twist4_phase = if is_12k { offsets[2] } else { offsets[0] }; // t2 at 12k, t0 otherwise
+        let twist5_phase = offsets[2]; // t2 at all rates
+        let twist6_phase = if is_12k { offsets[1] } else { offsets[0] }; // t1 at 12k, t0 otherwise
 
         let decoders = [
             // Smart3 original 3
@@ -839,19 +856,19 @@ impl TwistMiniDecoder {
                 .with_energy_llr(),
             FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[1])
                 .with_energy_llr(),
-            // Twist decoder 4: BPF+0Hz, gain=+1.5dB (362 Q8), t0
-            // Mild de-emphasis compensation — consistent across all tracks
-            FastDemodulator::with_filter_and_offset(config, std_bpf, offsets[0])
+            // Twist decoder 4: BPF+0Hz, gain=+1.5dB (362 Q8)
+            // At 12k: t2 (top T2 winner); at 11025: t0
+            FastDemodulator::with_filter_and_offset(config, std_bpf, twist4_phase)
                 .with_space_gain(362)
                 .with_energy_llr(),
-            // Twist decoder 5: BPF+200Hz, gain=+1.5dB (362 Q8), t2
+            // Twist decoder 5: BPF+300Hz@12k / BPF+200Hz@11025, gain=+1.5dB (362 Q8), t2
             // Strong de-emphasis — shifted BPF + gain stacks for T2 priority
-            FastDemodulator::with_filter_and_offset(config, bpf_plus200, offsets[2])
+            FastDemodulator::with_filter_and_offset(config, bpf_twist5, twist5_phase)
                 .with_space_gain(362)
                 .with_energy_llr(),
-            // Twist decoder 6: BPF-200Hz, gain=0dB, t0
-            // Opposite twist — mark-favoring BPF for transmitters with excess space
-            FastDemodulator::with_filter_and_offset(config, bpf_minus200, offsets[0])
+            // Twist decoder 6: BPF-200Hz, gain=0dB
+            // At 12k: t1 (top T1 winner); at 11025: t0
+            FastDemodulator::with_filter_and_offset(config, bpf_minus200, twist6_phase)
                 .with_energy_llr(),
         ];
 

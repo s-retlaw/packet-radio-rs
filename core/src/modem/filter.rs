@@ -192,6 +192,12 @@ pub const fn afsk_bandpass_44100() -> BiquadFilter {
     BiquadFilter::new(3323, 0, -3323, -57170, 26121)
 }
 
+/// Precomputed bandpass filter for AFSK passband at 12000 Hz sample rate.
+/// center=1700 Hz, BW=1600 Hz. 12000/1200 = 10 sps (integer mark alignment).
+pub const fn afsk_bandpass_12000() -> BiquadFilter {
+    BiquadFilter::new(8774, 0, -8774, -30198, 15218)
+}
+
 /// Precomputed bandpass filter for AFSK passband at 13200 Hz sample rate.
 /// center=1700 Hz, BW=1600 Hz.
 pub const fn afsk_bandpass_13200() -> BiquadFilter {
@@ -210,6 +216,11 @@ pub const fn afsk_bandpass_narrow_11025() -> BiquadFilter {
     BiquadFilter::new(7384, 0, -7384, -28747, 17999)
 }
 
+/// Narrow bandpass filter at 12000 Hz. center=1700 Hz, BW=1200 Hz.
+pub const fn afsk_bandpass_narrow_12000() -> BiquadFilter {
+    BiquadFilter::new(7053, 0, -7053, -32365, 18661)
+}
+
 /// Narrow bandpass filter at 13200 Hz. center=1700 Hz, BW=1200 Hz.
 pub const fn afsk_bandpass_narrow_13200() -> BiquadFilter {
     BiquadFilter::new(6667, 0, -6667, -36023, 19433)
@@ -224,6 +235,11 @@ pub const fn afsk_bandpass_narrow_26400() -> BiquadFilter {
 /// center=1700 Hz, BW=2000 Hz (Q=0.85).
 pub const fn afsk_bandpass_wide_11025() -> BiquadFilter {
     BiquadFilter::new(10699, 0, -10699, -24992, 11368)
+}
+
+/// Wide bandpass filter at 12000 Hz. center=1700 Hz, BW=2000 Hz.
+pub const fn afsk_bandpass_wide_12000() -> BiquadFilter {
+    BiquadFilter::new(10280, 0, -10280, -28304, 12207)
 }
 
 /// Wide bandpass filter at 13200 Hz. center=1700 Hz, BW=2000 Hz.
@@ -261,6 +277,11 @@ pub const fn post_detect_lpf_11025() -> BiquadFilter {
     BiquadFilter::new(2547, 5093, 2547, -35110, 12528)
 }
 
+/// Precomputed post-detection LPF at 12000 Hz. Cutoff 1200 Hz, Q=0.707.
+pub const fn post_detect_lpf_12000() -> BiquadFilter {
+    BiquadFilter::new(2210, 4420, 2210, -37451, 13524)
+}
+
 /// Precomputed post-detection LPF at 13200 Hz. Cutoff 1200 Hz, Q=0.707.
 pub const fn post_detect_lpf_13200() -> BiquadFilter {
     BiquadFilter::new(1881, 3763, 1881, -39883, 14641)
@@ -292,6 +313,7 @@ pub const fn post_detect_lpf_48000() -> BiquadFilter {
 pub fn post_detect_lpf(sample_rate: u32) -> BiquadFilter {
     match sample_rate {
         11025 => post_detect_lpf_11025(),
+        12000 => post_detect_lpf_12000(),
         13200 => post_detect_lpf_13200(),
         22050 => post_detect_lpf_22050(),
         26400 => post_detect_lpf_26400(),
@@ -312,6 +334,11 @@ pub fn post_detect_lpf(sample_rate: u32) -> BiquadFilter {
 /// Computed from Audio EQ Cookbook LPF: cutoff=500 Hz, Q=0.707, Fs=11025 Hz.
 pub const fn corr_lpf_11025() -> BiquadFilter {
     BiquadFilter::new(551, 1102, 551, -52463, 21899)
+}
+
+/// Precomputed correlation LPF at 12000 Hz. Cutoff 500 Hz, Q=0.707.
+pub const fn corr_lpf_12000() -> BiquadFilter {
+    BiquadFilter::new(471, 943, 471, -53508, 22628)
 }
 
 /// Precomputed correlation LPF at 13200 Hz. Cutoff 500 Hz, Q=0.707.
@@ -343,6 +370,7 @@ pub const fn corr_lpf_48000() -> BiquadFilter {
 pub fn corr_lpf(sample_rate: u32) -> BiquadFilter {
     match sample_rate {
         11025 => corr_lpf_11025(),
+        12000 => corr_lpf_12000(),
         13200 => corr_lpf_13200(),
         22050 => corr_lpf_22050(),
         26400 => corr_lpf_26400(),

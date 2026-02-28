@@ -126,6 +126,7 @@ impl FastDemodulator {
     /// Select the appropriate BPF for a given sample rate.
     fn select_bpf(sample_rate: u32) -> BiquadFilter {
         match sample_rate {
+            12000 => super::filter::afsk_bandpass_12000(),
             13200 => super::filter::afsk_bandpass_13200(),
             22050 => super::filter::afsk_bandpass_22050(),
             26400 => super::filter::afsk_bandpass_26400(),
@@ -655,6 +656,7 @@ impl QualityDemodulator {
     /// Create a new quality-path demodulator.
     pub fn new(config: DemodConfig) -> Self {
         let bpf = match config.sample_rate {
+            12000 => super::filter::afsk_bandpass_12000(),
             13200 => super::filter::afsk_bandpass_13200(),
             22050 => super::filter::afsk_bandpass_22050(),
             26400 => super::filter::afsk_bandpass_26400(),
@@ -1538,6 +1540,7 @@ impl CorrelationDemodulator {
     /// Select the appropriate BPF for a given sample rate.
     fn select_bpf(sample_rate: u32) -> BiquadFilter {
         match sample_rate {
+            12000 => super::filter::afsk_bandpass_12000(),
             13200 => super::filter::afsk_bandpass_13200(),
             22050 => super::filter::afsk_bandpass_22050(),
             26400 => super::filter::afsk_bandpass_26400(),

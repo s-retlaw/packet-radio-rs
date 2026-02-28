@@ -2004,9 +2004,42 @@ fn run_twist_mini(path: &str) {
         println!("  TwistMini@13k vs TwistMini@native: {:>+4} packets", gain_vs_native);
     }
 
+    // --- Try 12000 Hz variant (48k ÷ 4 decimation target) ---
+    {
+        let path_12k = path.replace(".wav", "_12000.wav");
+        if let Ok((rate_12k, samples_12k)) = read_wav_file(&path_12k) {
+            println!();
+            println!("At {} Hz (from {}):", rate_12k, path_12k);
+
+            let fast_12k = decode_fast(&samples_12k, rate_12k);
+            let (smart3_12k, _) = decode_smart3(&samples_12k, rate_12k);
+            let (twist_mini_12k, _) = decode_twist_mini(&samples_12k, rate_12k);
+            let (multi_12k, _) = decode_multi(&samples_12k, rate_12k);
+
+            let dur_12k = samples_12k.len() as f64 / rate_12k as f64;
+            println!("  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
+                fast_12k.frames.len(), fast_12k.elapsed.as_secs_f64(),
+                dur_12k / fast_12k.elapsed.as_secs_f64());
+            println!("  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+                smart3_12k.frames.len(), smart3_12k.elapsed.as_secs_f64(),
+                dur_12k / smart3_12k.elapsed.as_secs_f64());
+            println!("  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
+                twist_mini_12k.frames.len(), twist_mini_12k.elapsed.as_secs_f64(),
+                dur_12k / twist_mini_12k.elapsed.as_secs_f64());
+            println!("  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+                multi_12k.frames.len(), multi_12k.elapsed.as_secs_f64(),
+                dur_12k / multi_12k.elapsed.as_secs_f64());
+
+            let gain_12k = twist_mini_12k.frames.len() as i64 - smart3_12k.frames.len() as i64;
+            let gain_vs_native = twist_mini_12k.frames.len() as i64 - twist_mini.frames.len() as i64;
+            println!("  TwistMini@12k vs Smart3@12k: {:>+4} packets", gain_12k);
+            println!("  TwistMini@12k vs TwistMini@native: {:>+4} packets", gain_vs_native);
+        }
+    }
+
     // --- Try 48000 Hz variant ---
     {
-        let target_48k = 48000u32;
+        let _target_48k = 48000u32;
         let path_48k = path.replace(".wav", "_48000.wav");
         let loaded = read_wav_file(&path_48k);
         if let Ok((rate_48k, samples_48k)) = loaded {
