@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// All known modem modes with their human-readable labels and descriptions.
+/// All known modem modes for 300/1200 baud AFSK.
 const AVAILABLE_MODES: &[(&str, &str, &str)] = &[
     ("fast", "Fast (single)", "Single Goertzel + Bresenham. Lowest CPU, basic decode."),
     ("quality", "Quality (soft)", "Goertzel + LLR soft decode. Slight improvement over fast."),
@@ -15,6 +15,22 @@ const AVAILABLE_MODES: &[(&str, &str, &str)] = &[
     ("corr-pll", "Corr + PLL", "Correlation mixer with Gardner PLL clock recovery."),
     ("xor", "Binary XOR", "Binary XOR correlator. Twist-immune, amplitude-invariant."),
 ];
+
+/// All known modem modes for 9600 baud G3RUH FSK.
+const AVAILABLE_MODES_9600: &[(&str, &str, &str)] = &[
+    ("multi", "Multi (ensemble)", "Parallel 9600 decoders. Best decode rate."),
+    ("mini", "Mini (6x MCU)", "6 MCU-optimal decoders. Lower CPU."),
+    ("direwolf", "DireWolf", "Single decoder, DireWolf-style matched filter."),
+    ("gardner", "Gardner", "Single decoder, Gardner TED timing."),
+    ("early-late", "Early-Late", "Single decoder, early-late gate timing."),
+    ("mm", "Mueller-Muller", "Single decoder, Mueller-Muller TED."),
+    ("rrc", "RRC", "Single decoder, root-raised-cosine matched filter."),
+];
+
+/// Return the mode list appropriate for the given baud rate.
+pub fn available_modes_for_baud(baud: u32) -> &'static [(&'static str, &'static str, &'static str)] {
+    if baud == 9600 { AVAILABLE_MODES_9600 } else { AVAILABLE_MODES }
+}
 
 /// Top-level config file structure matching `packet-radio.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -42,7 +58,7 @@ pub struct AudioConfig {
 pub struct ModemConfig {
     /// Demodulator mode: fast|quality|multi|smart3|dm|corr|corr-slicer|corr-pll|xor
     pub mode: String,
-    /// Baud rate: 300 (HF) or 1200 (VHF). Default: 1200.
+    /// Baud rate: 300 (HF), 1200 (VHF), or 9600 (UHF). Default: 1200.
     #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
 }
@@ -147,7 +163,8 @@ impl TncConfig {
 
     /// Human-readable label for the currently configured modem mode.
     pub fn mode_label(&self) -> &str {
-        AVAILABLE_MODES
+        let modes = available_modes_for_baud(self.modem.baud_rate);
+        modes
             .iter()
             .find(|(value, _, _)| *value == self.modem.mode)
             .map(|(_, label, _)| *label)
@@ -161,7 +178,8 @@ impl TncConfig {
 
     /// Description for the currently configured modem mode.
     pub fn mode_description(&self) -> &str {
-        AVAILABLE_MODES
+        let modes = available_modes_for_baud(self.modem.baud_rate);
+        modes
             .iter()
             .find(|(value, _, _)| *value == self.modem.mode)
             .map(|(_, _, desc)| *desc)

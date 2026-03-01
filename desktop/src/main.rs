@@ -156,7 +156,10 @@ fn spawn_audio_thread(
     let (result_tx, result_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
 
     let handle = std::thread::spawn(move || {
-        let source = match audio::CpalSource::open(&device_name, sample_rate) {
+        // For 9600 baud, enforce minimum sample rate
+        let effective_rate = if baud_rate == 9600 && sample_rate < 44100 { 48000 } else { sample_rate };
+
+        let source = match audio::CpalSource::open(&device_name, effective_rate) {
             Ok(src) => {
                 let _ = result_tx.send(Ok(()));
                 src
@@ -167,8 +170,13 @@ fn spawn_audio_thread(
             }
         };
 
-        let config = demod_config_for_rate(sample_rate, baud_rate);
-        run_audio_loop(Box::new(source), config, &mode, &stop, &async_tx, &kiss_frame_tx);
+        if baud_rate == 9600 {
+            let config_9600 = Demod9600Config::with_sample_rate(effective_rate);
+            run_audio_loop_9600(Box::new(source), config_9600, &mode, &stop, &async_tx, &kiss_frame_tx);
+        } else {
+            let config = demod_config_for_rate(effective_rate, baud_rate);
+            run_audio_loop(Box::new(source), config, &mode, &stop, &async_tx, &kiss_frame_tx);
+        }
         let _ = async_tx.send(tui::state::AsyncEvent::AudioDone);
     });
 
@@ -387,6 +395,78 @@ fn run_audio_loop(
                         frame_count += 1;
                         emit_tui_frame(frame_count, f, async_tx, kiss_frame_tx);
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Audio processing loop for 9600 baud G3RUH — runs in a background thread.
+fn run_audio_loop_9600(
+    mut source: Box<dyn SampleSource>,
+    config: Demod9600Config,
+    mode: &str,
+    stop: &AtomicBool,
+    async_tx: &crossbeam_channel::Sender<tui::state::AsyncEvent>,
+    kiss_frame_tx: &broadcast::Sender<Vec<u8>>,
+) {
+    let mut frame_count: u64 = 0;
+    let mut audio_buf = [0i16; 1024];
+
+    match mode {
+        "multi" => {
+            let mut decoder = Multi9600Decoder::new(config);
+            loop {
+                if stop.load(Ordering::Relaxed) { break; }
+                let n = source.read_samples(&mut audio_buf);
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let output = decoder.process_samples(&audio_buf[..n]);
+                for i in 0..output.len() {
+                    frame_count += 1;
+                    emit_tui_frame(frame_count, output.frame(i), async_tx, kiss_frame_tx);
+                }
+            }
+        }
+        "mini" => {
+            let mut decoder = Mini9600Decoder::new(config);
+            loop {
+                if stop.load(Ordering::Relaxed) { break; }
+                let n = source.read_samples(&mut audio_buf);
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let output = decoder.process_samples(&audio_buf[..n]);
+                for i in 0..output.len() {
+                    frame_count += 1;
+                    emit_tui_frame(frame_count, output.frame(i), async_tx, kiss_frame_tx);
+                }
+            }
+        }
+        _ => {
+            // Single algorithm: direwolf, gardner, early-late, mm, rrc
+            let mut decoder = match mode {
+                "gardner" => Single9600Decoder::gardner(config),
+                "early-late" => Single9600Decoder::early_late(config),
+                "mm" => Single9600Decoder::mueller_muller(config),
+                "rrc" => Single9600Decoder::rrc(config),
+                _ => Single9600Decoder::direwolf(config),
+            };
+            loop {
+                if stop.load(Ordering::Relaxed) { break; }
+                let n = source.read_samples(&mut audio_buf);
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let output = decoder.process_samples(&audio_buf[..n]);
+                for i in 0..output.len() {
+                    let (buf, len) = output.frame(i);
+                    frame_count += 1;
+                    emit_tui_frame(frame_count, &buf[..*len], async_tx, kiss_frame_tx);
                 }
             }
         }

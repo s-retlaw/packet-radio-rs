@@ -186,16 +186,30 @@ impl SettingsFormState {
             .position(|r| *r == rate_str)
             .unwrap_or_else(|| Self::closest_rate_index(supported_rates, config.audio.sample_rate));
 
-        // Mode options
-        let mode_options: Vec<String> = crate::config::TncConfig::available_modes()
+        // Baud rate options
+        let baud_options = vec!["300".to_string(), "1200".to_string(), "9600".to_string()];
+        let baud_descriptions = vec![
+            "HF AFSK (1600/1800 Hz tones)".to_string(),
+            "VHF AFSK (1200/2200 Hz tones)".to_string(),
+            "UHF G3RUH FSK (9600 baud baseband)".to_string(),
+        ];
+        let baud_idx = match config.modem.baud_rate {
+            300 => 0,
+            9600 => 2,
+            _ => 1, // 1200 default
+        };
+
+        // Mode options — use baud-aware mode list
+        let modes = crate::config::available_modes_for_baud(config.modem.baud_rate);
+        let mode_options: Vec<String> = modes
             .iter()
             .map(|(_, label, _)| label.to_string())
             .collect();
-        let mode_descriptions: Vec<String> = crate::config::TncConfig::available_modes()
+        let mode_descriptions: Vec<String> = modes
             .iter()
             .map(|(_, _, desc)| desc.to_string())
             .collect();
-        let mode_values: Vec<&str> = crate::config::TncConfig::available_modes()
+        let mode_values: Vec<&str> = modes
             .iter()
             .map(|(val, _, _)| *val)
             .collect();
@@ -221,6 +235,16 @@ impl SettingsFormState {
                     options: rate_options,
                     selected: rate_idx,
                     descriptions: Vec::new(),
+                },
+                filter: None,
+                max_len: None,
+            },
+            SettingsField {
+                label: "Baud Rate".into(),
+                kind: FieldKind::Dropdown {
+                    options: baud_options,
+                    selected: baud_idx,
+                    descriptions: baud_descriptions,
                 },
                 filter: None,
                 max_len: None,
@@ -313,6 +337,72 @@ impl SettingsFormState {
         None
     }
 
+    /// Called when the baud rate dropdown changes. Updates sample rate options
+    /// (9600 requires >=44100) and swaps the mode list. Returns a notification
+    /// message if the sample rate was changed.
+    pub fn on_baud_changed(&mut self, devices: &[super::AudioDeviceInfo]) -> Option<String> {
+        // Get the newly selected baud rate from field 2
+        let new_baud: u32 = match &self.fields[2].kind {
+            FieldKind::Dropdown { options, selected, .. } => {
+                options.get(*selected).and_then(|v| v.parse().ok()).unwrap_or(1200)
+            }
+            _ => return None,
+        };
+
+        // --- Update sample rate options (field 1) ---
+        // Get the device's supported rates from field 0
+        let device_idx = match &self.fields[0].kind {
+            FieldKind::Dropdown { selected, .. } => *selected,
+            _ => 0,
+        };
+        let device_rates = match devices.get(device_idx) {
+            Some(dev) => &dev.supported_rates,
+            None => return None,
+        };
+
+        // For 9600 baud, filter to only rates >= 44100
+        let filtered_rates: Vec<u32> = if new_baud == 9600 {
+            device_rates.iter().copied().filter(|&r| r >= 44100).collect()
+        } else {
+            device_rates.to_vec()
+        };
+        let filtered_rates = if filtered_rates.is_empty() { device_rates.clone() } else { filtered_rates };
+
+        let old_rate: Option<u32> = self.field_value(1).and_then(|v| v.parse().ok());
+        let mut rate_msg = None;
+
+        if let Some(field) = self.fields.get_mut(1) {
+            if let FieldKind::Dropdown { options, selected, .. } = &mut field.kind {
+                let new_options: Vec<String> = filtered_rates.iter().map(|r| r.to_string()).collect();
+                let old_rate_str = old_rate.map(|r| r.to_string()).unwrap_or_default();
+                let new_idx = new_options.iter().position(|r| *r == old_rate_str);
+
+                *options = new_options;
+
+                if let Some(idx) = new_idx {
+                    *selected = idx;
+                } else {
+                    let closest = Self::closest_rate_index(&filtered_rates, old_rate.unwrap_or(11025));
+                    *selected = closest;
+                    let new_rate = filtered_rates.get(closest).copied().unwrap_or(11025);
+                    rate_msg = Some(format!("Sample rate changed to {} Hz (baud rate constraint)", new_rate));
+                }
+            }
+        }
+
+        // --- Swap mode list (field 3) ---
+        let modes = crate::config::available_modes_for_baud(new_baud);
+        if let Some(field) = self.fields.get_mut(3) {
+            if let FieldKind::Dropdown { options, selected, descriptions } = &mut field.kind {
+                *options = modes.iter().map(|(_, label, _)| label.to_string()).collect();
+                *descriptions = modes.iter().map(|(_, _, desc)| desc.to_string()).collect();
+                *selected = 0; // reset to first (best default)
+            }
+        }
+
+        rate_msg
+    }
+
     /// Find the index of the closest rate in a sorted list.
     fn closest_rate_index(rates: &[u32], target: u32) -> usize {
         if rates.is_empty() {
@@ -385,21 +475,25 @@ impl SettingsFormState {
         if let Some(val) = self.field_value(1) {
             config.audio.sample_rate = val.parse().unwrap_or(11025);
         }
-        // Mode (field 2) -- need to map label back to value
-        if let Some(field) = self.fields.get(2) {
+        // Baud rate (field 2)
+        if let Some(val) = self.field_value(2) {
+            config.modem.baud_rate = val.parse().unwrap_or(1200);
+        }
+        // Mode (field 3) -- need to map label back to value
+        if let Some(field) = self.fields.get(3) {
             if let FieldKind::Dropdown { selected, .. } = &field.kind {
-                let modes = crate::config::TncConfig::available_modes();
+                let modes = crate::config::available_modes_for_baud(config.modem.baud_rate);
                 if let Some((val, _, _)) = modes.get(*selected) {
                     config.modem.mode = val.to_string();
                 }
             }
         }
-        // KISS port (field 3)
-        if let Some(val) = self.field_value(3) {
+        // KISS port (field 4)
+        if let Some(val) = self.field_value(4) {
             config.kiss.port = val.parse().unwrap_or(8001);
         }
-        // Callsign (field 4)
-        if let Some(val) = self.field_value(4) {
+        // Callsign (field 5)
+        if let Some(val) = self.field_value(5) {
             config.station.callsign = val;
         }
 
@@ -581,7 +675,7 @@ mod tests {
         let mut form = SettingsFormState::from_config(&config, &devices);
 
         assert_eq!(form.selected_field, 0);
-        assert_eq!(form.fields.len(), 5);
+        assert_eq!(form.fields.len(), 6);
 
         // select_next cycles forward
         form.select_next();
@@ -592,14 +686,16 @@ mod tests {
         assert_eq!(form.selected_field, 3);
         form.select_next();
         assert_eq!(form.selected_field, 4);
+        form.select_next();
+        assert_eq!(form.selected_field, 5);
         form.select_next(); // wraps
         assert_eq!(form.selected_field, 0);
 
         // select_prev cycles backward
         form.select_prev(); // wraps to end
-        assert_eq!(form.selected_field, 4);
+        assert_eq!(form.selected_field, 5);
         form.select_prev();
-        assert_eq!(form.selected_field, 3);
+        assert_eq!(form.selected_field, 4);
     }
 
     #[test]
@@ -631,10 +727,10 @@ mod tests {
         let devices = test_devices(&["default"]);
         let form = SettingsFormState::from_config(&config, &devices);
 
-        // Field 3 = KISS TCP Port (text)
-        assert_eq!(form.field_value(3), Some("9600".to_string()));
-        // Field 4 = Callsign (text)
-        assert_eq!(form.field_value(4), Some("W1AW".to_string()));
+        // Field 4 = KISS TCP Port (text)
+        assert_eq!(form.field_value(4), Some("9600".to_string()));
+        // Field 5 = Callsign (text)
+        assert_eq!(form.field_value(5), Some("W1AW".to_string()));
         // Out of bounds
         assert_eq!(form.field_value(99), None);
     }
@@ -672,11 +768,11 @@ mod tests {
         let devices = test_devices(&["default"]);
         let mut form = SettingsFormState::from_config(&config, &devices);
 
-        // Move to text field (field 3 = KISS port)
-        form.selected_field = 3;
-        let before = form.field_value(3);
+        // Move to text field (field 4 = KISS port)
+        form.selected_field = 4;
+        let before = form.field_value(4);
         form.cycle_dropdown(); // should be a no-op on text fields
-        let after = form.field_value(3);
+        let after = form.field_value(4);
         assert_eq!(before, after);
     }
 
@@ -816,5 +912,80 @@ mod tests {
         if let FieldKind::Dropdown { options, .. } = &form.fields[1].kind {
             assert_eq!(options.len(), 1);
         }
+    }
+
+    #[test]
+    fn test_on_baud_changed_updates_rates() {
+        let devices = vec![
+            test_device_with_rates("dev_a", &[11025, 22050, 44100, 48000]),
+        ];
+        let config = crate::config::TncConfig::default(); // 1200 baud, 11025 Hz
+        let mut form = SettingsFormState::from_config(&config, &devices);
+
+        // Switch to 9600 baud (field 2, index 2)
+        form.selected_field = 2;
+        if let FieldKind::Dropdown { selected, .. } = &mut form.fields[2].kind {
+            *selected = 2; // "9600"
+        }
+        let msg = form.on_baud_changed(&devices);
+        // 11025 Hz is not valid for 9600 baud, should be changed
+        assert!(msg.is_some());
+        let msg_str = msg.unwrap();
+        assert!(msg_str.contains("44100") || msg_str.contains("48000"));
+
+        // Rate options should only include >= 44100
+        if let FieldKind::Dropdown { options, .. } = &form.fields[1].kind {
+            assert_eq!(options.len(), 2);
+            assert_eq!(options[0], "44100");
+            assert_eq!(options[1], "48000");
+        }
+    }
+
+    #[test]
+    fn test_on_baud_changed_updates_modes() {
+        let devices = test_devices(&["default"]);
+        let config = crate::config::TncConfig::default(); // 1200 baud
+        let mut form = SettingsFormState::from_config(&config, &devices);
+
+        // Mode list should be AFSK modes initially
+        if let FieldKind::Dropdown { options, .. } = &form.fields[3].kind {
+            assert!(options.iter().any(|o| o.contains("Goertzel") || o.contains("single")));
+        }
+
+        // Switch to 9600 baud
+        form.selected_field = 2;
+        if let FieldKind::Dropdown { selected, .. } = &mut form.fields[2].kind {
+            *selected = 2; // "9600"
+        }
+        form.on_baud_changed(&devices);
+
+        // Mode list should now be 9600 modes
+        if let FieldKind::Dropdown { options, selected, .. } = &form.fields[3].kind {
+            assert_eq!(*selected, 0); // reset to first
+            assert!(options.iter().any(|o| o.contains("DireWolf")));
+            assert!(!options.iter().any(|o| o.contains("Goertzel") || o.contains("single")));
+        }
+    }
+
+    #[test]
+    fn test_to_config_baud_roundtrip() {
+        let config = crate::config::TncConfig {
+            modem: crate::config::ModemConfig {
+                mode: "direwolf".to_string(),
+                baud_rate: 9600,
+            },
+            audio: crate::config::AudioConfig {
+                sample_rate: 48000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let devices = test_devices(&["default"]);
+        let form = SettingsFormState::from_config(&config, &devices);
+        let result = form.to_config();
+
+        assert_eq!(result.modem.baud_rate, 9600);
+        assert_eq!(result.modem.mode, "direwolf");
+        assert_eq!(result.audio.sample_rate, 48000);
     }
 }

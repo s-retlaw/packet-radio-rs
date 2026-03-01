@@ -273,10 +273,16 @@ impl App {
                 if let Some(field) = self.settings.fields.get(self.settings.selected_field) {
                     match field.kind {
                         FieldKind::Dropdown { .. } => {
-                            let is_device_field = self.settings.selected_field == 0;
+                            let field_idx = self.settings.selected_field;
                             self.settings.cycle_dropdown();
-                            if is_device_field {
+                            if field_idx == 0 {
                                 if let Some(msg) = self.settings.on_device_changed(&self.devices) {
+                                    self.error_message = Some(msg);
+                                    self.show_error_dialog = true;
+                                }
+                            }
+                            if field_idx == 2 {
+                                if let Some(msg) = self.settings.on_baud_changed(&self.devices) {
                                     self.error_message = Some(msg);
                                     self.show_error_dialog = true;
                                 }
@@ -290,10 +296,16 @@ impl App {
                 true
             }
             KeyCode::Char(' ') => {
-                let is_device_field = self.settings.selected_field == 0;
+                let field_idx = self.settings.selected_field;
                 self.settings.cycle_dropdown();
-                if is_device_field {
+                if field_idx == 0 {
                     if let Some(msg) = self.settings.on_device_changed(&self.devices) {
+                        self.error_message = Some(msg);
+                        self.show_error_dialog = true;
+                    }
+                }
+                if field_idx == 2 {
+                    if let Some(msg) = self.settings.on_baud_changed(&self.devices) {
                         self.error_message = Some(msg);
                         self.show_error_dialog = true;
                     }
@@ -371,16 +383,16 @@ impl App {
 
     /// Validate settings before saving. Returns error message if invalid.
     fn validate_settings(&self) -> Option<String> {
-        // Validate KISS TCP port (field 3)
-        if let Some(val) = self.settings.field_value(3) {
+        // Validate KISS TCP port (field 4)
+        if let Some(val) = self.settings.field_value(4) {
             match val.parse::<u16>() {
                 Ok(0) => return Some("port must be between 1 and 65535".to_string()),
                 Err(_) => return Some(format!("invalid port: '{}'. Must be 0\u{2013}65535.", val)),
                 _ => {}
             }
         }
-        // Validate callsign is non-empty (field 4)
-        if let Some(val) = self.settings.field_value(4) {
+        // Validate callsign is non-empty (field 5)
+        if let Some(val) = self.settings.field_value(5) {
             if val.trim().is_empty() {
                 return Some("callsign cannot be empty".to_string());
             }
@@ -901,8 +913,8 @@ mod tests {
     fn test_settings_text_edit() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        // Navigate to KISS port (field 3)
-        app.settings.selected_field = 3;
+        // Navigate to KISS port (field 4)
+        app.settings.selected_field = 4;
 
         // Enter edit mode
         app.handle_key(make_key(KeyCode::Enter));
@@ -963,7 +975,7 @@ mod tests {
     fn test_s_key_not_intercepted_during_text_edit() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        app.settings.selected_field = 3; // KISS port (text field)
+        app.settings.selected_field = 4; // KISS port (text field)
 
         // Enter edit mode
         app.handle_key(make_key(KeyCode::Enter));
@@ -978,26 +990,26 @@ mod tests {
     fn test_port_rejects_non_digits() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        app.settings.selected_field = 3; // KISS port
+        app.settings.selected_field = 4; // KISS port
         app.handle_key(make_key(KeyCode::Enter)); // enter edit mode
 
-        let before = app.settings.field_value(3).unwrap();
+        let before = app.settings.field_value(4).unwrap();
         // Letters should be rejected
         app.handle_key(make_key(KeyCode::Char('a')));
         app.handle_key(make_key(KeyCode::Char('!')));
         app.handle_key(make_key(KeyCode::Char(' ')));
-        assert_eq!(app.settings.field_value(3).unwrap(), before);
+        assert_eq!(app.settings.field_value(4).unwrap(), before);
 
         // Digits should be accepted
         app.handle_key(make_key(KeyCode::Char('9')));
-        assert!(app.settings.field_value(3).unwrap().ends_with('9'));
+        assert!(app.settings.field_value(4).unwrap().ends_with('9'));
     }
 
     #[test]
     fn test_callsign_filter_uppercase_and_reject() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        app.settings.selected_field = 4; // Callsign
+        app.settings.selected_field = 5; // Callsign
         app.handle_key(make_key(KeyCode::Enter)); // enter edit mode
 
         // Clear existing value
@@ -1010,18 +1022,18 @@ mod tests {
         app.handle_key(make_key(KeyCode::Char('1')));
         app.handle_key(make_key(KeyCode::Char('a')));
         app.handle_key(make_key(KeyCode::Char('w')));
-        assert_eq!(app.settings.field_value(4).unwrap(), "W1AW");
+        assert_eq!(app.settings.field_value(5).unwrap(), "W1AW");
 
         // Hyphen should be accepted (for SSID)
         app.handle_key(make_key(KeyCode::Char('-')));
         app.handle_key(make_key(KeyCode::Char('1')));
-        assert_eq!(app.settings.field_value(4).unwrap(), "W1AW-1");
+        assert_eq!(app.settings.field_value(5).unwrap(), "W1AW-1");
 
         // Special chars should be rejected
         app.handle_key(make_key(KeyCode::Char('!')));
         app.handle_key(make_key(KeyCode::Char('@')));
         app.handle_key(make_key(KeyCode::Char(' ')));
-        assert_eq!(app.settings.field_value(4).unwrap(), "W1AW-1");
+        assert_eq!(app.settings.field_value(5).unwrap(), "W1AW-1");
     }
 
     #[test]
@@ -1058,8 +1070,8 @@ mod tests {
     #[test]
     fn test_mode_description_available() {
         let app = App::new_for_testing();
-        // Field 2 is Demod Mode dropdown — should have descriptions
-        let desc = app.settings.field_description(2);
+        // Field 3 is Demod Mode dropdown — should have descriptions
+        let desc = app.settings.field_description(3);
         assert!(desc.is_some());
         assert!(!desc.unwrap().is_empty());
     }
@@ -1068,7 +1080,7 @@ mod tests {
     fn test_port_max_length_enforced() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        app.settings.selected_field = 3; // KISS port
+        app.settings.selected_field = 4; // KISS port
         app.handle_key(make_key(KeyCode::Enter)); // enter edit mode
 
         // Clear existing value
@@ -1080,18 +1092,18 @@ mod tests {
         for c in ['6', '5', '5', '3', '5'] {
             app.handle_key(make_key(KeyCode::Char(c)));
         }
-        assert_eq!(app.settings.field_value(3).unwrap(), "65535");
+        assert_eq!(app.settings.field_value(4).unwrap(), "65535");
 
         // 6th digit should be rejected (max_len = 5)
         app.handle_key(make_key(KeyCode::Char('9')));
-        assert_eq!(app.settings.field_value(3).unwrap(), "65535");
+        assert_eq!(app.settings.field_value(4).unwrap(), "65535");
     }
 
     #[test]
     fn test_validate_settings_port_zero() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        app.settings.selected_field = 3;
+        app.settings.selected_field = 4;
         app.handle_key(make_key(KeyCode::Enter));
 
         // Clear and type "0"
@@ -1110,7 +1122,7 @@ mod tests {
     fn test_validate_settings_empty_callsign() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        app.settings.selected_field = 4; // Callsign
+        app.settings.selected_field = 5; // Callsign
         app.handle_key(make_key(KeyCode::Enter));
 
         // Clear callsign
