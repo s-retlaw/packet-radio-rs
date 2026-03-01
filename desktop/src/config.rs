@@ -171,12 +171,6 @@ impl TncConfig {
             .unwrap_or(&self.modem.mode)
     }
 
-    /// All known modem modes as `(value, label, description)` tuples (1200 baud).
-    #[allow(dead_code)]
-    pub fn available_modes() -> &'static [(&'static str, &'static str, &'static str)] {
-        AVAILABLE_MODES
-    }
-
     /// Description for the currently configured modem mode.
     #[allow(dead_code)]
     pub fn mode_description(&self) -> &str {
@@ -368,10 +362,13 @@ mod tests {
 
     #[test]
     fn test_available_modes_have_descriptions() {
-        for (val, label, desc) in TncConfig::available_modes() {
-            assert!(!val.is_empty(), "mode value should not be empty");
-            assert!(!label.is_empty(), "mode label should not be empty");
-            assert!(!desc.is_empty(), "mode '{}' should have a description", val);
+        // Check both 1200 and 9600 mode lists
+        for baud in [1200, 9600] {
+            for (val, label, desc) in available_modes_for_baud(baud) {
+                assert!(!val.is_empty(), "mode value should not be empty (baud {baud})");
+                assert!(!label.is_empty(), "mode label should not be empty (baud {baud})");
+                assert!(!desc.is_empty(), "mode '{}' should have a description (baud {baud})", val);
+            }
         }
     }
 }

@@ -1,11 +1,13 @@
 //! Reusable widget abstractions for the TUI
 
-#[allow(dead_code)]
-mod dialog;
+// Widget modules expose a complete API that is exercised via tests.
+// Some methods are not yet used in the TUI itself.
 #[allow(dead_code)]
 mod selectable_list;
 #[allow(dead_code)]
 mod text_input;
+
+mod dialog;
 
 pub use dialog::DialogBuilder;
 pub use selectable_list::SelectableList;

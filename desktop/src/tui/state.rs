@@ -55,14 +55,6 @@ impl Tab {
     }
 }
 
-/// View mode within a tab.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum View {
-    Main,
-    Detail,
-}
-
 /// Audio processing state -- either stopped or running.
 pub enum ProcessingState {
     Stopped,
@@ -76,8 +68,10 @@ impl ProcessingState {
     pub fn is_running(&self) -> bool {
         matches!(self, ProcessingState::Running { .. })
     }
+}
 
-    #[allow(dead_code)]
+#[cfg(test)]
+impl ProcessingState {
     pub fn is_stopped(&self) -> bool {
         matches!(self, ProcessingState::Stopped)
     }
@@ -118,8 +112,6 @@ pub struct AprsStation {
 pub struct Stats {
     pub total_frames: u64,
     pub unique_frames: u64,
-    #[allow(dead_code)]
-    pub soft_saves: u32,
     pub kiss_clients: u32,
     pub uptime_secs: u64,
 }
@@ -506,9 +498,9 @@ impl SettingsFormState {
 
 /// Async events from the audio thread to the TUI.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum AsyncEvent {
     FrameDecoded(DecodedFrameInfo),
+    #[allow(dead_code)]
     StatsUpdate(Stats),
     AudioDone,
 }
@@ -581,15 +573,6 @@ mod tests {
 
         let after_three_prev = start.prev().prev().prev();
         assert_eq!(start, after_three_prev);
-    }
-
-    #[test]
-    fn test_view_variants() {
-        let main = View::Main;
-        let detail = View::Detail;
-        assert_eq!(main, View::Main);
-        assert_eq!(detail, View::Detail);
-        assert_ne!(main, detail);
     }
 
     #[test]
@@ -667,7 +650,6 @@ mod tests {
         let stats = Stats::default();
         assert_eq!(stats.total_frames, 0);
         assert_eq!(stats.unique_frames, 0);
-        assert_eq!(stats.soft_saves, 0);
         assert_eq!(stats.kiss_clients, 0);
         assert_eq!(stats.uptime_secs, 0);
     }

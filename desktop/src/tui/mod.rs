@@ -41,7 +41,6 @@ const USER_SAMPLE_RATES: [u32; 4] = [11025, 22050, 44100, 48000];
 /// The main TUI application.
 pub struct App {
     pub tab: Tab,
-    pub view: View,
     pub processing: ProcessingState,
     pub config: TncConfig,
     pub config_path: std::path::PathBuf,
@@ -55,9 +54,6 @@ pub struct App {
     pub show_error_dialog: bool,
     pub error_message: Option<String>,
     pub start_time: Instant,
-    /// Channel for sending frames from audio thread to TUI
-    #[allow(dead_code)]
-    pub frame_tx: Option<crossbeam_channel::Sender<AsyncEvent>>,
     /// Set to true when user requests audio processing to start.
     pub start_requested: bool,
     /// Audio device info for device-aware settings.
@@ -70,7 +66,6 @@ impl App {
         let settings = SettingsFormState::from_config(&config, &devices);
         Self {
             tab: Tab::Packets,
-            view: View::Main,
             processing: ProcessingState::Stopped,
             config,
             config_path,
@@ -84,7 +79,6 @@ impl App {
             show_error_dialog: false,
             error_message: None,
             start_time: Instant::now(),
-            frame_tx: None,
             start_requested: false,
             devices,
         }
@@ -545,7 +539,6 @@ where
         terminal.draw(|frame| {
             let mut ctx = ui::DrawContext {
                 tab: app.tab,
-                view: app.view,
                 processing: &app.processing,
                 config: &app.config,
                 frames: &mut app.frames,
@@ -713,13 +706,6 @@ pub fn enumerate_audio_devices() -> Vec<AudioDeviceInfo> {
         });
     }
     devices
-}
-
-/// Enumerate available audio input devices (names only).
-/// Thin wrapper for backward compatibility with non-TUI codepaths.
-#[allow(dead_code)]
-pub fn list_audio_devices() -> Vec<String> {
-    enumerate_audio_devices().into_iter().map(|d| d.name).collect()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

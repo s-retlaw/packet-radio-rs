@@ -6,14 +6,12 @@ mod packets;
 mod settings;
 
 use ratatui::prelude::*;
-use super::state::{Tab, View, ProcessingState, DecodedFrameInfo, AprsStation, Stats, SettingsFormState};
+use super::state::{Tab, ProcessingState, DecodedFrameInfo, AprsStation, Stats, SettingsFormState};
 use super::widgets::SelectableList;
 
 /// All state needed by the rendering layer (borrowed from App).
 pub struct DrawContext<'a> {
     pub tab: Tab,
-    #[allow(dead_code)]
-    pub view: View,
     pub processing: &'a ProcessingState,
     pub config: &'a crate::config::TncConfig,
     pub frames: &'a mut SelectableList<DecodedFrameInfo>,

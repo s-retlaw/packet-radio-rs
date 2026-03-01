@@ -48,12 +48,6 @@ impl<'a> DialogBuilder<'a> {
         self
     }
 
-    /// Add a styled message line
-    pub fn styled_message(mut self, line: Line<'a>) -> Self {
-        self.lines.push(line);
-        self
-    }
-
     /// Add an empty line for spacing
     pub fn empty_line(mut self) -> Self {
         self.lines.push(Line::from(""));
@@ -69,25 +63,6 @@ impl<'a> DialogBuilder<'a> {
     /// Set which button is currently selected (0-indexed)
     pub fn selected(mut self, idx: usize) -> Self {
         self.selected_button = idx;
-        self
-    }
-
-    /// Get the number of buttons
-    pub fn button_count(&self) -> usize {
-        self.buttons.len()
-    }
-
-    /// Get the currently selected button index
-    pub fn selected_button(&self) -> usize {
-        self.selected_button
-    }
-
-    /// Add help text at the bottom
-    pub fn help(mut self, text: &'a str) -> Self {
-        self.lines.push(Line::from(Span::styled(
-            text.to_string(),
-            Style::default().fg(Color::DarkGray),
-        )));
         self
     }
 
@@ -185,8 +160,8 @@ mod tests {
             .button("No")
             .selected(1);
 
-        assert_eq!(builder.button_count(), 2);
-        assert_eq!(builder.selected_button(), 1);
+        assert_eq!(builder.buttons.len(), 2);
+        assert_eq!(builder.selected_button, 1);
         assert_eq!(builder.buttons[0], "Yes");
         assert_eq!(builder.buttons[1], "No");
     }
@@ -197,7 +172,7 @@ mod tests {
             .button("OK")
             .button("Cancel");
 
-        assert_eq!(builder.selected_button(), 0);
+        assert_eq!(builder.selected_button, 0);
     }
 
     #[test]
