@@ -44,6 +44,10 @@ use crate::modem::demod::{DemodSymbol, FastDemodulator};
 use crate::modem::soft_hdlc::{SoftHdlcDecoder, FrameResult};
 use crate::ax25::frame::HdlcDecoder;
 use crate::modem::{DemodConfig, ModConfig};
+#[cfg(feature = "9600-baud")]
+use crate::modem::scrambler::Scrambler;
+#[cfg(feature = "9600-baud")]
+use crate::modem::mod_9600::Mod9600Config;
 
 #[cfg(feature = "multi-decoder")]
 use crate::modem::multi::{MiniDecoder, MultiDecoder};
@@ -827,6 +831,57 @@ impl Modulate for AfskModulateAdapter {
 
     fn samples_per_symbol(&self) -> usize {
         self.modulator.samples_per_symbol()
+    }
+}
+
+/// 9600 baud G3RUH FSK modulator adapter.
+///
+/// Implements the `Modulate` trait for 9600 baud: NRZI encode → G3RUH scramble
+/// → ±amplitude baseband samples. Uses Bresenham timing for fractional sps.
+#[cfg(feature = "9600-baud")]
+pub struct Fsk9600ModulateAdapter {
+    scrambler: Scrambler,
+    prev_nrzi: bool,
+    config: Mod9600Config,
+    bit_phase: u32,
+}
+
+#[cfg(feature = "9600-baud")]
+impl Fsk9600ModulateAdapter {
+    /// Create a 9600 baud modulator adapter.
+    pub fn new(config: Mod9600Config) -> Self {
+        Self {
+            scrambler: Scrambler::new(),
+            prev_nrzi: false,
+            config,
+            bit_phase: 0,
+        }
+    }
+}
+
+#[cfg(feature = "9600-baud")]
+impl Modulate for Fsk9600ModulateAdapter {
+    fn modulate_bit(&mut self, bit: bool, out: &mut [i16]) -> usize {
+        // NRZI: transition on 0, no transition on 1
+        if !bit {
+            self.prev_nrzi = !self.prev_nrzi;
+        }
+        let scrambled = self.scrambler.scramble(self.prev_nrzi);
+        let level = if scrambled { self.config.amplitude } else { -self.config.amplitude };
+
+        // Bresenham timing for fractional samples-per-symbol
+        self.bit_phase += self.config.sample_rate;
+        let count = ((self.bit_phase / self.config.baud_rate) as usize).min(out.len());
+        self.bit_phase %= self.config.baud_rate;
+
+        for sample in out[..count].iter_mut() {
+            *sample = level;
+        }
+        count
+    }
+
+    fn samples_per_symbol(&self) -> usize {
+        (self.config.sample_rate / self.config.baud_rate) as usize
     }
 }
 

@@ -70,9 +70,21 @@ pub struct Cli {
     #[arg(long)]
     pub tx_pipe: bool,
 
-    /// Baud rate: 300 (HF) or 1200 (VHF, default)
+    /// Baud rate: 300 (HF), 1200 (VHF, default), or 9600 (G3RUH FSK)
     #[arg(short = 'B', long, default_value = "1200")]
     pub baud: u32,
+
+    /// 9600 baud algorithm: direwolf, gardner, early-late, mm, rrc
+    #[arg(long = "9600-algo")]
+    pub algo_9600: Option<String>,
+
+    /// Use Mini9600 decoder (6 MCU-optimal decoders for 9600 baud)
+    #[arg(long)]
+    pub mini9600: bool,
+
+    /// Auto-baud: decode both 1200 and 9600 simultaneously
+    #[arg(long)]
+    pub auto_baud: bool,
 
     /// Disable TUI — headless mode (log to stdout like before)
     #[arg(long)]
