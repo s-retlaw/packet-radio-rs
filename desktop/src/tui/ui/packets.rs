@@ -135,10 +135,19 @@ pub fn draw_packet_detail_popup(frame: &mut Frame, ctx: &DrawContext) {
         text.push(Line::from(""));
         text.push(Line::from(Span::styled("--- APRS ---", Style::default().fg(Color::Cyan))));
         match data {
-            AprsData::Position { lat, lon, symbol, comment, weather } => {
+            AprsData::Position { lat, lon, symbol, comment, weather, timestamp, altitude, compressed_extra } => {
                 text.push(Line::from(format!("Type:     Position")));
                 text.push(Line::from(format!("Lat/Lon:  {:.4}, {:.4}", lat, lon)));
                 text.push(Line::from(format!("Symbol:   {}{}", symbol.0 as char, symbol.1 as char)));
+                if let Some(ref ts) = timestamp {
+                    text.push(Line::from(format!("Time:     {}", ts)));
+                }
+                if let Some(alt) = altitude {
+                    text.push(Line::from(format!("Altitude: {} ft", alt)));
+                }
+                if let Some(ref extra) = compressed_extra {
+                    text.push(Line::from(format!("Compress: {}", extra)));
+                }
                 if let Some(ref wx) = weather {
                     format_weather_lines(wx, &mut text);
                 }
@@ -153,8 +162,8 @@ pub fn draw_packet_detail_popup(frame: &mut Frame, ctx: &DrawContext) {
                 text.push(Line::from(format!("Course:   {} deg", course)));
                 text.push(Line::from(format!("Symbol:   {}{}", symbol.0 as char, symbol.1 as char)));
             }
-            AprsData::Message { addressee, text: msg_text, message_no } => {
-                text.push(Line::from(format!("Type:     Message")));
+            AprsData::Message { addressee, text: msg_text, message_no, message_type } => {
+                text.push(Line::from(format!("Type:     Message ({})", message_type)));
                 text.push(Line::from(format!("To:       {}", addressee)));
                 text.push(Line::from(format!("Text:     {}", msg_text)));
                 if let Some(ref no) = message_no {
@@ -168,12 +177,15 @@ pub fn draw_packet_detail_popup(frame: &mut Frame, ctx: &DrawContext) {
                     text.push(Line::from(format!("Comment:  {}", comment)));
                 }
             }
-            AprsData::Object { name, live, lat, lon, symbol, comment } => {
+            AprsData::Object { name, live, lat, lon, symbol, comment, timestamp } => {
                 let status = if *live { "live" } else { "killed" };
                 text.push(Line::from(format!("Type:     Object ({})", status)));
                 text.push(Line::from(format!("Name:     {}", name)));
                 text.push(Line::from(format!("Lat/Lon:  {:.4}, {:.4}", lat, lon)));
                 text.push(Line::from(format!("Symbol:   {}{}", symbol.0 as char, symbol.1 as char)));
+                if let Some(ref ts) = timestamp {
+                    text.push(Line::from(format!("Time:     {}", ts)));
+                }
                 if !comment.is_empty() {
                     text.push(Line::from(format!("Comment:  {}", comment)));
                 }
@@ -188,9 +200,59 @@ pub fn draw_packet_detail_popup(frame: &mut Frame, ctx: &DrawContext) {
                     text.push(Line::from(format!("Comment:  {}", comment)));
                 }
             }
-            AprsData::Status { text: status_text } => {
+            AprsData::Status { text: status_text, timestamp, maidenhead } => {
                 text.push(Line::from(format!("Type:     Status")));
+                if let Some(ref ts) = timestamp {
+                    text.push(Line::from(format!("Time:     {}", ts)));
+                }
+                if let Some(ref mh) = maidenhead {
+                    text.push(Line::from(format!("Grid:     {}", mh)));
+                }
                 text.push(Line::from(format!("Text:     {}", status_text)));
+            }
+            AprsData::Telemetry { sequence, analog, digital } => {
+                text.push(Line::from(format!("Type:     Telemetry")));
+                text.push(Line::from(format!("Seq:      #{}", sequence)));
+                let analog_strs: Vec<String> = analog.iter().map(|a| {
+                    a.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
+                }).collect();
+                text.push(Line::from(format!("Analog:   {}", analog_strs.join(", "))));
+                text.push(Line::from(format!("Digital:  {:08b}", digital)));
+            }
+            AprsData::Query { query_type } => {
+                text.push(Line::from(format!("Type:     Query")));
+                text.push(Line::from(format!("Query:    {}", query_type)));
+            }
+            AprsData::Capabilities { data } => {
+                text.push(Line::from(format!("Type:     Capabilities")));
+                text.push(Line::from(format!("Data:     {}", data)));
+            }
+            AprsData::ThirdParty { data } => {
+                text.push(Line::from(format!("Type:     Third-party")));
+                text.push(Line::from(format!("Data:     {}", data)));
+            }
+            AprsData::RawGps { data, position, speed, course, altitude, satellites, fix_valid } => {
+                text.push(Line::from(format!("Type:     Raw GPS{}", if *fix_valid { "" } else { " (no fix)" })));
+                text.push(Line::from(format!("NMEA:     {}", data)));
+                if let Some((lat, lon)) = position {
+                    text.push(Line::from(format!("Position: {lat:.6}, {lon:.6}")));
+                }
+                if let Some(spd) = speed {
+                    text.push(Line::from(format!("Speed:    {spd:.1} kts")));
+                }
+                if let Some(crs) = course {
+                    text.push(Line::from(format!("Course:   {crs:.1}°")));
+                }
+                if let Some(alt) = altitude {
+                    text.push(Line::from(format!("Altitude: {alt:.1} m")));
+                }
+                if let Some(sats) = satellites {
+                    text.push(Line::from(format!("Sats:     {sats}")));
+                }
+            }
+            AprsData::UserDefined { data } => {
+                text.push(Line::from(format!("Type:     User-defined")));
+                text.push(Line::from(format!("Data:     {}", data)));
             }
             AprsData::Unknown { dti } => {
                 text.push(Line::from(format!("Type:     Unknown (DTI 0x{:02X})", dti)));

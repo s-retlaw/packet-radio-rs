@@ -61,13 +61,22 @@ pub fn draw_header(frame: &mut Frame, area: Rect, ctx: &DrawContext) {
 }
 
 pub fn draw_footer(frame: &mut Frame, area: Rect, ctx: &DrawContext) {
+    if ctx.aprs_search_active {
+        let hints = " Type to search  Enter:Keep filter  Esc:Clear";
+        frame.render_widget(
+            Paragraph::new(hints).style(Style::default().fg(Color::DarkGray)),
+            area,
+        );
+        return;
+    }
     let stop_start = if ctx.processing.is_running() { "s:Stop" } else { "s:Start" };
     let open_hint = if ctx.is_wav_source && !ctx.processing.is_running() {
         "  o:Open"
     } else {
         ""
     };
-    let hints = format!(" q:Quit  {stop_start}{open_hint}  1-3:Tab  Up/Down:Scroll  g/G:Top/Bot  Enter:Detail");
+    let search_hint = if matches!(ctx.tab, Tab::Aprs) { "  /:Search" } else { "" };
+    let hints = format!(" q:Quit  {stop_start}{open_hint}  1-3:Tab  Up/Down:Scroll  g/G:Top/Bot  Enter:Detail{search_hint}");
     frame.render_widget(
         Paragraph::new(hints).style(Style::default().fg(Color::DarkGray)),
         area,

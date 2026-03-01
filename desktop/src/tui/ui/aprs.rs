@@ -5,13 +5,51 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, S
 use super::DrawContext;
 
 pub fn draw_aprs(frame: &mut Frame, area: Rect, ctx: &mut DrawContext) {
+    let has_search = ctx.aprs_search_active || !ctx.aprs_search_text.is_empty();
+    let constraints = if has_search {
+        vec![Constraint::Length(1), Constraint::Min(8), Constraint::Length(5)]
+    } else {
+        vec![Constraint::Min(8), Constraint::Length(5)]
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(5)])
+        .constraints(constraints)
         .split(area);
 
-    draw_station_table(frame, chunks[0], ctx);
-    draw_station_detail(frame, chunks[1], ctx);
+    if has_search {
+        draw_search_bar(frame, chunks[0], ctx);
+        draw_station_table(frame, chunks[1], ctx);
+        draw_station_detail(frame, chunks[2], ctx);
+    } else {
+        draw_station_table(frame, chunks[0], ctx);
+        draw_station_detail(frame, chunks[1], ctx);
+    }
+}
+
+fn draw_search_bar(frame: &mut Frame, area: Rect, ctx: &DrawContext) {
+    let label = " / ";
+    let cursor_indicator = if ctx.aprs_search_active { "_" } else { "" };
+    let text = format!("{}{}{}", label, ctx.aprs_search_text, cursor_indicator);
+    let match_count = ctx.aprs_filtered_indices.len();
+    let total = ctx.aprs_stations.items().len();
+    let status = if ctx.aprs_search_text.is_empty() {
+        String::new()
+    } else {
+        format!("  ({}/{})", match_count, total)
+    };
+
+    let spans = vec![
+        Span::styled(label, Style::default().fg(Color::Yellow)),
+        Span::raw(ctx.aprs_search_text),
+        if ctx.aprs_search_active {
+            Span::styled("_", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK))
+        } else {
+            Span::raw("")
+        },
+        Span::styled(status, Style::default().fg(Color::DarkGray)),
+    ];
+    let _ = text; // used only for sizing logic above
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_station_table(frame: &mut Frame, area: Rect, ctx: &mut DrawContext) {
@@ -24,7 +62,9 @@ fn draw_station_table(frame: &mut Frame, area: Rect, ctx: &mut DrawContext) {
     ])
     .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
 
-    let rows: Vec<Row> = ctx.aprs_stations.items().iter().map(|s| {
+    let all_stations = ctx.aprs_stations.items();
+    let rows: Vec<Row> = ctx.aprs_filtered_indices.iter().map(|&i| {
+        let s = &all_stations[i];
         let pos = s.position.map(|(lat, lon)| format!("{:.4}, {:.4}", lat, lon))
             .unwrap_or_default();
         let display_name = if let Some(ref name) = s.object_name {
@@ -42,6 +82,11 @@ fn draw_station_table(frame: &mut Frame, area: Rect, ctx: &mut DrawContext) {
     }).collect();
 
     let total = rows.len();
+    let title = if ctx.aprs_search_text.is_empty() {
+        format!(" APRS Stations ({}) ", all_stations.len())
+    } else {
+        format!(" APRS Stations ({}/{}) ", total, all_stations.len())
+    };
 
     let widths = [
         Constraint::Length(12),
@@ -53,7 +98,7 @@ fn draw_station_table(frame: &mut Frame, area: Rect, ctx: &mut DrawContext) {
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().title(" APRS Stations ").borders(Borders::ALL))
+        .block(Block::default().title(title).borders(Borders::ALL))
         .row_highlight_style(Style::default().bg(Color::DarkGray));
 
     frame.render_stateful_widget(table, area, ctx.aprs_stations.table_state_mut());
@@ -107,6 +152,9 @@ fn draw_station_detail(frame: &mut Frame, area: Rect, ctx: &DrawContext) {
         if let Some(ref name) = s.object_name {
             lines.push(Line::from(format!("Name: {}", name)));
         }
+        if !s.last_via.is_empty() {
+            lines.push(Line::from(format!("Via: {}", s.last_via)));
+        }
         if let Some((lat, lon)) = s.position {
             lines.push(Line::from(format!("Position: {:.4}, {:.4}", lat, lon)));
         }
@@ -142,6 +190,10 @@ pub fn draw_station_detail_popup(frame: &mut Frame, ctx: &DrawContext) {
         Line::from(format!("Last Heard: {}", s.last_heard)),
         Line::from(format!("Packets:    {}", s.packet_count)),
     ];
+
+    if !s.last_via.is_empty() {
+        text.push(Line::from(format!("Path:       {}", s.last_via)));
+    }
 
     if let Some(ref name) = s.object_name {
         text.push(Line::from(format!("Name:       {}", name)));

@@ -29,6 +29,12 @@ pub struct DrawContext<'a> {
     pub is_wav_source: bool,
     /// Whether to show the detail popup for selected packet/station.
     pub show_detail_dialog: bool,
+    /// APRS search filter text (empty = no filter).
+    pub aprs_search_text: &'a str,
+    /// Whether the APRS search bar is active (cursor shown).
+    pub aprs_search_active: bool,
+    /// Indices of stations that match the search filter.
+    pub aprs_filtered_indices: &'a [usize],
 }
 
 /// Main draw function — called on every frame.

@@ -586,10 +586,33 @@ fn make_frame_info(count: u64, data: &[u8]) -> tui::state::DecodedFrameInfo {
                 let status = if *live { "live" } else { "killed" };
                 format!("Item {n} ({status}): {lat:.4}, {lon:.4}")
             }
-            aprs::AprsPacket::Status { text } => {
+            aprs::AprsPacket::Status { text, .. } => {
                 let s = core::str::from_utf8(text).unwrap_or("?");
                 format!("Status: {s}")
             }
+            aprs::AprsPacket::Telemetry { sequence, .. } => {
+                format!("Telemetry #{sequence}")
+            }
+            aprs::AprsPacket::ThirdParty { .. } => "Third-party".to_string(),
+            aprs::AprsPacket::RawGps { parsed, .. } => {
+                if let Some(ref nmea) = parsed {
+                    if let Some(ref pos) = nmea.position {
+                        let lat = pos.lat as f64 / 1_000_000.0;
+                        let lon = pos.lon as f64 / 1_000_000.0;
+                        format!("GPS: {lat:.4}, {lon:.4}")
+                    } else {
+                        "Raw GPS (no fix)".to_string()
+                    }
+                } else {
+                    "Raw GPS".to_string()
+                }
+            }
+            aprs::AprsPacket::Capabilities { .. } => "Capabilities".to_string(),
+            aprs::AprsPacket::Query { query_type, .. } => {
+                let q = core::str::from_utf8(query_type).unwrap_or("?");
+                format!("Query: {q}")
+            }
+            aprs::AprsPacket::UserDefined { .. } => "User-defined".to_string(),
             aprs::AprsPacket::Unknown { .. } => "APRS".to_string(),
         });
 
@@ -621,23 +644,63 @@ fn make_frame_info(count: u64, data: &[u8]) -> tui::state::DecodedFrameInfo {
     }
 }
 
+/// Format an APRS timestamp for display.
+fn format_timestamp(ts: &aprs::Timestamp) -> String {
+    match ts {
+        aprs::Timestamp::Dhm { day, hour, minute } => format!("{day:02}{hour:02}{minute:02}z"),
+        aprs::Timestamp::Hms { hour, minute, second } => format!("{hour:02}{minute:02}{second:02}h"),
+        aprs::Timestamp::DhmLocal { day, hour, minute } => format!("{day:02}{hour:02}{minute:02}/"),
+    }
+}
+
+/// Format compressed extra data for display.
+fn format_compressed_extra(extra: &aprs::CompressedExtra) -> String {
+    let mut parts = Vec::new();
+    if let Some((cse, spd)) = extra.course_speed {
+        parts.push(format!("{cse}°/{spd}kts"));
+    }
+    if let Some(alt) = extra.altitude {
+        parts.push(format!("{alt}ft"));
+    }
+    if let Some(rng) = extra.range {
+        parts.push(format!("{rng}mi"));
+    }
+    parts.join(" ")
+}
+
+/// Format a MessageType for display.
+fn format_message_type(mt: &aprs::MessageType) -> &'static str {
+    match mt {
+        aprs::MessageType::Private => "Private",
+        aprs::MessageType::Ack => "Ack",
+        aprs::MessageType::Rej => "Rej",
+        aprs::MessageType::Bulletin => "Bulletin",
+        aprs::MessageType::Announcement => "Announcement",
+        aprs::MessageType::Nws => "NWS",
+    }
+}
+
 /// Convert a parsed core AprsPacket to an owned AprsData for the TUI.
 fn aprs_packet_to_data(pkt: &aprs::AprsPacket) -> tui::state::AprsData {
     use tui::state::{AprsData, WeatherInfo};
 
     match pkt {
-        aprs::AprsPacket::Position { position, symbol_table, symbol_code, comment } => {
+        aprs::AprsPacket::Position { position, symbol_table, symbol_code, comment, timestamp, compressed_extra } => {
             let lat = position.lat as f64 / 1_000_000.0;
             let lon = position.lon as f64 / 1_000_000.0;
             let comment_str = core::str::from_utf8(comment).unwrap_or("").to_string();
             let weather = aprs::parse_weather_from_comment(comment)
                 .map(|w| WeatherInfo::from_core(&w));
+            let comment_fields = aprs::parse_comment_fields(comment);
             AprsData::Position {
                 lat,
                 lon,
                 symbol: (*symbol_table, *symbol_code),
                 comment: comment_str,
                 weather,
+                timestamp: timestamp.as_ref().map(format_timestamp),
+                altitude: comment_fields.altitude,
+                compressed_extra: compressed_extra.as_ref().map(format_compressed_extra),
             }
         }
         aprs::AprsPacket::MicE { position, speed, course, symbol_table, symbol_code } => {
@@ -649,11 +712,12 @@ fn aprs_packet_to_data(pkt: &aprs::AprsPacket) -> tui::state::AprsData {
                 symbol: (*symbol_table, *symbol_code),
             }
         }
-        aprs::AprsPacket::Message { addressee, text, message_no } => {
+        aprs::AprsPacket::Message { addressee, text, message_no, message_type } => {
             AprsData::Message {
                 addressee: core::str::from_utf8(addressee).unwrap_or("?").to_string(),
                 text: core::str::from_utf8(text).unwrap_or("?").to_string(),
                 message_no: message_no.map(|m| core::str::from_utf8(m).unwrap_or("").to_string()),
+                message_type: format_message_type(message_type).to_string(),
             }
         }
         aprs::AprsPacket::Weather { weather, comment } => {
@@ -662,7 +726,7 @@ fn aprs_packet_to_data(pkt: &aprs::AprsPacket) -> tui::state::AprsData {
                 comment: core::str::from_utf8(comment).unwrap_or("").to_string(),
             }
         }
-        aprs::AprsPacket::Object { name, live, position, symbol_table, symbol_code, comment } => {
+        aprs::AprsPacket::Object { name, live, position, symbol_table, symbol_code, comment, timestamp } => {
             AprsData::Object {
                 name: core::str::from_utf8(name).unwrap_or("?").to_string(),
                 live: *live,
@@ -670,6 +734,7 @@ fn aprs_packet_to_data(pkt: &aprs::AprsPacket) -> tui::state::AprsData {
                 lon: position.lon as f64 / 1_000_000.0,
                 symbol: (*symbol_table, *symbol_code),
                 comment: core::str::from_utf8(comment).unwrap_or("").to_string(),
+                timestamp: timestamp.as_ref().map(format_timestamp),
             }
         }
         aprs::AprsPacket::Item { name, live, position, symbol_table, symbol_code, comment } => {
@@ -682,9 +747,61 @@ fn aprs_packet_to_data(pkt: &aprs::AprsPacket) -> tui::state::AprsData {
                 comment: core::str::from_utf8(comment).unwrap_or("").to_string(),
             }
         }
-        aprs::AprsPacket::Status { text } => {
+        aprs::AprsPacket::Status { text, timestamp, maidenhead } => {
             AprsData::Status {
                 text: core::str::from_utf8(text).unwrap_or("").to_string(),
+                timestamp: timestamp.as_ref().map(format_timestamp),
+                maidenhead: maidenhead.map(|m| core::str::from_utf8(m).unwrap_or("").to_string()),
+            }
+        }
+        aprs::AprsPacket::Telemetry { sequence, analog, digital } => {
+            AprsData::Telemetry {
+                sequence: *sequence,
+                analog: *analog,
+                digital: *digital,
+            }
+        }
+        aprs::AprsPacket::ThirdParty { data } => {
+            AprsData::ThirdParty {
+                data: core::str::from_utf8(data).unwrap_or("").to_string(),
+            }
+        }
+        aprs::AprsPacket::RawGps { data, parsed } => {
+            let (position, speed, course, altitude, satellites, fix_valid) =
+                if let Some(ref nmea) = parsed {
+                    let pos = nmea.position.as_ref().map(|p| {
+                        (p.lat as f64 / 1_000_000.0, p.lon as f64 / 1_000_000.0)
+                    });
+                    let spd = nmea.speed_tenths_kts.map(|v| v as f64 / 10.0);
+                    let crs = nmea.course_tenths_deg.map(|v| v as f64 / 10.0);
+                    let alt = nmea.altitude_dm.map(|v| v as f64 / 10.0);
+                    (pos, spd, crs, alt, nmea.satellites, nmea.fix_valid)
+                } else {
+                    (None, None, None, None, None, false)
+                };
+            AprsData::RawGps {
+                data: core::str::from_utf8(data).unwrap_or("").to_string(),
+                position,
+                speed,
+                course,
+                altitude,
+                satellites,
+                fix_valid,
+            }
+        }
+        aprs::AprsPacket::Capabilities { data } => {
+            AprsData::Capabilities {
+                data: core::str::from_utf8(data).unwrap_or("").to_string(),
+            }
+        }
+        aprs::AprsPacket::Query { query_type } => {
+            AprsData::Query {
+                query_type: core::str::from_utf8(query_type).unwrap_or("").to_string(),
+            }
+        }
+        aprs::AprsPacket::UserDefined { data } => {
+            AprsData::UserDefined {
+                data: core::str::from_utf8(data).unwrap_or("").to_string(),
             }
         }
         aprs::AprsPacket::Unknown { dti, .. } => {

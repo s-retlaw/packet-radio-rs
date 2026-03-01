@@ -86,6 +86,9 @@ pub enum AprsData {
         symbol: (u8, u8),
         comment: String,
         weather: Option<WeatherInfo>,
+        timestamp: Option<String>,
+        altitude: Option<i32>,
+        compressed_extra: Option<String>,
     },
     MicE {
         lat: f64,
@@ -98,6 +101,7 @@ pub enum AprsData {
         addressee: String,
         text: String,
         message_no: Option<String>,
+        message_type: String,
     },
     Weather {
         weather: WeatherInfo,
@@ -110,6 +114,7 @@ pub enum AprsData {
         lon: f64,
         symbol: (u8, u8),
         comment: String,
+        timestamp: Option<String>,
     },
     Item {
         name: String,
@@ -121,6 +126,34 @@ pub enum AprsData {
     },
     Status {
         text: String,
+        timestamp: Option<String>,
+        maidenhead: Option<String>,
+    },
+    Telemetry {
+        sequence: u16,
+        analog: [Option<u16>; 5],
+        digital: u8,
+    },
+    Query {
+        query_type: String,
+    },
+    Capabilities {
+        data: String,
+    },
+    ThirdParty {
+        data: String,
+    },
+    RawGps {
+        data: String,
+        position: Option<(f64, f64)>,
+        speed: Option<f64>,
+        course: Option<f64>,
+        altitude: Option<f64>,
+        satellites: Option<u8>,
+        fix_valid: bool,
+    },
+    UserDefined {
+        data: String,
     },
     Unknown {
         dti: u8,
@@ -187,6 +220,10 @@ pub struct AprsStation {
     pub position: Option<(f64, f64)>,
     pub comment: String,
     pub packet_count: u32,
+    /// Frame sequence number for stable sorting (sub-second ordering).
+    pub last_frame_number: u64,
+    /// Last digipeater path (e.g. "WIDE1-1*,IGATE").
+    pub last_via: String,
     /// knots
     pub speed: Option<u16>,
     /// degrees
@@ -906,6 +943,8 @@ mod tests {
             position: Some((49.058, -72.029)),
             comment: "Hiram Percy Maxim Memorial Station".to_string(),
             packet_count: 5,
+            last_frame_number: 0,
+            last_via: String::new(),
             speed: Some(0),
             course: None,
             weather: None,

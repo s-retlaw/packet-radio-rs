@@ -64,6 +64,10 @@ pub struct App {
     pub last_file_picker_dir: Option<std::path::PathBuf>,
     /// Show a detail popup for the selected packet/station.
     pub show_detail_dialog: bool,
+    /// APRS search mode active.
+    pub aprs_search_active: bool,
+    /// APRS search text input.
+    pub aprs_search_input: widgets::TextInputState,
 }
 
 impl App {
@@ -90,6 +94,8 @@ impl App {
             file_picker: None,
             last_file_picker_dir: None,
             show_detail_dialog: false,
+            aprs_search_active: false,
+            aprs_search_input: widgets::TextInputState::new(),
         }
     }
 
@@ -149,8 +155,9 @@ impl App {
             return self.handle_file_picker_key(key);
         }
 
-        // When editing a text field, bypass global key bindings
-        let editing = self.tab == Tab::Settings && self.settings.editing;
+        // When editing a text field or searching, bypass global key bindings
+        let editing = (self.tab == Tab::Settings && self.settings.editing)
+            || (self.tab == Tab::Aprs && self.aprs_search_active);
 
         match key.code {
             KeyCode::Char('q') if !editing => {
@@ -325,6 +332,9 @@ impl App {
     }
 
     fn handle_aprs_key(&mut self, key: KeyEvent) -> bool {
+        if self.aprs_search_active {
+            return self.handle_aprs_search_key(key);
+        }
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.aprs_stations.select_next();
@@ -350,8 +360,72 @@ impl App {
                 }
                 true
             }
+            KeyCode::Char('/') => {
+                self.aprs_search_active = true;
+                true
+            }
             _ => false,
         }
+    }
+
+    fn handle_aprs_search_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.aprs_search_active = false;
+                self.aprs_search_input.clear();
+                true
+            }
+            KeyCode::Enter => {
+                self.aprs_search_active = false;
+                true
+            }
+            KeyCode::Backspace => {
+                self.aprs_search_input.backspace();
+                true
+            }
+            KeyCode::Delete => {
+                self.aprs_search_input.delete();
+                true
+            }
+            KeyCode::Left => {
+                self.aprs_search_input.move_left();
+                true
+            }
+            KeyCode::Right => {
+                self.aprs_search_input.move_right();
+                true
+            }
+            KeyCode::Home => {
+                self.aprs_search_input.home();
+                true
+            }
+            KeyCode::End => {
+                self.aprs_search_input.end();
+                true
+            }
+            KeyCode::Char(c) => {
+                self.aprs_search_input.insert(c);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Returns indices of APRS stations matching the current search filter.
+    fn filtered_aprs_indices(&self) -> Vec<usize> {
+        let query = self.aprs_search_input.value();
+        if query.is_empty() {
+            return (0..self.aprs_stations.len()).collect();
+        }
+        let query_lower = query.to_ascii_lowercase();
+        self.aprs_stations.items().iter().enumerate()
+            .filter(|(_, s)| {
+                s.callsign.to_ascii_lowercase().contains(&query_lower)
+                    || s.object_name.as_ref().is_some_and(|n| n.to_ascii_lowercase().contains(&query_lower))
+                    || s.comment.to_ascii_lowercase().contains(&query_lower)
+            })
+            .map(|(i, _)| i)
+            .collect()
     }
 
     fn handle_settings_key(&mut self, key: KeyEvent) -> bool {
@@ -551,6 +625,8 @@ impl App {
         if let Some(station) = existing {
             station.packet_count += 1;
             station.last_heard = frame.timestamp.clone();
+            station.last_frame_number = frame.frame_number;
+            station.last_via = frame.via.clone();
             if let Some(ref data) = frame.aprs_data {
                 apply_aprs_data(station, data);
             }
@@ -562,6 +638,8 @@ impl App {
                 position: None,
                 comment: String::new(),
                 packet_count: 1,
+                last_frame_number: frame.frame_number,
+                last_via: frame.via.clone(),
                 speed: None,
                 course: None,
                 weather: None,
@@ -573,8 +651,11 @@ impl App {
             }
             self.aprs_stations.items_mut().push(station);
         }
-        // Re-sort: most recently heard first
-        self.aprs_stations.items_mut().sort_by(|a, b| b.last_heard.cmp(&a.last_heard));
+        // Re-sort: most recently heard first, stable within same second
+        self.aprs_stations.items_mut().sort_by(|a, b| {
+            b.last_heard.cmp(&a.last_heard)
+                .then_with(|| b.last_frame_number.cmp(&a.last_frame_number))
+        });
     }
 }
 
@@ -582,7 +663,7 @@ impl App {
 fn apply_aprs_data(station: &mut AprsStation, data: &state::AprsData) {
     use state::AprsData;
     match data {
-        AprsData::Position { lat, lon, symbol, comment, weather } => {
+        AprsData::Position { lat, lon, symbol, comment, weather, .. } => {
             station.station_type = "Position".to_string();
             station.position = Some((*lat, *lon));
             station.symbol = Some(*symbol);
@@ -610,7 +691,7 @@ fn apply_aprs_data(station: &mut AprsStation, data: &state::AprsData) {
                 station.comment = comment.clone();
             }
         }
-        AprsData::Object { name, live, lat, lon, symbol, comment } => {
+        AprsData::Object { name, live, lat, lon, symbol, comment, .. } => {
             station.station_type = if *live { "Object" } else { "Object (killed)" }.to_string();
             station.position = Some((*lat, *lon));
             station.symbol = Some(*symbol);
@@ -628,11 +709,45 @@ fn apply_aprs_data(station: &mut AprsStation, data: &state::AprsData) {
                 station.comment = comment.clone();
             }
         }
-        AprsData::Status { text } => {
+        AprsData::Status { text, .. } => {
             station.station_type = "Status".to_string();
             if !text.is_empty() {
                 station.comment = text.clone();
             }
+        }
+        AprsData::Telemetry { .. } => {
+            station.station_type = "Telemetry".to_string();
+        }
+        AprsData::Query { query_type } => {
+            station.station_type = "Query".to_string();
+            station.comment = query_type.clone();
+        }
+        AprsData::Capabilities { data } => {
+            station.station_type = "Capabilities".to_string();
+            station.comment = data.clone();
+        }
+        AprsData::ThirdParty { data } => {
+            station.station_type = "Third-party".to_string();
+            station.comment = data.clone();
+        }
+        AprsData::RawGps { data, position, speed, course, fix_valid, .. } => {
+            station.station_type = if *fix_valid { "GPS" } else { "GPS (no fix)" }.to_string();
+            if let Some(pos) = position {
+                station.position = Some(*pos);
+            }
+            if let Some(spd) = speed {
+                station.speed = Some(*spd as u16);
+            }
+            if let Some(crs) = course {
+                station.course = Some(*crs as u16);
+            }
+            if !data.is_empty() {
+                station.comment = data.clone();
+            }
+        }
+        AprsData::UserDefined { data } => {
+            station.station_type = "User-defined".to_string();
+            station.comment = data.clone();
         }
         AprsData::Unknown { .. } => {
             station.station_type = "Unknown".to_string();
@@ -723,6 +838,7 @@ where
         let wav_filename: Option<String> = app.config.audio.wav_path.as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_string());
+        let filtered_indices = app.filtered_aprs_indices();
         terminal.draw(|frame| {
             let mut ctx = ui::DrawContext {
                 tab: app.tab,
@@ -740,6 +856,9 @@ where
                 wav_file: wav_filename.as_deref(),
                 is_wav_source: is_wav,
                 show_detail_dialog: app.show_detail_dialog,
+                aprs_search_text: app.aprs_search_input.value(),
+                aprs_search_active: app.aprs_search_active,
+                aprs_filtered_indices: &filtered_indices,
             };
             ui::draw(frame, &mut ctx);
         })?;
@@ -1132,6 +1251,9 @@ mod tests {
                 symbol: (b'/', b'-'),
                 comment: String::new(),
                 weather: None,
+                timestamp: None,
+                altitude: None,
+                compressed_extra: None,
             }),
             raw_len: 50,
         }));
