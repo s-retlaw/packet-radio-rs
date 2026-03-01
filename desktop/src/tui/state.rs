@@ -77,6 +77,91 @@ impl ProcessingState {
     }
 }
 
+/// Structured APRS data parsed from a frame.
+#[derive(Debug, Clone)]
+pub enum AprsData {
+    Position {
+        lat: f64,
+        lon: f64,
+        symbol: (u8, u8),
+        comment: String,
+        weather: Option<WeatherInfo>,
+    },
+    MicE {
+        lat: f64,
+        lon: f64,
+        speed: u16,
+        course: u16,
+        symbol: (u8, u8),
+    },
+    Message {
+        addressee: String,
+        text: String,
+        message_no: Option<String>,
+    },
+    Weather {
+        weather: WeatherInfo,
+        comment: String,
+    },
+    Object {
+        name: String,
+        live: bool,
+        lat: f64,
+        lon: f64,
+        symbol: (u8, u8),
+        comment: String,
+    },
+    Item {
+        name: String,
+        live: bool,
+        lat: f64,
+        lon: f64,
+        symbol: (u8, u8),
+        comment: String,
+    },
+    Status {
+        text: String,
+    },
+    Unknown {
+        dti: u8,
+    },
+}
+
+/// Weather information (owned version of core::WeatherData).
+#[derive(Debug, Clone, Default)]
+pub struct WeatherInfo {
+    pub wind_direction: Option<u16>,
+    pub wind_speed: Option<u16>,
+    pub wind_gust: Option<u16>,
+    pub temperature: Option<i16>,
+    pub rain_last_hour: Option<u16>,
+    pub rain_24h: Option<u16>,
+    pub rain_since_midnight: Option<u16>,
+    pub humidity: Option<u8>,
+    pub barometric_pressure: Option<u32>,
+    pub luminosity: Option<u16>,
+    pub snowfall: Option<u16>,
+}
+
+impl WeatherInfo {
+    /// Convert from core's WeatherData.
+    pub fn from_core(w: &packet_radio_core::aprs::WeatherData) -> Self {
+        Self {
+            wind_direction: w.wind_direction,
+            wind_speed: w.wind_speed,
+            wind_gust: w.wind_gust,
+            temperature: w.temperature,
+            rain_last_hour: w.rain_last_hour,
+            rain_24h: w.rain_24h,
+            rain_since_midnight: w.rain_since_midnight,
+            humidity: w.humidity,
+            barometric_pressure: w.barometric_pressure,
+            luminosity: w.luminosity,
+            snowfall: w.snowfall,
+        }
+    }
+}
+
 /// A decoded AX.25 frame for display.
 #[derive(Debug, Clone)]
 pub struct DecodedFrameInfo {
@@ -87,6 +172,7 @@ pub struct DecodedFrameInfo {
     pub via: String,
     pub info: String,
     pub aprs_summary: Option<String>,
+    pub aprs_data: Option<AprsData>,
     pub raw_len: usize,
 }
 
@@ -94,7 +180,7 @@ pub struct DecodedFrameInfo {
 #[derive(Debug, Clone)]
 pub struct AprsStation {
     pub callsign: String,
-    /// "Position", "Mic-E", "Message", "Other"
+    /// "Position", "Mic-E", "Weather", "Object", "Item", "Message", "Status", "Unknown"
     pub station_type: String,
     pub last_heard: String,
     /// (lat, lon)
@@ -105,6 +191,12 @@ pub struct AprsStation {
     pub speed: Option<u16>,
     /// degrees
     pub course: Option<u16>,
+    /// Weather data (if station sends weather)
+    pub weather: Option<WeatherInfo>,
+    /// APRS symbol (table, code)
+    pub symbol: Option<(u8, u8)>,
+    /// Object/Item name (if applicable)
+    pub object_name: Option<String>,
 }
 
 /// Runtime statistics.
@@ -798,6 +890,7 @@ mod tests {
             via: "WIDE1-1".to_string(),
             info: "!4903.50N/07201.75W-".to_string(),
             aprs_summary: Some("Position: 49.058N 72.029W".to_string()),
+            aprs_data: None,
             raw_len: 64,
         };
         assert_eq!(frame.frame_number, 1);
@@ -815,6 +908,9 @@ mod tests {
             packet_count: 5,
             speed: Some(0),
             course: None,
+            weather: None,
+            symbol: None,
+            object_name: None,
         };
         assert_eq!(station.callsign, "W1AW");
         assert_eq!(station.packet_count, 5);
@@ -832,6 +928,7 @@ mod tests {
             via: String::new(),
             info: String::new(),
             aprs_summary: None,
+            aprs_data: None,
             raw_len: 0,
         });
         assert!(matches!(frame_evt, AsyncEvent::FrameDecoded(_)));

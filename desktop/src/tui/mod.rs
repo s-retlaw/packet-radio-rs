@@ -62,6 +62,8 @@ pub struct App {
     pub file_picker: Option<FilePickerState>,
     /// Last directory used in the file picker (for persistence across opens).
     pub last_file_picker_dir: Option<std::path::PathBuf>,
+    /// Show a detail popup for the selected packet/station.
+    pub show_detail_dialog: bool,
 }
 
 impl App {
@@ -87,6 +89,7 @@ impl App {
             devices,
             file_picker: None,
             last_file_picker_dir: None,
+            show_detail_dialog: false,
         }
     }
 
@@ -128,6 +131,17 @@ impl App {
         // Quit dialog takes priority
         if self.show_quit_dialog {
             return self.handle_quit_dialog_key(key);
+        }
+
+        // Detail popup takes priority
+        if self.show_detail_dialog {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.show_detail_dialog = false;
+                }
+                _ => {}
+            }
+            return true; // consume all keys while detail dialog is shown
         }
 
         // File picker modal takes priority
@@ -279,22 +293,30 @@ impl App {
     }
 
     fn handle_packets_key(&mut self, key: KeyEvent) -> bool {
+        // Navigation is inverted because the table renders items in reverse
+        // (newest at top via iter().rev()): data index 0 = oldest = visual bottom.
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => {
-                self.frames.select_next();
-                true
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
                 self.frames.select_prev();
                 true
             }
-            KeyCode::Home => {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.frames.select_next();
+                true
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                if !self.frames.is_empty() {
+                    self.frames.select(self.frames.len() - 1);
+                }
+                true
+            }
+            KeyCode::End | KeyCode::Char('G') => {
                 self.frames.select(0);
                 true
             }
-            KeyCode::End => {
+            KeyCode::Enter => {
                 if !self.frames.is_empty() {
-                    self.frames.select(self.frames.len() - 1);
+                    self.show_detail_dialog = true;
                 }
                 true
             }
@@ -312,13 +334,19 @@ impl App {
                 self.aprs_stations.select_prev();
                 true
             }
-            KeyCode::Home => {
+            KeyCode::Home | KeyCode::Char('g') => {
                 self.aprs_stations.select(0);
                 true
             }
-            KeyCode::End => {
+            KeyCode::End | KeyCode::Char('G') => {
                 if !self.aprs_stations.is_empty() {
                     self.aprs_stations.select(self.aprs_stations.len() - 1);
+                }
+                true
+            }
+            KeyCode::Enter => {
+                if !self.aprs_stations.is_empty() {
+                    self.show_detail_dialog = true;
                 }
                 true
             }
@@ -523,8 +551,11 @@ impl App {
         if let Some(station) = existing {
             station.packet_count += 1;
             station.last_heard = frame.timestamp.clone();
+            if let Some(ref data) = frame.aprs_data {
+                apply_aprs_data(station, data);
+            }
         } else {
-            self.aprs_stations.items_mut().push(AprsStation {
+            let mut station = AprsStation {
                 callsign: frame.source.clone(),
                 station_type: "Unknown".to_string(),
                 last_heard: frame.timestamp.clone(),
@@ -533,7 +564,78 @@ impl App {
                 packet_count: 1,
                 speed: None,
                 course: None,
-            });
+                weather: None,
+                symbol: None,
+                object_name: None,
+            };
+            if let Some(ref data) = frame.aprs_data {
+                apply_aprs_data(&mut station, data);
+            }
+            self.aprs_stations.items_mut().push(station);
+        }
+        // Re-sort: most recently heard first
+        self.aprs_stations.items_mut().sort_by(|a, b| b.last_heard.cmp(&a.last_heard));
+    }
+}
+
+/// Populate an AprsStation's fields from structured APRS data.
+fn apply_aprs_data(station: &mut AprsStation, data: &state::AprsData) {
+    use state::AprsData;
+    match data {
+        AprsData::Position { lat, lon, symbol, comment, weather } => {
+            station.station_type = "Position".to_string();
+            station.position = Some((*lat, *lon));
+            station.symbol = Some(*symbol);
+            if !comment.is_empty() {
+                station.comment = comment.clone();
+            }
+            if let Some(w) = weather {
+                station.weather = Some(w.clone());
+            }
+        }
+        AprsData::MicE { lat, lon, speed, course, symbol } => {
+            station.station_type = "Mic-E".to_string();
+            station.position = Some((*lat, *lon));
+            station.speed = Some(*speed);
+            station.course = Some(*course);
+            station.symbol = Some(*symbol);
+        }
+        AprsData::Message { .. } => {
+            station.station_type = "Message".to_string();
+        }
+        AprsData::Weather { weather, comment } => {
+            station.station_type = "Weather".to_string();
+            station.weather = Some(weather.clone());
+            if !comment.is_empty() {
+                station.comment = comment.clone();
+            }
+        }
+        AprsData::Object { name, live, lat, lon, symbol, comment } => {
+            station.station_type = if *live { "Object" } else { "Object (killed)" }.to_string();
+            station.position = Some((*lat, *lon));
+            station.symbol = Some(*symbol);
+            station.object_name = Some(name.clone());
+            if !comment.is_empty() {
+                station.comment = comment.clone();
+            }
+        }
+        AprsData::Item { name, live, lat, lon, symbol, comment } => {
+            station.station_type = if *live { "Item" } else { "Item (killed)" }.to_string();
+            station.position = Some((*lat, *lon));
+            station.symbol = Some(*symbol);
+            station.object_name = Some(name.clone());
+            if !comment.is_empty() {
+                station.comment = comment.clone();
+            }
+        }
+        AprsData::Status { text } => {
+            station.station_type = "Status".to_string();
+            if !text.is_empty() {
+                station.comment = text.clone();
+            }
+        }
+        AprsData::Unknown { .. } => {
+            station.station_type = "Unknown".to_string();
         }
     }
 }
@@ -637,6 +739,7 @@ where
                 file_picker: app.file_picker.as_mut(),
                 wav_file: wav_filename.as_deref(),
                 is_wav_source: is_wav,
+                show_detail_dialog: app.show_detail_dialog,
             };
             ui::draw(frame, &mut ctx);
         })?;
@@ -898,7 +1001,7 @@ mod tests {
         let mut app = App::new_for_testing();
         app.tab = Tab::Packets;
 
-        // Add some frames
+        // Add some frames (stored oldest-first, displayed newest-first via .rev())
         for i in 1..=5 {
             app.frames.items_mut().push(DecodedFrameInfo {
                 frame_number: i,
@@ -908,24 +1011,30 @@ mod tests {
                 via: String::new(),
                 info: "test".into(),
                 aprs_summary: None,
+                aprs_data: None,
                 raw_len: 10,
             });
         }
-        app.frames.select(0);
+        // Start at visual top = newest = data index 4
+        app.frames.select(4);
 
+        // Down (visual) = select_prev = decrement data index
         app.handle_key(make_key(KeyCode::Down));
-        assert_eq!(app.frames.selected_index(), 1);
+        assert_eq!(app.frames.selected_index(), 3);
 
         app.handle_key(make_key(KeyCode::Char('j')));
         assert_eq!(app.frames.selected_index(), 2);
 
+        // Up (visual) = select_next = increment data index
         app.handle_key(make_key(KeyCode::Up));
-        assert_eq!(app.frames.selected_index(), 1);
+        assert_eq!(app.frames.selected_index(), 3);
 
-        app.handle_key(make_key(KeyCode::End));
+        // Home/g = visual top = newest = data index 4
+        app.handle_key(make_key(KeyCode::Home));
         assert_eq!(app.frames.selected_index(), 4);
 
-        app.handle_key(make_key(KeyCode::Home));
+        // End/G = visual bottom = oldest = data index 0
+        app.handle_key(make_key(KeyCode::End));
         assert_eq!(app.frames.selected_index(), 0);
     }
 
@@ -1017,6 +1126,13 @@ mod tests {
             via: "WIDE1-1".into(),
             info: "test packet".into(),
             aprs_summary: Some("Position: 49.0N 72.0W".into()),
+            aprs_data: Some(state::AprsData::Position {
+                lat: 49.058,
+                lon: -72.029,
+                symbol: (b'/', b'-'),
+                comment: String::new(),
+                weather: None,
+            }),
             raw_len: 50,
         }));
 

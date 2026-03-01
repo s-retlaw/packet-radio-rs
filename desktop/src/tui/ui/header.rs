@@ -67,7 +67,7 @@ pub fn draw_footer(frame: &mut Frame, area: Rect, ctx: &DrawContext) {
     } else {
         ""
     };
-    let hints = format!(" q:Quit  {stop_start}{open_hint}  1-3:Tab  Up/Down:Scroll  Enter:Detail");
+    let hints = format!(" q:Quit  {stop_start}{open_hint}  1-3:Tab  Up/Down:Scroll  g/G:Top/Bot  Enter:Detail");
     frame.render_widget(
         Paragraph::new(hints).style(Style::default().fg(Color::DarkGray)),
         area,

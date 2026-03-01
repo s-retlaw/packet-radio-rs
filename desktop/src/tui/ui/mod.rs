@@ -27,6 +27,8 @@ pub struct DrawContext<'a> {
     pub wav_file: Option<&'a str>,
     /// Whether audio source is WAV File (for footer hint logic).
     pub is_wav_source: bool,
+    /// Whether to show the detail popup for selected packet/station.
+    pub show_detail_dialog: bool,
 }
 
 /// Main draw function — called on every frame.
@@ -49,6 +51,15 @@ pub fn draw(frame: &mut Frame, ctx: &mut DrawContext) {
     }
 
     header::draw_footer(frame, chunks[2], ctx);
+
+    // Detail popup (per active tab)
+    if ctx.show_detail_dialog {
+        match ctx.tab {
+            Tab::Packets => packets::draw_packet_detail_popup(frame, ctx),
+            Tab::Aprs => aprs::draw_station_detail_popup(frame, ctx),
+            _ => {}
+        }
+    }
 
     if ctx.show_quit_dialog {
         use super::widgets::DialogBuilder;

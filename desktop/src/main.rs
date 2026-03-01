@@ -549,25 +549,51 @@ fn make_frame_info(count: u64, data: &[u8]) -> tui::state::DecodedFrameInfo {
 
         let info_str = core::str::from_utf8(frame.info).unwrap_or("<binary>").to_string();
 
-        let aprs_summary = aprs::parse_packet(frame.info, frame.dest.callsign_str())
-            .map(|pkt| match pkt {
-                aprs::AprsPacket::Position { position, .. } => {
-                    let lat = position.lat as f64 / 1_000_000.0;
-                    let lon = position.lon as f64 / 1_000_000.0;
-                    format!("Position: {lat:.4}, {lon:.4}")
-                }
-                aprs::AprsPacket::MicE { position, speed, course, .. } => {
-                    let lat = position.lat as f64 / 1_000_000.0;
-                    let lon = position.lon as f64 / 1_000_000.0;
-                    format!("Mic-E: {lat:.4}, {lon:.4} {speed}kts {course}°")
-                }
-                aprs::AprsPacket::Message { addressee, text, .. } => {
-                    let to = core::str::from_utf8(addressee).unwrap_or("?");
-                    let msg = core::str::from_utf8(text).unwrap_or("?");
-                    format!("Msg to {to}: {msg}")
-                }
-                _ => "APRS".to_string(),
-            });
+        let parsed = aprs::parse_packet(frame.info, frame.dest.callsign_str());
+
+        let aprs_summary = parsed.as_ref().map(|pkt| match pkt {
+            aprs::AprsPacket::Position { position, .. } => {
+                let lat = position.lat as f64 / 1_000_000.0;
+                let lon = position.lon as f64 / 1_000_000.0;
+                format!("Position: {lat:.4}, {lon:.4}")
+            }
+            aprs::AprsPacket::MicE { position, speed, course, .. } => {
+                let lat = position.lat as f64 / 1_000_000.0;
+                let lon = position.lon as f64 / 1_000_000.0;
+                format!("Mic-E: {lat:.4}, {lon:.4} {speed}kts {course}°")
+            }
+            aprs::AprsPacket::Message { addressee, text, .. } => {
+                let to = core::str::from_utf8(addressee).unwrap_or("?");
+                let msg = core::str::from_utf8(text).unwrap_or("?");
+                format!("Msg to {to}: {msg}")
+            }
+            aprs::AprsPacket::Weather { weather, .. } => {
+                let temp = weather.temperature.map(|t| format!("{t}F")).unwrap_or_default();
+                let wind = weather.wind_speed.map(|s| format!("{s}mph")).unwrap_or_default();
+                format!("Weather: {temp} {wind}")
+            }
+            aprs::AprsPacket::Object { name, live, position, .. } => {
+                let n = core::str::from_utf8(name).unwrap_or("?");
+                let lat = position.lat as f64 / 1_000_000.0;
+                let lon = position.lon as f64 / 1_000_000.0;
+                let status = if *live { "live" } else { "killed" };
+                format!("Object {n} ({status}): {lat:.4}, {lon:.4}")
+            }
+            aprs::AprsPacket::Item { name, live, position, .. } => {
+                let n = core::str::from_utf8(name).unwrap_or("?");
+                let lat = position.lat as f64 / 1_000_000.0;
+                let lon = position.lon as f64 / 1_000_000.0;
+                let status = if *live { "live" } else { "killed" };
+                format!("Item {n} ({status}): {lat:.4}, {lon:.4}")
+            }
+            aprs::AprsPacket::Status { text } => {
+                let s = core::str::from_utf8(text).unwrap_or("?");
+                format!("Status: {s}")
+            }
+            aprs::AprsPacket::Unknown { .. } => "APRS".to_string(),
+        });
+
+        let aprs_data = parsed.map(|pkt| aprs_packet_to_data(&pkt));
 
         tui::state::DecodedFrameInfo {
             frame_number: count,
@@ -577,6 +603,7 @@ fn make_frame_info(count: u64, data: &[u8]) -> tui::state::DecodedFrameInfo {
             via,
             info: info_str,
             aprs_summary,
+            aprs_data,
             raw_len: data.len(),
         }
     } else {
@@ -588,7 +615,80 @@ fn make_frame_info(count: u64, data: &[u8]) -> tui::state::DecodedFrameInfo {
             via: String::new(),
             info: hex_preview(data, 32),
             aprs_summary: None,
+            aprs_data: None,
             raw_len: data.len(),
+        }
+    }
+}
+
+/// Convert a parsed core AprsPacket to an owned AprsData for the TUI.
+fn aprs_packet_to_data(pkt: &aprs::AprsPacket) -> tui::state::AprsData {
+    use tui::state::{AprsData, WeatherInfo};
+
+    match pkt {
+        aprs::AprsPacket::Position { position, symbol_table, symbol_code, comment } => {
+            let lat = position.lat as f64 / 1_000_000.0;
+            let lon = position.lon as f64 / 1_000_000.0;
+            let comment_str = core::str::from_utf8(comment).unwrap_or("").to_string();
+            let weather = aprs::parse_weather_from_comment(comment)
+                .map(|w| WeatherInfo::from_core(&w));
+            AprsData::Position {
+                lat,
+                lon,
+                symbol: (*symbol_table, *symbol_code),
+                comment: comment_str,
+                weather,
+            }
+        }
+        aprs::AprsPacket::MicE { position, speed, course, symbol_table, symbol_code } => {
+            AprsData::MicE {
+                lat: position.lat as f64 / 1_000_000.0,
+                lon: position.lon as f64 / 1_000_000.0,
+                speed: *speed,
+                course: *course,
+                symbol: (*symbol_table, *symbol_code),
+            }
+        }
+        aprs::AprsPacket::Message { addressee, text, message_no } => {
+            AprsData::Message {
+                addressee: core::str::from_utf8(addressee).unwrap_or("?").to_string(),
+                text: core::str::from_utf8(text).unwrap_or("?").to_string(),
+                message_no: message_no.map(|m| core::str::from_utf8(m).unwrap_or("").to_string()),
+            }
+        }
+        aprs::AprsPacket::Weather { weather, comment } => {
+            AprsData::Weather {
+                weather: WeatherInfo::from_core(weather),
+                comment: core::str::from_utf8(comment).unwrap_or("").to_string(),
+            }
+        }
+        aprs::AprsPacket::Object { name, live, position, symbol_table, symbol_code, comment } => {
+            AprsData::Object {
+                name: core::str::from_utf8(name).unwrap_or("?").to_string(),
+                live: *live,
+                lat: position.lat as f64 / 1_000_000.0,
+                lon: position.lon as f64 / 1_000_000.0,
+                symbol: (*symbol_table, *symbol_code),
+                comment: core::str::from_utf8(comment).unwrap_or("").to_string(),
+            }
+        }
+        aprs::AprsPacket::Item { name, live, position, symbol_table, symbol_code, comment } => {
+            AprsData::Item {
+                name: core::str::from_utf8(name).unwrap_or("?").to_string(),
+                live: *live,
+                lat: position.lat as f64 / 1_000_000.0,
+                lon: position.lon as f64 / 1_000_000.0,
+                symbol: (*symbol_table, *symbol_code),
+                comment: core::str::from_utf8(comment).unwrap_or("").to_string(),
+            }
+        }
+        aprs::AprsPacket::Status { text } => {
+            AprsData::Status {
+                text: core::str::from_utf8(text).unwrap_or("").to_string(),
+            }
+        }
+        aprs::AprsPacket::Unknown { dti, .. } => {
+            AprsData::Unknown { dti: *dti }
         }
     }
 }
