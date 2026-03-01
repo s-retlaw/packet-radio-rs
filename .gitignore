@@ -38,3 +38,4 @@ rp2040-test/target/
 esp32c3-test/Cargo.lock
 esp32c6-test/Cargo.lock
 rp2040-test/Cargo.lock
+.claude/
