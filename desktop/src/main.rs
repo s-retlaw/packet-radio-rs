@@ -131,8 +131,9 @@ fn run_tui_mode(cli: cli::Cli) {
 
 /// Spawn an audio processing thread. Returns the thread handle and stop signal.
 ///
-/// The audio device is opened inside the spawned thread (cpal::Stream is !Send).
-/// A oneshot channel synchronizes so the caller blocks until the device is open.
+/// If `cfg.audio.wav_path` is set, opens a WAV file source. Otherwise opens
+/// the live audio device (cpal). The WAV source breaks on EOF; live audio
+/// sleeps and retries.
 fn spawn_audio_thread(
     cfg: &config::TncConfig,
     async_tx: crossbeam_channel::Sender<tui::state::AsyncEvent>,
@@ -145,6 +146,7 @@ fn spawn_audio_thread(
     let sample_rate = cfg.audio.sample_rate;
     let baud_rate = cfg.modem.baud_rate;
     let mode = cfg.modem.mode.clone();
+    let wav_path = cfg.audio.wav_path.clone();
 
     // Oneshot to report whether audio opened successfully
     let (result_tx, result_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
@@ -153,23 +155,39 @@ fn spawn_audio_thread(
         // For 9600 baud, enforce minimum sample rate
         let effective_rate = if baud_rate == 9600 && sample_rate < 44100 { 48000 } else { sample_rate };
 
-        let source = match audio::CpalSource::open(&device_name, effective_rate) {
-            Ok(src) => {
-                let _ = result_tx.send(Ok(()));
-                src
+        let is_wav = wav_path.is_some();
+        let (source, effective_rate): (Box<dyn SampleSource>, u32) = if let Some(ref path) = wav_path {
+            match audio::WavSource::open(path, effective_rate) {
+                Ok(src) => {
+                    // Use the WAV file's native sample rate for the demodulator
+                    let wav_rate = src.sample_rate();
+                    let _ = result_tx.send(Ok(()));
+                    (Box::new(src), wav_rate)
+                }
+                Err(e) => {
+                    let _ = result_tx.send(Err(e));
+                    return;
+                }
             }
-            Err(e) => {
-                let _ = result_tx.send(Err(e));
-                return;
+        } else {
+            match audio::CpalSource::open(&device_name, effective_rate) {
+                Ok(src) => {
+                    let _ = result_tx.send(Ok(()));
+                    (Box::new(src), effective_rate)
+                }
+                Err(e) => {
+                    let _ = result_tx.send(Err(e));
+                    return;
+                }
             }
         };
 
         if baud_rate == 9600 {
             let config_9600 = Demod9600Config::with_sample_rate(effective_rate);
-            run_audio_loop_9600(Box::new(source), config_9600, &mode, &stop, &async_tx, &kiss_frame_tx);
+            run_audio_loop_9600(source, config_9600, &mode, is_wav, &stop, &async_tx, &kiss_frame_tx);
         } else {
             let config = demod_config_for_rate(effective_rate, baud_rate);
-            run_audio_loop(Box::new(source), config, &mode, &stop, &async_tx, &kiss_frame_tx);
+            run_audio_loop(source, config, &mode, is_wav, &stop, &async_tx, &kiss_frame_tx);
         }
         let _ = async_tx.send(tui::state::AsyncEvent::AudioDone);
     });
@@ -186,10 +204,12 @@ fn spawn_audio_thread(
 }
 
 /// Audio processing loop — runs in a background thread, checks `stop` flag.
+/// When `is_wav` is true, break on EOF instead of sleeping.
 fn run_audio_loop(
     mut source: Box<dyn SampleSource>,
     config: DemodConfig,
     mode: &str,
+    is_wav: bool,
     stop: &AtomicBool,
     async_tx: &crossbeam_channel::Sender<tui::state::AsyncEvent>,
     kiss_frame_tx: &broadcast::Sender<Vec<u8>>,
@@ -204,6 +224,7 @@ fn run_audio_loop(
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = source.read_samples(&mut audio_buf);
                 if n == 0 {
+                    if is_wav { break; }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -220,6 +241,7 @@ fn run_audio_loop(
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = source.read_samples(&mut audio_buf);
                 if n == 0 {
+                    if is_wav { break; }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -236,6 +258,7 @@ fn run_audio_loop(
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = source.read_samples(&mut audio_buf);
                 if n == 0 {
+                    if is_wav { break; }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -254,6 +277,7 @@ fn run_audio_loop(
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = source.read_samples(&mut audio_buf);
                 if n == 0 {
+                    if is_wav { break; }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -278,6 +302,7 @@ fn run_audio_loop(
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = source.read_samples(&mut audio_buf);
                 if n == 0 {
+                    if is_wav { break; }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -304,6 +329,7 @@ fn run_audio_loop(
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = source.read_samples(&mut audio_buf);
                 if n == 0 {
+                    if is_wav { break; }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -331,6 +357,7 @@ fn run_audio_loop(
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = source.read_samples(&mut audio_buf);
                 if n == 0 {
+                    if is_wav { break; }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -355,6 +382,7 @@ fn run_audio_loop(
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = source.read_samples(&mut audio_buf);
                 if n == 0 {
+                    if is_wav { break; }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -380,6 +408,7 @@ fn run_audio_loop(
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = source.read_samples(&mut audio_buf);
                 if n == 0 {
+                    if is_wav { break; }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -400,6 +429,7 @@ fn run_audio_loop_9600(
     mut source: Box<dyn SampleSource>,
     config: Demod9600Config,
     mode: &str,
+    is_wav: bool,
     stop: &AtomicBool,
     async_tx: &crossbeam_channel::Sender<tui::state::AsyncEvent>,
     kiss_frame_tx: &broadcast::Sender<Vec<u8>>,
@@ -414,6 +444,7 @@ fn run_audio_loop_9600(
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = source.read_samples(&mut audio_buf);
                 if n == 0 {
+                    if is_wav { break; }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -430,6 +461,7 @@ fn run_audio_loop_9600(
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = source.read_samples(&mut audio_buf);
                 if n == 0 {
+                    if is_wav { break; }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -453,6 +485,7 @@ fn run_audio_loop_9600(
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = source.read_samples(&mut audio_buf);
                 if n == 0 {
+                    if is_wav { break; }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -610,9 +643,11 @@ fn run_headless(cli: cli::Cli) {
     // Open audio source (stdin source created first to allow WAV auto-detection)
     let effective_rate;
     let source: Box<dyn SampleSource> = if let Some(ref wav_path) = cli.wav {
-        effective_rate = cli.sample_rate;
         match audio::WavSource::open(wav_path, cli.sample_rate) {
-            Ok(src) => Box::new(src),
+            Ok(src) => {
+                effective_rate = src.sample_rate();
+                Box::new(src)
+            }
             Err(e) => {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
@@ -710,6 +745,11 @@ fn run_headless(cli: cli::Cli) {
             tx_pipeline,
         )
     };
+
+    // Give KISS TCP clients time to drain buffered frames before exiting
+    if cli.wav.is_some() && cli.kiss_port > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 
     // Write TX audio to WAV if requested
     if let (Some(ref tx_wav_path), Some(pipeline)) = (&cli.tx_wav, &tx_pipeline) {

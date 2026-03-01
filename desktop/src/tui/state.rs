@@ -215,6 +215,19 @@ impl SettingsFormState {
 
         let fields = vec![
             SettingsField {
+                label: "Audio Source".into(),
+                kind: FieldKind::Dropdown {
+                    options: vec!["Live Audio".to_string(), "WAV File".to_string()],
+                    selected: 0, // default: Live Audio
+                    descriptions: vec![
+                        "Decode from sound card input".to_string(),
+                        "Decode from WAV file (press 'o' to open)".to_string(),
+                    ],
+                },
+                filter: None,
+                max_len: None,
+            },
+            SettingsField {
                 label: "Audio Device".into(),
                 kind: FieldKind::Dropdown {
                     options: device_names,
@@ -291,8 +304,8 @@ impl SettingsFormState {
     /// dropdown to only show rates supported by the new device.
     /// Returns a notification message if the rate was changed.
     pub fn on_device_changed(&mut self, devices: &[super::AudioDeviceInfo]) -> Option<String> {
-        // Get the newly selected device index from field 0
-        let device_idx = match &self.fields[0].kind {
+        // Get the newly selected device index from field 1 (Audio Device)
+        let device_idx = match &self.fields[1].kind {
             FieldKind::Dropdown { selected, .. } => *selected,
             _ => return None,
         };
@@ -303,10 +316,10 @@ impl SettingsFormState {
         };
 
         // Get the currently selected rate before changing
-        let old_rate: Option<u32> = self.field_value(1).and_then(|v| v.parse().ok());
+        let old_rate: Option<u32> = self.field_value(2).and_then(|v| v.parse().ok());
 
-        // Replace field 1's options
-        if let Some(field) = self.fields.get_mut(1) {
+        // Replace field 2's options (Sample Rate)
+        if let Some(field) = self.fields.get_mut(2) {
             if let FieldKind::Dropdown { options, selected, .. } = &mut field.kind {
                 let new_options: Vec<String> = supported_rates.iter().map(|r| r.to_string()).collect();
 
@@ -336,17 +349,17 @@ impl SettingsFormState {
     /// (9600 requires >=44100) and swaps the mode list. Returns a notification
     /// message if the sample rate was changed.
     pub fn on_baud_changed(&mut self, devices: &[super::AudioDeviceInfo]) -> Option<String> {
-        // Get the newly selected baud rate from field 2
-        let new_baud: u32 = match &self.fields[2].kind {
+        // Get the newly selected baud rate from field 3 (Baud Rate)
+        let new_baud: u32 = match &self.fields[3].kind {
             FieldKind::Dropdown { options, selected, .. } => {
                 options.get(*selected).and_then(|v| v.parse().ok()).unwrap_or(1200)
             }
             _ => return None,
         };
 
-        // --- Update sample rate options (field 1) ---
-        // Get the device's supported rates from field 0
-        let device_idx = match &self.fields[0].kind {
+        // --- Update sample rate options (field 2) ---
+        // Get the device's supported rates from field 1 (Audio Device)
+        let device_idx = match &self.fields[1].kind {
             FieldKind::Dropdown { selected, .. } => *selected,
             _ => 0,
         };
@@ -363,10 +376,10 @@ impl SettingsFormState {
         };
         let filtered_rates = if filtered_rates.is_empty() { device_rates.clone() } else { filtered_rates };
 
-        let old_rate: Option<u32> = self.field_value(1).and_then(|v| v.parse().ok());
+        let old_rate: Option<u32> = self.field_value(2).and_then(|v| v.parse().ok());
         let mut rate_msg = None;
 
-        if let Some(field) = self.fields.get_mut(1) {
+        if let Some(field) = self.fields.get_mut(2) {
             if let FieldKind::Dropdown { options, selected, .. } = &mut field.kind {
                 let new_options: Vec<String> = filtered_rates.iter().map(|r| r.to_string()).collect();
                 let old_rate_str = old_rate.map(|r| r.to_string()).unwrap_or_default();
@@ -385,9 +398,9 @@ impl SettingsFormState {
             }
         }
 
-        // --- Swap mode list (field 3) ---
+        // --- Swap mode list (field 4) ---
         let modes = crate::config::available_modes_for_baud(new_baud);
-        if let Some(field) = self.fields.get_mut(3) {
+        if let Some(field) = self.fields.get_mut(4) {
             if let FieldKind::Dropdown { options, selected, descriptions } = &mut field.kind {
                 *options = modes.iter().map(|(_, label, _)| label.to_string()).collect();
                 *descriptions = modes.iter().map(|(_, _, desc)| desc.to_string()).collect();
@@ -462,20 +475,20 @@ impl SettingsFormState {
     pub fn to_config(&self) -> crate::config::TncConfig {
         let mut config = crate::config::TncConfig::default();
 
-        // Audio device (field 0)
-        if let Some(val) = self.field_value(0) {
+        // Audio device (field 1)
+        if let Some(val) = self.field_value(1) {
             config.audio.device = val;
         }
-        // Sample rate (field 1)
-        if let Some(val) = self.field_value(1) {
+        // Sample rate (field 2)
+        if let Some(val) = self.field_value(2) {
             config.audio.sample_rate = val.parse().unwrap_or(11025);
         }
-        // Baud rate (field 2)
-        if let Some(val) = self.field_value(2) {
+        // Baud rate (field 3)
+        if let Some(val) = self.field_value(3) {
             config.modem.baud_rate = val.parse().unwrap_or(1200);
         }
-        // Mode (field 3) -- need to map label back to value
-        if let Some(field) = self.fields.get(3) {
+        // Mode (field 4) -- need to map label back to value
+        if let Some(field) = self.fields.get(4) {
             if let FieldKind::Dropdown { selected, .. } = &field.kind {
                 let modes = crate::config::available_modes_for_baud(config.modem.baud_rate);
                 if let Some((val, _, _)) = modes.get(*selected) {
@@ -483,12 +496,12 @@ impl SettingsFormState {
                 }
             }
         }
-        // KISS port (field 4)
-        if let Some(val) = self.field_value(4) {
+        // KISS port (field 5)
+        if let Some(val) = self.field_value(5) {
             config.kiss.port = val.parse().unwrap_or(8001);
         }
-        // Callsign (field 5)
-        if let Some(val) = self.field_value(5) {
+        // Callsign (field 6)
+        if let Some(val) = self.field_value(6) {
             config.station.callsign = val;
         }
 
@@ -661,7 +674,7 @@ mod tests {
         let mut form = SettingsFormState::from_config(&config, &devices);
 
         assert_eq!(form.selected_field, 0);
-        assert_eq!(form.fields.len(), 6);
+        assert_eq!(form.fields.len(), 7);
 
         // select_next cycles forward
         form.select_next();
@@ -674,14 +687,16 @@ mod tests {
         assert_eq!(form.selected_field, 4);
         form.select_next();
         assert_eq!(form.selected_field, 5);
+        form.select_next();
+        assert_eq!(form.selected_field, 6);
         form.select_next(); // wraps
         assert_eq!(form.selected_field, 0);
 
         // select_prev cycles backward
         form.select_prev(); // wraps to end
-        assert_eq!(form.selected_field, 5);
+        assert_eq!(form.selected_field, 6);
         form.select_prev();
-        assert_eq!(form.selected_field, 4);
+        assert_eq!(form.selected_field, 5);
     }
 
     #[test]
@@ -690,15 +705,25 @@ mod tests {
         let devices = test_devices(&["default", "pulse"]);
         let mut form = SettingsFormState::from_config(&config, &devices);
 
-        // Field 0 is Audio Device dropdown with 2 options
+        // Field 0 is Audio Source dropdown
         assert_eq!(form.selected_field, 0);
-        assert_eq!(form.field_value(0), Some("default".to_string()));
+        assert_eq!(form.field_value(0), Some("Live Audio".to_string()));
 
         form.cycle_dropdown();
-        assert_eq!(form.field_value(0), Some("pulse".to_string()));
+        assert_eq!(form.field_value(0), Some("WAV File".to_string()));
 
         form.cycle_dropdown(); // wraps back
-        assert_eq!(form.field_value(0), Some("default".to_string()));
+        assert_eq!(form.field_value(0), Some("Live Audio".to_string()));
+
+        // Field 1 is Audio Device dropdown
+        form.selected_field = 1;
+        assert_eq!(form.field_value(1), Some("default".to_string()));
+
+        form.cycle_dropdown();
+        assert_eq!(form.field_value(1), Some("pulse".to_string()));
+
+        form.cycle_dropdown(); // wraps back
+        assert_eq!(form.field_value(1), Some("default".to_string()));
     }
 
     #[test]
@@ -713,10 +738,10 @@ mod tests {
         let devices = test_devices(&["default"]);
         let form = SettingsFormState::from_config(&config, &devices);
 
-        // Field 4 = KISS TCP Port (text)
-        assert_eq!(form.field_value(4), Some("9600".to_string()));
-        // Field 5 = Callsign (text)
-        assert_eq!(form.field_value(5), Some("W1AW".to_string()));
+        // Field 5 = KISS TCP Port (text)
+        assert_eq!(form.field_value(5), Some("9600".to_string()));
+        // Field 6 = Callsign (text)
+        assert_eq!(form.field_value(6), Some("W1AW".to_string()));
         // Out of bounds
         assert_eq!(form.field_value(99), None);
     }
@@ -727,6 +752,7 @@ mod tests {
             audio: crate::config::AudioConfig {
                 device: "pulse".to_string(),
                 sample_rate: 44100,
+                ..Default::default()
             },
             modem: crate::config::ModemConfig {
                 mode: "smart3".to_string(),
@@ -754,11 +780,11 @@ mod tests {
         let devices = test_devices(&["default"]);
         let mut form = SettingsFormState::from_config(&config, &devices);
 
-        // Move to text field (field 4 = KISS port)
-        form.selected_field = 4;
-        let before = form.field_value(4);
+        // Move to text field (field 5 = KISS port)
+        form.selected_field = 5;
+        let before = form.field_value(5);
         form.cycle_dropdown(); // should be a no-op on text fields
-        let after = form.field_value(4);
+        let after = form.field_value(5);
         assert_eq!(before, after);
     }
 
@@ -825,12 +851,12 @@ mod tests {
         ];
         let config = crate::config::TncConfig::default(); // 11025
         let mut form = SettingsFormState::from_config(&config, &devices);
-        // Select dev_b
-        form.selected_field = 0;
+        // Select dev_b (field 1 = Audio Device)
+        form.selected_field = 1;
         form.cycle_dropdown();
         let msg = form.on_device_changed(&devices);
         assert!(msg.is_none()); // rate 11025 still available
-        assert_eq!(form.field_value(1), Some("11025".to_string()));
+        assert_eq!(form.field_value(2), Some("11025".to_string()));
     }
 
     #[test]
@@ -841,17 +867,17 @@ mod tests {
         ];
         let config = crate::config::TncConfig::default(); // 11025
         let mut form = SettingsFormState::from_config(&config, &devices);
-        assert_eq!(form.field_value(1), Some("11025".to_string()));
+        assert_eq!(form.field_value(2), Some("11025".to_string()));
 
-        // Switch to dev_b (only supports 44100/48000)
-        form.selected_field = 0;
+        // Switch to dev_b (only supports 44100/48000) — field 1 = Audio Device
+        form.selected_field = 1;
         form.cycle_dropdown();
         let msg = form.on_device_changed(&devices);
         assert!(msg.is_some());
         assert!(msg.unwrap().contains("44100")); // closest to 11025
 
-        // Rate options should now be [44100, 48000]
-        if let FieldKind::Dropdown { options, .. } = &form.fields[1].kind {
+        // Rate options should now be [44100, 48000] — field 2 = Sample Rate
+        if let FieldKind::Dropdown { options, .. } = &form.fields[2].kind {
             assert_eq!(options.len(), 2);
             assert_eq!(options[0], "44100");
             assert_eq!(options[1], "48000");
@@ -869,8 +895,8 @@ mod tests {
         }];
         let config = crate::config::TncConfig::default();
         let form = SettingsFormState::from_config(&config, &devices);
-        // Field 0 (Audio Device) should have a description
-        let desc = form.field_description(0);
+        // Field 1 (Audio Device) should have a description
+        let desc = form.field_description(1);
         assert!(desc.is_some());
         assert!(desc.unwrap().contains("8000-48000"));
     }
@@ -892,10 +918,10 @@ mod tests {
         config.audio.device = "narrow_dev".to_string();
         let form = SettingsFormState::from_config(&config, &devices);
 
-        // Rate should be auto-selected to closest (48000)
-        assert_eq!(form.field_value(1), Some("48000".to_string()));
+        // Rate should be auto-selected to closest (48000) — field 2 = Sample Rate
+        assert_eq!(form.field_value(2), Some("48000".to_string()));
         // Only 1 rate option
-        if let FieldKind::Dropdown { options, .. } = &form.fields[1].kind {
+        if let FieldKind::Dropdown { options, .. } = &form.fields[2].kind {
             assert_eq!(options.len(), 1);
         }
     }
@@ -908,9 +934,9 @@ mod tests {
         let config = crate::config::TncConfig::default(); // 1200 baud, 11025 Hz
         let mut form = SettingsFormState::from_config(&config, &devices);
 
-        // Switch to 9600 baud (field 2, index 2)
-        form.selected_field = 2;
-        if let FieldKind::Dropdown { selected, .. } = &mut form.fields[2].kind {
+        // Switch to 9600 baud (field 3 = Baud Rate, index 2 = "9600")
+        form.selected_field = 3;
+        if let FieldKind::Dropdown { selected, .. } = &mut form.fields[3].kind {
             *selected = 2; // "9600"
         }
         let msg = form.on_baud_changed(&devices);
@@ -919,8 +945,8 @@ mod tests {
         let msg_str = msg.unwrap();
         assert!(msg_str.contains("44100") || msg_str.contains("48000"));
 
-        // Rate options should only include >= 44100
-        if let FieldKind::Dropdown { options, .. } = &form.fields[1].kind {
+        // Rate options should only include >= 44100 — field 2 = Sample Rate
+        if let FieldKind::Dropdown { options, .. } = &form.fields[2].kind {
             assert_eq!(options.len(), 2);
             assert_eq!(options[0], "44100");
             assert_eq!(options[1], "48000");
@@ -933,20 +959,20 @@ mod tests {
         let config = crate::config::TncConfig::default(); // 1200 baud
         let mut form = SettingsFormState::from_config(&config, &devices);
 
-        // Mode list should be AFSK modes initially
-        if let FieldKind::Dropdown { options, .. } = &form.fields[3].kind {
+        // Mode list should be AFSK modes initially — field 4 = Demod Mode
+        if let FieldKind::Dropdown { options, .. } = &form.fields[4].kind {
             assert!(options.iter().any(|o| o.contains("Goertzel") || o.contains("single")));
         }
 
-        // Switch to 9600 baud
-        form.selected_field = 2;
-        if let FieldKind::Dropdown { selected, .. } = &mut form.fields[2].kind {
+        // Switch to 9600 baud — field 3 = Baud Rate
+        form.selected_field = 3;
+        if let FieldKind::Dropdown { selected, .. } = &mut form.fields[3].kind {
             *selected = 2; // "9600"
         }
         form.on_baud_changed(&devices);
 
-        // Mode list should now be 9600 modes
-        if let FieldKind::Dropdown { options, selected, .. } = &form.fields[3].kind {
+        // Mode list should now be 9600 modes — field 4
+        if let FieldKind::Dropdown { options, selected, .. } = &form.fields[4].kind {
             assert_eq!(*selected, 0); // reset to first
             assert!(options.iter().any(|o| o.contains("DireWolf")));
             assert!(!options.iter().any(|o| o.contains("Goertzel") || o.contains("single")));

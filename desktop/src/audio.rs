@@ -92,6 +92,7 @@ impl SampleSource for CpalSource {
 pub struct WavSource {
     reader: hound::WavReader<std::io::BufReader<std::fs::File>>,
     channels: u16,
+    sample_rate: u32,
     done: bool,
 }
 
@@ -116,8 +117,14 @@ impl WavSource {
         Ok(Self {
             reader,
             channels: spec.channels,
+            sample_rate: spec.sample_rate,
             done: false,
         })
+    }
+
+    /// Return the WAV file's actual sample rate.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
     }
 }
 

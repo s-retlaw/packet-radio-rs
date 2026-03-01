@@ -50,6 +50,9 @@ pub struct AudioConfig {
     pub device: String,
     /// Sample rate in Hz.
     pub sample_rate: u32,
+    /// WAV file path for TUI WAV decode mode (runtime-only, never persisted).
+    #[serde(skip)]
+    pub wav_path: Option<PathBuf>,
 }
 
 /// Modem / demodulator mode selection.
@@ -88,6 +91,7 @@ impl Default for AudioConfig {
         Self {
             device: "default".to_string(),
             sample_rate: 11025,
+            wav_path: None,
         }
     }
 }
@@ -210,6 +214,7 @@ mod tests {
             audio: AudioConfig {
                 device: "hw:1,0".to_string(),
                 sample_rate: 44100,
+                ..Default::default()
             },
             modem: ModemConfig {
                 mode: "smart3".to_string(),

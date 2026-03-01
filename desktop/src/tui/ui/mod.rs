@@ -7,7 +7,7 @@ mod settings;
 
 use ratatui::prelude::*;
 use super::state::{Tab, ProcessingState, DecodedFrameInfo, AprsStation, Stats, SettingsFormState};
-use super::widgets::SelectableList;
+use super::widgets::{FilePickerState, SelectableList};
 
 /// All state needed by the rendering layer (borrowed from App).
 pub struct DrawContext<'a> {
@@ -22,6 +22,11 @@ pub struct DrawContext<'a> {
     pub quit_selected: usize,
     pub show_error_dialog: bool,
     pub error_message: &'a Option<String>,
+    pub file_picker: Option<&'a mut FilePickerState>,
+    /// Current WAV filename (just the basename) for the status bar.
+    pub wav_file: Option<&'a str>,
+    /// Whether audio source is WAV File (for footer hint logic).
+    pub is_wav_source: bool,
 }
 
 /// Main draw function — called on every frame.
@@ -68,5 +73,10 @@ pub fn draw(frame: &mut Frame, ctx: &mut DrawContext) {
             .button("OK")
             .selected(0)
             .render(frame, frame.area());
+    }
+
+    // File picker overlay (above dialogs except error)
+    if let Some(ref mut picker) = ctx.file_picker {
+        super::widgets::draw_file_picker(frame, frame.area(), picker);
     }
 }

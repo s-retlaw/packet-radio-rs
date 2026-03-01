@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use crate::config::TncConfig;
 use self::event::{Event, EventHandler};
 use self::state::*;
-use self::widgets::SelectableList;
+use self::widgets::{FilePickerState, SelectableList};
 
 /// Audio device info collected at enumeration time.
 #[derive(Debug, Clone)]
@@ -58,6 +58,10 @@ pub struct App {
     pub start_requested: bool,
     /// Audio device info for device-aware settings.
     pub devices: Vec<AudioDeviceInfo>,
+    /// Active file picker modal (None = closed).
+    pub file_picker: Option<FilePickerState>,
+    /// Last directory used in the file picker (for persistence across opens).
+    pub last_file_picker_dir: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -81,6 +85,8 @@ impl App {
             start_time: Instant::now(),
             start_requested: false,
             devices,
+            file_picker: None,
+            last_file_picker_dir: None,
         }
     }
 
@@ -103,6 +109,15 @@ impl App {
         Self::new(config, std::path::PathBuf::from("./test-config.toml"), devices)
     }
 
+    /// Returns true if the Audio Source is set to WAV File (field 0, selected index 1).
+    pub fn is_wav_source(&self) -> bool {
+        if let Some(field) = self.settings.fields.first() {
+            matches!(&field.kind, FieldKind::Dropdown { selected, .. } if *selected == 1)
+        } else {
+            false
+        }
+    }
+
     /// Handle a key event, mutating state. Returns true if the event was consumed.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         // Error dialog takes highest priority
@@ -115,6 +130,11 @@ impl App {
             return self.handle_quit_dialog_key(key);
         }
 
+        // File picker modal takes priority
+        if self.file_picker.is_some() {
+            return self.handle_file_picker_key(key);
+        }
+
         // When editing a text field, bypass global key bindings
         let editing = self.tab == Tab::Settings && self.settings.editing;
 
@@ -124,8 +144,26 @@ impl App {
                 self.quit_selected = 1; // default "No"
                 true
             }
+            KeyCode::Char('o') if !editing && !self.processing.is_running() => {
+                if self.is_wav_source() {
+                    self.file_picker = Some(FilePickerState::new(
+                        self.last_file_picker_dir.as_deref(),
+                    ));
+                }
+                true
+            }
             KeyCode::Char('s') if !editing && !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.toggle_processing();
+                if self.is_wav_source() && !self.processing.is_running() {
+                    // In WAV mode, 's' re-decodes the last file (or shows error)
+                    if self.config.audio.wav_path.is_some() {
+                        self.start_requested = true;
+                    } else {
+                        self.error_message = Some("No WAV file selected. Press 'o' to open a file.".to_string());
+                        self.show_error_dialog = true;
+                    }
+                } else {
+                    self.toggle_processing();
+                }
                 true
             }
             // Tab switching by number
@@ -187,6 +225,49 @@ impl App {
             }
             _ => true, // consume all keys while error dialog is shown
         }
+    }
+
+    fn handle_file_picker_key(&mut self, key: KeyEvent) -> bool {
+        let picker = match self.file_picker.as_mut() {
+            Some(p) => p,
+            None => return false,
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.file_picker = None;
+            }
+            KeyCode::Enter => {
+                if let Some(path) = picker.enter() {
+                    // File selected — store dir for next time, set wav_path, trigger decode
+                    self.last_file_picker_dir = path.parent().map(|p| p.to_path_buf());
+                    self.config.audio.wav_path = Some(path);
+                    self.file_picker = None;
+                    self.start_requested = true;
+                }
+                // If enter() returned None, we navigated into a directory — picker stays open
+            }
+            KeyCode::Backspace => {
+                picker.go_up();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                picker.select_next();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                picker.select_prev();
+            }
+            KeyCode::Home => {
+                picker.select_first();
+            }
+            KeyCode::End => {
+                picker.select_last();
+            }
+            KeyCode::Char('a') => {
+                picker.toggle_filter();
+            }
+            _ => {}
+        }
+        true // consume all keys while picker is open
     }
 
     fn handle_tab_key(&mut self, key: KeyEvent) -> bool {
@@ -270,13 +351,13 @@ impl App {
                         FieldKind::Dropdown { .. } => {
                             let field_idx = self.settings.selected_field;
                             self.settings.cycle_dropdown();
-                            if field_idx == 0 {
+                            if field_idx == 1 {
                                 if let Some(msg) = self.settings.on_device_changed(&self.devices) {
                                     self.error_message = Some(msg);
                                     self.show_error_dialog = true;
                                 }
                             }
-                            if field_idx == 2 {
+                            if field_idx == 3 {
                                 if let Some(msg) = self.settings.on_baud_changed(&self.devices) {
                                     self.error_message = Some(msg);
                                     self.show_error_dialog = true;
@@ -293,13 +374,13 @@ impl App {
             KeyCode::Char(' ') => {
                 let field_idx = self.settings.selected_field;
                 self.settings.cycle_dropdown();
-                if field_idx == 0 {
+                if field_idx == 1 {
                     if let Some(msg) = self.settings.on_device_changed(&self.devices) {
                         self.error_message = Some(msg);
                         self.show_error_dialog = true;
                     }
                 }
-                if field_idx == 2 {
+                if field_idx == 3 {
                     if let Some(msg) = self.settings.on_baud_changed(&self.devices) {
                         self.error_message = Some(msg);
                         self.show_error_dialog = true;
@@ -378,16 +459,16 @@ impl App {
 
     /// Validate settings before saving. Returns error message if invalid.
     fn validate_settings(&self) -> Option<String> {
-        // Validate KISS TCP port (field 4)
-        if let Some(val) = self.settings.field_value(4) {
+        // Validate KISS TCP port (field 5)
+        if let Some(val) = self.settings.field_value(5) {
             match val.parse::<u16>() {
                 Ok(0) => return Some("port must be between 1 and 65535".to_string()),
                 Err(_) => return Some(format!("invalid port: '{}'. Must be 0\u{2013}65535.", val)),
                 _ => {}
             }
         }
-        // Validate callsign is non-empty (field 5)
-        if let Some(val) = self.settings.field_value(5) {
+        // Validate callsign is non-empty (field 6)
+        if let Some(val) = self.settings.field_value(6) {
             if val.trim().is_empty() {
                 return Some("callsign cannot be empty".to_string());
             }
@@ -536,6 +617,10 @@ where
         }
 
         // Draw
+        let is_wav = app.is_wav_source();
+        let wav_filename: Option<String> = app.config.audio.wav_path.as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string());
         terminal.draw(|frame| {
             let mut ctx = ui::DrawContext {
                 tab: app.tab,
@@ -549,6 +634,9 @@ where
                 quit_selected: app.quit_selected,
                 show_error_dialog: app.show_error_dialog,
                 error_message: &app.error_message,
+                file_picker: app.file_picker.as_mut(),
+                wav_file: wav_filename.as_deref(),
+                is_wav_source: is_wav,
             };
             ui::draw(frame, &mut ctx);
         })?;
@@ -890,19 +978,19 @@ mod tests {
     fn test_settings_dropdown_cycle() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        // Field 0 is Audio Device dropdown with "default" and "test_device"
-        assert_eq!(app.settings.field_value(0), Some("default".to_string()));
+        // Field 0 is Audio Source dropdown
+        assert_eq!(app.settings.field_value(0), Some("Live Audio".to_string()));
 
         app.handle_key(make_key(KeyCode::Char(' '))); // space cycles dropdown
-        assert_eq!(app.settings.field_value(0), Some("test_device".to_string()));
+        assert_eq!(app.settings.field_value(0), Some("WAV File".to_string()));
     }
 
     #[test]
     fn test_settings_text_edit() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        // Navigate to KISS port (field 4)
-        app.settings.selected_field = 4;
+        // Navigate to KISS port (field 5)
+        app.settings.selected_field = 5;
 
         // Enter edit mode
         app.handle_key(make_key(KeyCode::Enter));
@@ -963,7 +1051,7 @@ mod tests {
     fn test_s_key_not_intercepted_during_text_edit() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        app.settings.selected_field = 4; // KISS port (text field)
+        app.settings.selected_field = 5; // KISS port (text field)
 
         // Enter edit mode
         app.handle_key(make_key(KeyCode::Enter));
@@ -978,26 +1066,26 @@ mod tests {
     fn test_port_rejects_non_digits() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        app.settings.selected_field = 4; // KISS port
+        app.settings.selected_field = 5; // KISS port
         app.handle_key(make_key(KeyCode::Enter)); // enter edit mode
 
-        let before = app.settings.field_value(4).unwrap();
+        let before = app.settings.field_value(5).unwrap();
         // Letters should be rejected
         app.handle_key(make_key(KeyCode::Char('a')));
         app.handle_key(make_key(KeyCode::Char('!')));
         app.handle_key(make_key(KeyCode::Char(' ')));
-        assert_eq!(app.settings.field_value(4).unwrap(), before);
+        assert_eq!(app.settings.field_value(5).unwrap(), before);
 
         // Digits should be accepted
         app.handle_key(make_key(KeyCode::Char('9')));
-        assert!(app.settings.field_value(4).unwrap().ends_with('9'));
+        assert!(app.settings.field_value(5).unwrap().ends_with('9'));
     }
 
     #[test]
     fn test_callsign_filter_uppercase_and_reject() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        app.settings.selected_field = 5; // Callsign
+        app.settings.selected_field = 6; // Callsign
         app.handle_key(make_key(KeyCode::Enter)); // enter edit mode
 
         // Clear existing value
@@ -1010,18 +1098,18 @@ mod tests {
         app.handle_key(make_key(KeyCode::Char('1')));
         app.handle_key(make_key(KeyCode::Char('a')));
         app.handle_key(make_key(KeyCode::Char('w')));
-        assert_eq!(app.settings.field_value(5).unwrap(), "W1AW");
+        assert_eq!(app.settings.field_value(6).unwrap(), "W1AW");
 
         // Hyphen should be accepted (for SSID)
         app.handle_key(make_key(KeyCode::Char('-')));
         app.handle_key(make_key(KeyCode::Char('1')));
-        assert_eq!(app.settings.field_value(5).unwrap(), "W1AW-1");
+        assert_eq!(app.settings.field_value(6).unwrap(), "W1AW-1");
 
         // Special chars should be rejected
         app.handle_key(make_key(KeyCode::Char('!')));
         app.handle_key(make_key(KeyCode::Char('@')));
         app.handle_key(make_key(KeyCode::Char(' ')));
-        assert_eq!(app.settings.field_value(5).unwrap(), "W1AW-1");
+        assert_eq!(app.settings.field_value(6).unwrap(), "W1AW-1");
     }
 
     #[test]
@@ -1058,8 +1146,8 @@ mod tests {
     #[test]
     fn test_mode_description_available() {
         let app = App::new_for_testing();
-        // Field 3 is Demod Mode dropdown — should have descriptions
-        let desc = app.settings.field_description(3);
+        // Field 4 is Demod Mode dropdown — should have descriptions
+        let desc = app.settings.field_description(4);
         assert!(desc.is_some());
         assert!(!desc.unwrap().is_empty());
     }
@@ -1068,7 +1156,7 @@ mod tests {
     fn test_port_max_length_enforced() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        app.settings.selected_field = 4; // KISS port
+        app.settings.selected_field = 5; // KISS port
         app.handle_key(make_key(KeyCode::Enter)); // enter edit mode
 
         // Clear existing value
@@ -1080,18 +1168,18 @@ mod tests {
         for c in ['6', '5', '5', '3', '5'] {
             app.handle_key(make_key(KeyCode::Char(c)));
         }
-        assert_eq!(app.settings.field_value(4).unwrap(), "65535");
+        assert_eq!(app.settings.field_value(5).unwrap(), "65535");
 
         // 6th digit should be rejected (max_len = 5)
         app.handle_key(make_key(KeyCode::Char('9')));
-        assert_eq!(app.settings.field_value(4).unwrap(), "65535");
+        assert_eq!(app.settings.field_value(5).unwrap(), "65535");
     }
 
     #[test]
     fn test_validate_settings_port_zero() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        app.settings.selected_field = 4;
+        app.settings.selected_field = 5;
         app.handle_key(make_key(KeyCode::Enter));
 
         // Clear and type "0"
@@ -1110,7 +1198,7 @@ mod tests {
     fn test_validate_settings_empty_callsign() {
         let mut app = App::new_for_testing();
         app.tab = Tab::Settings;
-        app.settings.selected_field = 5; // Callsign
+        app.settings.selected_field = 6; // Callsign
         app.handle_key(make_key(KeyCode::Enter));
 
         // Clear callsign
@@ -1129,5 +1217,124 @@ mod tests {
         let app = App::new_for_testing();
         // Default config should be valid
         assert!(app.validate_settings().is_none());
+    }
+
+    #[test]
+    fn test_is_wav_source_default_false() {
+        let app = App::new_for_testing();
+        assert!(!app.is_wav_source());
+    }
+
+    #[test]
+    fn test_is_wav_source_after_toggle() {
+        let mut app = App::new_for_testing();
+        // Field 0 = Audio Source: cycle to "WAV File" (index 1)
+        app.settings.selected_field = 0;
+        app.settings.cycle_dropdown();
+        assert!(app.is_wav_source());
+
+        // Cycle back to "Live Audio"
+        app.settings.cycle_dropdown();
+        assert!(!app.is_wav_source());
+    }
+
+    #[test]
+    fn test_o_key_opens_picker_when_wav_source() {
+        let mut app = App::new_for_testing();
+        // Set source to WAV File
+        app.settings.selected_field = 0;
+        app.settings.cycle_dropdown();
+        assert!(app.is_wav_source());
+
+        // Press 'o' — should open picker
+        assert!(app.file_picker.is_none());
+        app.handle_key(make_key(KeyCode::Char('o')));
+        assert!(app.file_picker.is_some());
+    }
+
+    #[test]
+    fn test_o_key_noop_when_live_source() {
+        let mut app = App::new_for_testing();
+        assert!(!app.is_wav_source());
+
+        // Press 'o' — should NOT open picker (source is Live Audio)
+        app.handle_key(make_key(KeyCode::Char('o')));
+        assert!(app.file_picker.is_none());
+    }
+
+    #[test]
+    fn test_o_key_noop_when_running() {
+        let mut app = App::new_for_testing();
+        // Set source to WAV File
+        app.settings.selected_field = 0;
+        app.settings.cycle_dropdown();
+
+        // Simulate running state
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let handle = std::thread::spawn(move || {
+            while !stop2.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        app.processing = ProcessingState::Running {
+            audio_handle: handle,
+            stop_signal: stop.clone(),
+        };
+
+        // Press 'o' — should NOT open picker when running
+        app.handle_key(make_key(KeyCode::Char('o')));
+        assert!(app.file_picker.is_none());
+
+        // Clean up
+        stop.store(true, Ordering::Relaxed);
+        let old = std::mem::replace(&mut app.processing, ProcessingState::Stopped);
+        if let ProcessingState::Running { audio_handle, .. } = old {
+            audio_handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_file_picker_esc_closes() {
+        let mut app = App::new_for_testing();
+        // Set source to WAV File and open picker
+        app.settings.selected_field = 0;
+        app.settings.cycle_dropdown();
+        app.handle_key(make_key(KeyCode::Char('o')));
+        assert!(app.file_picker.is_some());
+
+        // Esc should close it
+        app.handle_key(make_key(KeyCode::Esc));
+        assert!(app.file_picker.is_none());
+    }
+
+    #[test]
+    fn test_s_key_wav_mode_no_file_shows_error() {
+        let mut app = App::new_for_testing();
+        // Set source to WAV File
+        app.settings.selected_field = 0;
+        app.settings.cycle_dropdown();
+        assert!(app.is_wav_source());
+        assert!(app.config.audio.wav_path.is_none());
+
+        // Press 's' — should show error since no file selected
+        app.handle_key(make_key(KeyCode::Char('s')));
+        assert!(!app.start_requested);
+        assert!(app.show_error_dialog);
+        assert!(app.error_message.as_ref().unwrap().contains("No WAV file"));
+    }
+
+    #[test]
+    fn test_s_key_wav_mode_with_file_starts() {
+        let mut app = App::new_for_testing();
+        // Set source to WAV File
+        app.settings.selected_field = 0;
+        app.settings.cycle_dropdown();
+        // Set a wav path
+        app.config.audio.wav_path = Some(std::path::PathBuf::from("/tmp/test.wav"));
+
+        // Press 's' — should start
+        app.handle_key(make_key(KeyCode::Char('s')));
+        assert!(app.start_requested);
     }
 }
