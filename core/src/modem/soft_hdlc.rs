@@ -96,6 +96,12 @@ enum HdlcState {
     Receiving,
 }
 
+impl Default for SoftHdlcDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SoftHdlcDecoder {
     /// Create a new soft HDLC decoder.
     pub fn new() -> Self {
@@ -272,10 +278,8 @@ impl SoftHdlcDecoder {
             } else {
                 // CRC failed — try soft recovery
                 // try_bit_flip_recovery may update frame_buf and frame_len
-                match self.try_bit_flip_recovery_info() {
-                    Some((len, flips)) => Some((len, true, flips)),
-                    None => None,
-                }
+                self.try_bit_flip_recovery_info()
+                    .map(|(len, flips)| (len, true, flips))
             }
         } else {
             None
@@ -421,7 +425,7 @@ impl SoftHdlcDecoder {
 
             if self.reassemble_and_check_crc() {
                 let cost = candidates[k].1;
-                if best_single.map_or(true, |(_, c)| cost < c) {
+                if best_single.is_none_or(|(_, c)| cost < c) {
                     best_single = Some((k, cost));
                 }
             }
@@ -450,7 +454,7 @@ impl SoftHdlcDecoder {
 
                 if self.reassemble_and_check_crc() {
                     let cost = candidates[i].1 as u16 + candidates[j].1 as u16;
-                    if best_pair.map_or(true, |(_, _, c)| cost < c) {
+                    if best_pair.is_none_or(|(_, _, c)| cost < c) {
                         best_pair = Some((i, j, cost));
                     }
                 }
@@ -485,7 +489,7 @@ impl SoftHdlcDecoder {
                 if self.reassemble_and_check_crc() {
                     let cost = self.soft_bits[idx].unsigned_abs() as u16
                         + self.soft_bits[idx + 1].unsigned_abs() as u16;
-                    if best_nrzi_pair.map_or(true, |(_, _, c)| cost < c) {
+                    if best_nrzi_pair.is_none_or(|(_, _, c)| cost < c) {
                         best_nrzi_pair = Some((idx, idx + 1, cost));
                     }
                 }
@@ -500,7 +504,7 @@ impl SoftHdlcDecoder {
                 if self.reassemble_and_check_crc() {
                     let cost = self.soft_bits[idx - 1].unsigned_abs() as u16
                         + self.soft_bits[idx].unsigned_abs() as u16;
-                    if best_nrzi_pair.map_or(true, |(_, _, c)| cost < c) {
+                    if best_nrzi_pair.is_none_or(|(_, _, c)| cost < c) {
                         best_nrzi_pair = Some((idx - 1, idx, cost));
                     }
                 }
@@ -538,7 +542,7 @@ impl SoftHdlcDecoder {
                         let cost = candidates[i].1 as u16
                             + candidates[j].1 as u16
                             + candidates[k].1 as u16;
-                        if best_triple.map_or(true, |(_, _, _, c)| cost < c) {
+                        if best_triple.is_none_or(|(_, _, _, c)| cost < c) {
                             best_triple = Some((i, j, k, cost));
                         }
                     }
@@ -579,7 +583,7 @@ impl SoftHdlcDecoder {
                     let cost = self.soft_bits[idx - 1].unsigned_abs() as u16
                         + self.soft_bits[idx].unsigned_abs() as u16
                         + self.soft_bits[idx + 1].unsigned_abs() as u16;
-                    if best_nrzi_triple.map_or(true, |(_, c)| cost < c) {
+                    if best_nrzi_triple.is_none_or(|(_, c)| cost < c) {
                         best_nrzi_triple = Some((k, cost));
                     }
                 }

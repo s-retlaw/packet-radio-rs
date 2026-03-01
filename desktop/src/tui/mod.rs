@@ -308,7 +308,7 @@ impl App {
                 } else {
                     let new_config = self.settings.to_config();
                     if let Err(e) = new_config.save(&self.config_path) {
-                        self.error_message = Some(format!("Failed to save: {e}"));
+                        self.error_message = Some(format!("failed to save: {e}"));
                         self.show_error_dialog = true;
                     } else {
                         tracing::info!("config saved to {}", self.config_path.display());
@@ -374,15 +374,15 @@ impl App {
         // Validate KISS TCP port (field 3)
         if let Some(val) = self.settings.field_value(3) {
             match val.parse::<u16>() {
-                Ok(0) => return Some("Port must be between 1 and 65535.".to_string()),
-                Err(_) => return Some(format!("Invalid port: '{}'. Must be 0\u{2013}65535.", val)),
+                Ok(0) => return Some("port must be between 1 and 65535".to_string()),
+                Err(_) => return Some(format!("invalid port: '{}'. Must be 0\u{2013}65535.", val)),
                 _ => {}
             }
         }
         // Validate callsign is non-empty (field 4)
         if let Some(val) = self.settings.field_value(4) {
             if val.trim().is_empty() {
-                return Some("Callsign cannot be empty.".to_string());
+                return Some("callsign cannot be empty".to_string());
             }
         }
         None
@@ -1103,7 +1103,7 @@ mod tests {
 
         let err = app.validate_settings();
         assert!(err.is_some());
-        assert!(err.unwrap().contains("Port"));
+        assert!(err.unwrap().contains("port"));
     }
 
     #[test]
@@ -1121,7 +1121,7 @@ mod tests {
 
         let err = app.validate_settings();
         assert!(err.is_some());
-        assert!(err.unwrap().contains("Callsign"));
+        assert!(err.unwrap().contains("callsign"));
     }
 
     #[test]

@@ -53,8 +53,6 @@ pub fn draw_settings(frame: &mut Frame, area: Rect, ctx: &DrawContext) {
                     let before = value.before_cursor();
                     let after = value.after_cursor();
                     format!("  [ {}|{} ]", before, after)
-                } else if is_selected {
-                    format!("  [ {} ]", val)
                 } else {
                     format!("  [ {} ]", val)
                 }

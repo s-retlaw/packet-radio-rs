@@ -569,7 +569,7 @@ impl Demod9600Direwolf {
                 let raw_bit = decision_sample > self.threshold;
 
                 // 5. Raw confidence from sample magnitude
-                let raw_conf = (decision_sample.abs() as u32 * 127 / 16384).min(127) as u8;
+                let raw_conf = (decision_sample.unsigned_abs() as u32 * 127 / 16384).min(127) as u8;
 
                 // 6. Descramble
                 let descrambled = self.descrambler.descramble(raw_bit);
@@ -720,7 +720,7 @@ impl Demod9600Gardner {
 
             if let Some(decision_sample) = self.pll.update(agc_out) {
                 let raw_bit = decision_sample > self.threshold;
-                let raw_conf = (decision_sample.abs() as u32 * 127 / 16384).min(127) as u8;
+                let raw_conf = (decision_sample.unsigned_abs() as u32 * 127 / 16384).min(127) as u8;
                 let descrambled = self.descrambler.descramble(raw_bit);
                 let _prop_conf = self.llr_ring.push(raw_conf);
                 let nrzi_bit = !(descrambled ^ self.prev_nrzi);
@@ -814,7 +814,7 @@ impl Demod9600EarlyLate {
 
             if let Some(decision_sample) = self.pll.update(agc_out) {
                 let raw_bit = decision_sample > self.threshold;
-                let raw_conf = (decision_sample.abs() as u32 * 127 / 16384).min(127) as u8;
+                let raw_conf = (decision_sample.unsigned_abs() as u32 * 127 / 16384).min(127) as u8;
                 let descrambled = self.descrambler.descramble(raw_bit);
                 let _prop_conf = self.llr_ring.push(raw_conf);
                 let nrzi_bit = !(descrambled ^ self.prev_nrzi);
@@ -908,7 +908,7 @@ impl Demod9600MuellerMuller {
 
             if let Some(decision_sample) = self.pll.update(agc_out) {
                 let raw_bit = decision_sample > self.threshold;
-                let raw_conf = (decision_sample.abs() as u32 * 127 / 16384).min(127) as u8;
+                let raw_conf = (decision_sample.unsigned_abs() as u32 * 127 / 16384).min(127) as u8;
                 let descrambled = self.descrambler.descramble(raw_bit);
                 let _prop_conf = self.llr_ring.push(raw_conf);
                 let nrzi_bit = !(descrambled ^ self.prev_nrzi);
@@ -1041,7 +1041,7 @@ impl Demod9600Rrc {
 
             if let Some(decision_sample) = self.pll.update(agc_out) {
                 let raw_bit = decision_sample > self.threshold;
-                let raw_conf = (decision_sample.abs() as u32 * 127 / 16384).min(127) as u8;
+                let raw_conf = (decision_sample.unsigned_abs() as u32 * 127 / 16384).min(127) as u8;
                 let descrambled = self.descrambler.descramble(raw_bit);
                 let _prop_conf = self.llr_ring.push(raw_conf);
                 let nrzi_bit = !(descrambled ^ self.prev_nrzi);

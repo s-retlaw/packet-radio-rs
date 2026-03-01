@@ -405,7 +405,11 @@ fn print_usage() {
     println!("  benchmark --twist-mini <file.wav>      TwistMini multi-rate comparison");
     println!("  benchmark --window <file.wav>          Sweep Goertzel window types (ISI reduction)");
     println!("  benchmark --fusion <file.wav>          Cross-architecture Goertzel+Corr LLR fusion");
+    println!("  benchmark --pll-300 <file.wav>         Sweep 300-baud DM+PLL alpha values");
     println!();
+    println!("300 BAUD HF:");
+    println!("  benchmark --baud 300 --suite <dir>     Run all decoders at 300 baud");
+    println!("  benchmark --pll-300 <file.wav>         Sweep 300-baud DM+PLL alpha values");
     println!();
     println!("9600 BAUD G3RUH:");
     println!("  benchmark --9600 <file.wav>             Decode 9600 baud WAV (all algorithms)");
@@ -3093,7 +3097,7 @@ fn run_xor(path: &str) {
 
     let xor_not_in_smart3 = xor_set.difference(&smart3_set).count();
     let xor_q_not_in_smart3 = xor_q_set.difference(&smart3_set).count();
-    let xor_not_in_fast = xor_set.difference(&fast_set).count();
+    let _xor_not_in_fast = xor_set.difference(&fast_set).count();
     let xor_not_in_multi = xor_set.difference(&multi_set).count();
     // XOR frames not in any MCU-feasible single decoder
     let mcu_union: HashSet<Vec<u8>> = fast_set.union(&dm_set).cloned().collect();

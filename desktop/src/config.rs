@@ -17,7 +17,7 @@ const AVAILABLE_MODES: &[(&str, &str, &str)] = &[
 ];
 
 /// Top-level config file structure matching `packet-radio.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct TncConfig {
     pub audio: AudioConfig,
@@ -66,17 +66,6 @@ pub struct StationConfig {
 }
 
 // ── Default implementations ──────────────────────────────────────────
-
-impl Default for TncConfig {
-    fn default() -> Self {
-        Self {
-            audio: AudioConfig::default(),
-            modem: ModemConfig::default(),
-            kiss: KissConfig::default(),
-            station: StationConfig::default(),
-        }
-    }
-}
 
 impl Default for AudioConfig {
     fn default() -> Self {

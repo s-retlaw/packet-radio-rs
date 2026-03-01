@@ -145,7 +145,7 @@ pub fn parse_packet<'a>(info: &'a [u8], dest_callsign: &[u8]) -> Option<AprsPack
 
 /// Parse a single ASCII digit byte to its numeric value.
 fn parse_digit(b: u8) -> Option<u32> {
-    if b >= b'0' && b <= b'9' {
+    if b.is_ascii_digit() {
         Some((b - b'0') as u32)
     } else {
         None
@@ -159,7 +159,7 @@ fn base91_decode(bytes: &[u8]) -> Option<u32> {
     }
     let mut val = 0u32;
     for &b in &bytes[0..4] {
-        if b < 33 || b > 124 {
+        if !(33..=124).contains(&b) {
             return None;
         }
         val = val * 91 + (b - 33) as u32;

@@ -138,9 +138,7 @@ fn address_from_str(call: &str) -> Address {
     let mut callsign = [b' '; 6];
     let bytes = call.as_bytes();
     let len = bytes.len().min(6);
-    for i in 0..len {
-        callsign[i] = bytes[i];
-    }
+    callsign[..len].copy_from_slice(&bytes[..len]);
     Address {
         callsign,
         callsign_len: len as u8,
@@ -176,6 +174,12 @@ pub struct HdlcDecoder {
     bit_index: u8,
     /// Total bytes received in current frame
     frame_len: usize,
+}
+
+impl Default for HdlcDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HdlcDecoder {

@@ -137,6 +137,12 @@ pub struct KissOutbox {
     tail: usize,
 }
 
+impl Default for KissOutbox {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KissOutbox {
     /// Create an empty outbox.
     pub const fn new() -> Self {
@@ -212,6 +218,12 @@ pub struct TxQueue {
     lengths: [usize; TX_QUEUE_SIZE],
     head: usize,
     count: usize,
+}
+
+impl Default for TxQueue {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TxQueue {

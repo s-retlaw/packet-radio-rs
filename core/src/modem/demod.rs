@@ -668,7 +668,7 @@ impl FastDemodulator {
                     let total = mark_energy + space_energy;
                     if total > 0 {
                         let energy_ratio = ((mark_energy - space_energy) * 127) / total;
-                        let mut confidence = energy_ratio.unsigned_abs().max(1).min(127) as i8;
+                        let mut confidence = energy_ratio.unsigned_abs().clamp(1, 127) as i8;
                         // At NRZI transitions the Goertzel window spans both tones,
                         // making the energy ratio unreliable. Halve confidence so
                         // SoftHdlcDecoder targets genuinely uncertain bits.
@@ -680,8 +680,10 @@ impl FastDemodulator {
                     } else {
                         0
                     }
+                } else if decoded_bit {
+                    64
                 } else {
-                    if decoded_bit { 64 } else { -64 }
+                    -64
                 };
 
                 if sym_count < symbols_out.len() {
@@ -1043,7 +1045,7 @@ impl QualityDemodulator {
                 let total = mark_energy + space_energy;
                 let energy_conf = if total > 0 {
                     let ratio = ((mark_energy - space_energy) * 127) / total;
-                    ratio.unsigned_abs().max(1).min(127) as u8
+                    ratio.unsigned_abs().clamp(1, 127) as u8
                 } else {
                     1u8
                 };
@@ -1737,7 +1739,7 @@ impl DmDemodulator {
                 if sym_count < symbols_out.len() {
                     // LLR from accumulator magnitude: large |accumulator| =
                     // consistent tone = high confidence; small = transition/noise.
-                    let confidence = (self.accumulator.abs() >> self.llr_shift).min(127).max(1) as i8;
+                    let confidence = (self.accumulator.abs() >> self.llr_shift).clamp(1, 127) as i8;
                     let llr = if decoded_bit { confidence } else { -confidence };
                     symbols_out[sym_count] = DemodSymbol {
                         bit: decoded_bit,
@@ -2174,13 +2176,15 @@ impl CorrelationDemodulator {
                     let total = mark_energy + space_energy;
                     if total > 0 {
                         let energy_ratio = ((mark_energy - space_energy) * 127) / total;
-                        let confidence = energy_ratio.unsigned_abs().max(1).min(127) as i8;
+                        let confidence = energy_ratio.unsigned_abs().clamp(1, 127) as i8;
                         if decoded_bit { confidence } else { -confidence }
                     } else {
                         0
                     }
+                } else if decoded_bit {
+                    64
                 } else {
-                    if decoded_bit { 64 } else { -64 }
+                    -64
                 };
 
                 if sym_count < symbols_out.len() {

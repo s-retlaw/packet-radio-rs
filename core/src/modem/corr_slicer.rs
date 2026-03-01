@@ -699,13 +699,15 @@ impl CorrSlicerDecoder {
                             let total = mark_energy + space_energy;
                             if total > 0 {
                                 let energy_ratio = ((mark_energy - space_energy) * 127) / total;
-                                let confidence = energy_ratio.unsigned_abs().max(1).min(127) as i8;
+                                let confidence = energy_ratio.unsigned_abs().clamp(1, 127) as i8;
                                 if decoded_bit { confidence } else { -confidence }
                             } else {
                                 0
                             }
+                        } else if decoded_bit {
+                            64
                         } else {
-                            if decoded_bit { 64 } else { -64 }
+                            -64
                         };
                         if let Some(result) = slicer.hdlc.feed_soft_bit(llr) {
                             let frame_bytes = match &result {

@@ -19,6 +19,12 @@ pub struct Descrambler {
     shift_reg: u32,
 }
 
+impl Default for Descrambler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Descrambler {
     /// Create a new descrambler with zeroed shift register.
     pub const fn new() -> Self {
@@ -55,6 +61,12 @@ impl Descrambler {
 pub struct Scrambler {
     /// 17-bit shift register (bits 0..16 used)
     shift_reg: u32,
+}
+
+impl Default for Scrambler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Scrambler {

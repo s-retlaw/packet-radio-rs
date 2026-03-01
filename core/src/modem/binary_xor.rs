@@ -305,7 +305,7 @@ impl BinaryXorDemodulator {
 
                 if sym_count < symbols_out.len() {
                     // LLR from accumulator magnitude
-                    let confidence = (self.accumulator.abs() >> self.llr_shift).min(127).max(1) as i8;
+                    let confidence = (self.accumulator.abs() >> self.llr_shift).clamp(1, 127) as i8;
                     let llr = if decoded_bit { confidence } else { -confidence };
                     symbols_out[sym_count] = DemodSymbol {
                         bit: decoded_bit,

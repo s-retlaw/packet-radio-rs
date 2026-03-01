@@ -82,6 +82,12 @@ pub struct KissDecoder {
     escape: bool,
 }
 
+impl Default for KissDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KissDecoder {
     pub const fn new() -> Self {
         Self {

@@ -93,7 +93,13 @@ fn run_tui_mode(cli: cli::Cli) {
     let (kiss_in_tx, _kiss_in_rx) = crossbeam_channel::bounded::<Vec<u8>>(64);
 
     // Tokio runtime for KISS TCP + TUI event loop
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("fatal: failed to create async runtime: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // Start KISS TCP server
     if tnc_config.kiss.port > 0 {
@@ -497,7 +503,13 @@ fn run_headless(cli: cli::Cli) {
     }
 
     // Build the tokio runtime for KISS TCP server
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("fatal: failed to create async runtime: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // Frame broadcast channel for KISS clients
     let (frame_tx, _) = broadcast::channel::<Vec<u8>>(64);
@@ -644,23 +656,23 @@ impl TncPlatform for TxOnlyPlatform {
     fn now_ms(&self) -> u32 { 0 }
 }
 
-/// Inner TX engine — dispatches between 1200 AFSK and 9600 FSK.
+/// Inner TX engine — dispatches between AFSK (300/1200) and 9600 FSK.
 enum TxEngine {
-    Afsk1200(TncEngine<NullDemod, AfskModulateAdapter>),
+    Afsk(TncEngine<NullDemod, AfskModulateAdapter>),
     Fsk9600(TncEngine<NullDemod, Fsk9600ModulateAdapter>),
 }
 
 impl TxEngine {
     fn feed_kiss(&mut self, byte: u8) {
         match self {
-            TxEngine::Afsk1200(e) => e.feed_kiss(byte),
+            TxEngine::Afsk(e) => e.feed_kiss(byte),
             TxEngine::Fsk9600(e) => e.feed_kiss(byte),
         }
     }
 
     fn poll_tx(&mut self, out: &mut [i16], platform: &mut TxOnlyPlatform) -> usize {
         match self {
-            TxEngine::Afsk1200(e) => e.poll_tx(out, platform),
+            TxEngine::Afsk(e) => e.poll_tx(out, platform),
             TxEngine::Fsk9600(e) => e.poll_tx(out, platform),
         }
     }
@@ -676,10 +688,12 @@ struct TxPipeline {
 
 impl TxPipeline {
     fn new(kiss_rx: crossbeam_channel::Receiver<Vec<u8>>, sample_rate: u32, baud: u32) -> Self {
-        let mut tnc_config = TncConfig::default();
-        tnc_config.baud_rate = baud;
-        tnc_config.full_duplex = true; // Skip CSMA
-        tnc_config.txdelay = 25; // 250ms preamble (shorter for testing)
+        let tnc_config = TncConfig {
+            baud_rate: baud,
+            full_duplex: true, // Skip CSMA
+            txdelay: 25,       // 250ms preamble (shorter for testing)
+            ..TncConfig::default()
+        };
 
         let engine = if baud == 9600 {
             let mod_config = match sample_rate {
@@ -690,7 +704,7 @@ impl TxPipeline {
         } else {
             let base = if baud == 300 { ModConfig::default_300() } else { ModConfig::default_1200() };
             let mod_config = ModConfig { sample_rate, ..base };
-            TxEngine::Afsk1200(TncEngine::new(NullDemod, AfskModulateAdapter::new(mod_config), tnc_config))
+            TxEngine::Afsk(TncEngine::new(NullDemod, AfskModulateAdapter::new(mod_config), tnc_config))
         };
 
         Self {
@@ -954,12 +968,9 @@ fn process_loop_dm(
         let num_symbols = demod.process_samples(&audio_buf[..n], &mut symbols);
         for i in 0..num_symbols {
             if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                match &result {
-                    FrameResult::Recovered { flips, .. } => {
-                        soft_saves += 1;
-                        tracing::debug!("soft recovery: {} bit(s) corrected", flips);
-                    }
-                    _ => {}
+                if let FrameResult::Recovered { flips, .. } = &result {
+                    soft_saves += 1;
+                    tracing::debug!("soft recovery: {flips} bit(s) corrected");
                 }
                 let data = match &result {
                     FrameResult::Valid(d) => *d,
@@ -1014,12 +1025,9 @@ fn process_loop_xor(
         let num_symbols = demod.process_samples(&audio_buf[..n], &mut symbols);
         for i in 0..num_symbols {
             if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                match &result {
-                    FrameResult::Recovered { flips, .. } => {
-                        soft_saves += 1;
-                        tracing::debug!("soft recovery: {} bit(s) corrected", flips);
-                    }
-                    _ => {}
+                if let FrameResult::Recovered { flips, .. } = &result {
+                    soft_saves += 1;
+                    tracing::debug!("soft recovery: {flips} bit(s) corrected");
                 }
                 let data = match &result {
                     FrameResult::Valid(d) => *d,
@@ -1120,12 +1128,9 @@ fn process_loop_corr(
         let num_symbols = demod.process_samples(&audio_buf[..n], &mut symbols);
         for i in 0..num_symbols {
             if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                match &result {
-                    FrameResult::Recovered { flips, .. } => {
-                        soft_saves += 1;
-                        tracing::debug!("soft recovery: {} bit(s) corrected", flips);
-                    }
-                    _ => {}
+                if let FrameResult::Recovered { flips, .. } = &result {
+                    soft_saves += 1;
+                    tracing::debug!("soft recovery: {flips} bit(s) corrected");
                 }
                 let data = match &result {
                     FrameResult::Valid(d) => *d,
@@ -1183,12 +1188,9 @@ fn process_loop_corr_pll(
         let num_symbols = demod.process_samples(&audio_buf[..n], &mut symbols);
         for i in 0..num_symbols {
             if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                match &result {
-                    FrameResult::Recovered { flips, .. } => {
-                        soft_saves += 1;
-                        tracing::debug!("soft recovery: {} bit(s) corrected", flips);
-                    }
-                    _ => {}
+                if let FrameResult::Recovered { flips, .. } = &result {
+                    soft_saves += 1;
+                    tracing::debug!("soft recovery: {flips} bit(s) corrected");
                 }
                 let data = match &result {
                     FrameResult::Valid(d) => *d,
@@ -1276,12 +1278,9 @@ fn process_loop_single(
                 Hdlc::Hard(h) => h.feed_bit(symbols[i].bit).map(|f| f.to_vec()),
                 Hdlc::Soft(s) => {
                     s.feed_soft_bit(symbols[i].llr).map(|result| {
-                        match &result {
-                            FrameResult::Recovered { flips, .. } => {
-                                soft_saves += 1;
-                                tracing::debug!("soft recovery: {} bit(s) corrected", flips);
-                            }
-                            _ => {}
+                        if let FrameResult::Recovered { flips, .. } = &result {
+                            soft_saves += 1;
+                            tracing::debug!("soft recovery: {flips} bit(s) corrected");
                         }
                         let data = match &result {
                             FrameResult::Valid(d) => *d,
@@ -1530,17 +1529,27 @@ fn process_loop_rx_pipe(
 // ── TX Pipe Mode ────────────────────────────────────────────────────────
 
 /// TX pipe mode: read KISS from stdin, write raw i16 LE PCM to stdout.
-fn process_loop_tx_pipe(sample_rate: u32, baud_rate: u32) {
+fn process_loop_tx_pipe(sample_rate: u32, baud: u32) {
     use std::io::{Read, Write};
 
-    let base = if baud_rate == 300 { ModConfig::default_300() } else { ModConfig::default_1200() };
-    let mod_config = ModConfig { sample_rate, ..base };
-    let mut tnc_config = TncConfig::default();
-    tnc_config.baud_rate = baud_rate;
-    tnc_config.full_duplex = true;
-    tnc_config.txdelay = 25;
+    let tnc_config = TncConfig {
+        baud_rate: baud,
+        full_duplex: true,
+        txdelay: 25,
+        ..TncConfig::default()
+    };
 
-    let mut engine = TncEngine::new(NullDemod, AfskModulateAdapter::new(mod_config), tnc_config);
+    let mut engine: TxEngine = if baud == 9600 {
+        let mod_config = match sample_rate {
+            44100 => Mod9600Config::default_44k(),
+            _ => Mod9600Config::default_48k(),
+        };
+        TxEngine::Fsk9600(TncEngine::new(NullDemod, Fsk9600ModulateAdapter::new(mod_config), tnc_config))
+    } else {
+        let base = if baud == 300 { ModConfig::default_300() } else { ModConfig::default_1200() };
+        let mod_config = ModConfig { sample_rate, ..base };
+        TxEngine::Afsk(TncEngine::new(NullDemod, AfskModulateAdapter::new(mod_config), tnc_config))
+    };
     let mut platform = TxOnlyPlatform;
 
     let stdin = std::io::stdin();

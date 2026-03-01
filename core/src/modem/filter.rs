@@ -531,11 +531,7 @@ pub fn corr_lpf(sample_rate: u32) -> BiquadFilter {
 /// For Bell 202 (mark=1200, space=2200, baud=1200): max(500, 480) = 500 Hz.
 /// For V.23 (mark=1300, space=2100, baud=1200): max(400, 480) = 480 Hz.
 pub fn corr_lpf_for_config(mark_freq: u32, space_freq: u32, baud_rate: u32, sample_rate: u32) -> BiquadFilter {
-    let tone_sep = if space_freq > mark_freq {
-        space_freq - mark_freq
-    } else {
-        mark_freq - space_freq
-    };
+    let tone_sep = space_freq.abs_diff(mark_freq);
     let cutoff = core::cmp::max(tone_sep / 2, baud_rate * 2 / 5);
 
     // Fast path: standard Bell 202 → precomputed 500 Hz

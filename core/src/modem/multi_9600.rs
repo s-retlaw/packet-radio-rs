@@ -23,7 +23,7 @@ use super::soft_hdlc::{FrameResult, SoftHdlcDecoder};
 extern crate alloc;
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
-#[cfg(feature = "std")]
+#[cfg(feature = "attribution")]
 use alloc::boxed::Box;
 
 #[cfg(not(feature = "std"))]
@@ -45,7 +45,7 @@ const DEDUP_RING_SIZE: usize = 64;
 const MAX_SYMBOLS: usize = 512;
 
 /// Default multi-slicer thresholds (AGC-normalized ±16384 scale).
-const SLICER_THRESHOLDS_3: [i16; 3] = [-330, 0, 330];
+const _SLICER_THRESHOLDS_3: [i16; 3] = [-330, 0, 330];
 
 /// Negative-biased thresholds (grid search optimal for 9600 baud).
 const SLICER_THRESHOLDS_NEG: [i16; 3] = [-660, -330, 0];
