@@ -112,13 +112,7 @@ fn run_tui_mode(cli: cli::Cli) {
     }
 
     // Build the App
-    let config_existed = config_path.exists();
-    let mut app = tui::App::new(tnc_config, config_path, devices);
-
-    // If a config file already exists, auto-start processing
-    if config_existed {
-        app.start_requested = true;
-    }
+    let app = tui::App::new(tnc_config, config_path, devices);
 
     // Closure: spawn audio processing thread on demand
     let start_audio = {
