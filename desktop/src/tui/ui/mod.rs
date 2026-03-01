@@ -33,7 +33,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut DrawContext) {
             Constraint::Min(0),    // main content
             Constraint::Length(1), // footer
         ])
-        .split(frame.size());
+        .split(frame.area());
 
     header::draw_header(frame, chunks[0], ctx);
 
@@ -53,7 +53,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut DrawContext) {
             .button("Yes")
             .button("No")
             .selected(ctx.quit_selected)
-            .render(frame, frame.size());
+            .render(frame, frame.area());
     }
 
     if ctx.show_error_dialog {
@@ -67,6 +67,6 @@ pub fn draw(frame: &mut Frame, ctx: &mut DrawContext) {
             .empty_line()
             .button("OK")
             .selected(0)
-            .render(frame, frame.size());
+            .render(frame, frame.area());
     }
 }

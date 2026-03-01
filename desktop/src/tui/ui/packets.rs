@@ -49,7 +49,7 @@ fn draw_frame_table(frame: &mut Frame, area: Rect, ctx: &mut DrawContext) {
     let table = Table::new(rows, widths)
         .header(header)
         .block(Block::default().title(" Decoded Frames ").borders(Borders::ALL))
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .row_highlight_style(Style::default().bg(Color::DarkGray));
 
     frame.render_stateful_widget(table, area, ctx.frames.table_state_mut());
 }

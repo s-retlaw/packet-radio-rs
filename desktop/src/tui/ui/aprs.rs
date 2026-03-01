@@ -47,7 +47,7 @@ fn draw_station_table(frame: &mut Frame, area: Rect, ctx: &mut DrawContext) {
     let table = Table::new(rows, widths)
         .header(header)
         .block(Block::default().title(" APRS Stations ").borders(Borders::ALL))
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .row_highlight_style(Style::default().bg(Color::DarkGray));
 
     frame.render_stateful_widget(table, area, ctx.aprs_stations.table_state_mut());
 }
