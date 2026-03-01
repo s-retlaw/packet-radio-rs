@@ -171,12 +171,14 @@ impl TncConfig {
             .unwrap_or(&self.modem.mode)
     }
 
-    /// All known modem modes as `(value, label, description)` tuples.
+    /// All known modem modes as `(value, label, description)` tuples (1200 baud).
+    #[allow(dead_code)]
     pub fn available_modes() -> &'static [(&'static str, &'static str, &'static str)] {
         AVAILABLE_MODES
     }
 
     /// Description for the currently configured modem mode.
+    #[allow(dead_code)]
     pub fn mode_description(&self) -> &str {
         let modes = available_modes_for_baud(self.modem.baud_rate);
         modes

@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 
 /// Terminal events combined with async audio events.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Event {
     /// Terminal tick (for animations/updates).
     Tick,

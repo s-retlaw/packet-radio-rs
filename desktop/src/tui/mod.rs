@@ -56,6 +56,7 @@ pub struct App {
     pub error_message: Option<String>,
     pub start_time: Instant,
     /// Channel for sending frames from audio thread to TUI
+    #[allow(dead_code)]
     pub frame_tx: Option<crossbeam_channel::Sender<AsyncEvent>>,
     /// Set to true when user requests audio processing to start.
     pub start_requested: bool,
@@ -716,6 +717,7 @@ pub fn enumerate_audio_devices() -> Vec<AudioDeviceInfo> {
 
 /// Enumerate available audio input devices (names only).
 /// Thin wrapper for backward compatibility with non-TUI codepaths.
+#[allow(dead_code)]
 pub fn list_audio_devices() -> Vec<String> {
     enumerate_audio_devices().into_iter().map(|d| d.name).collect()
 }

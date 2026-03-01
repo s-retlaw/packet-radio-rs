@@ -57,6 +57,7 @@ impl Tab {
 
 /// View mode within a tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum View {
     Main,
     Detail,
@@ -76,6 +77,7 @@ impl ProcessingState {
         matches!(self, ProcessingState::Running { .. })
     }
 
+    #[allow(dead_code)]
     pub fn is_stopped(&self) -> bool {
         matches!(self, ProcessingState::Stopped)
     }
@@ -116,6 +118,7 @@ pub struct AprsStation {
 pub struct Stats {
     pub total_frames: u64,
     pub unique_frames: u64,
+    #[allow(dead_code)]
     pub soft_saves: u32,
     pub kiss_clients: u32,
     pub uptime_secs: u64,
@@ -503,6 +506,7 @@ impl SettingsFormState {
 
 /// Async events from the audio thread to the TUI.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum AsyncEvent {
     FrameDecoded(DecodedFrameInfo),
     StatsUpdate(Stats),
