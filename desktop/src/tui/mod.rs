@@ -16,7 +16,7 @@ use crossterm::{
 use ratatui::prelude::*;
 use ratatui::backend::CrosstermBackend;
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -68,11 +68,13 @@ pub struct App {
     pub aprs_search_active: bool,
     /// APRS search text input.
     pub aprs_search_input: widgets::TextInputState,
+    /// Shared counter of connected KISS TCP clients.
+    pub kiss_client_count: Arc<AtomicU32>,
 }
 
 impl App {
     /// Create a new App from config.
-    pub fn new(config: TncConfig, config_path: std::path::PathBuf, devices: Vec<AudioDeviceInfo>) -> Self {
+    pub fn new(config: TncConfig, config_path: std::path::PathBuf, devices: Vec<AudioDeviceInfo>, kiss_client_count: Arc<AtomicU32>) -> Self {
         let settings = SettingsFormState::from_config(&config, &devices);
         Self {
             tab: Tab::Packets,
@@ -96,6 +98,7 @@ impl App {
             show_detail_dialog: false,
             aprs_search_active: false,
             aprs_search_input: widgets::TextInputState::new(),
+            kiss_client_count,
         }
     }
 
@@ -115,7 +118,7 @@ impl App {
                 supported_rates: vec![44100, 48000],
             },
         ];
-        Self::new(config, std::path::PathBuf::from("./test-config.toml"), devices)
+        Self::new(config, std::path::PathBuf::from("./test-config.toml"), devices, Arc::new(AtomicU32::new(0)))
     }
 
     /// Returns true if the Audio Source is set to WAV File (field 0, selected index 1).
@@ -815,10 +818,11 @@ where
             }
         }
 
-        // Update uptime
+        // Update uptime and KISS client count
         if app.processing.is_running() {
             app.stats.uptime_secs = app.start_time.elapsed().as_secs();
         }
+        app.stats.kiss_clients = app.kiss_client_count.load(Ordering::Relaxed);
 
         // Check if audio thread has finished
         let should_stop = if let ProcessingState::Running { audio_handle, .. } = &app.processing {

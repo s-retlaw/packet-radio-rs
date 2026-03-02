@@ -8,15 +8,19 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast;
 use crossbeam_channel::Sender as CrossbeamSender;
 use packet_radio_core::kiss;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 /// Run the bidirectional KISS TCP server.
 ///
 /// - `frame_tx`: broadcast channel for RX frames → clients
 /// - `kiss_in`: crossbeam channel for client KISS bytes → main thread TX pipeline
+/// - `client_count`: shared counter for connected clients (for TUI display)
 pub async fn run_bidirectional(
     port: u16,
     frame_tx: broadcast::Sender<Vec<u8>>,
     kiss_in: CrossbeamSender<Vec<u8>>,
+    client_count: Arc<AtomicU32>,
 ) {
     let listener = match TcpListener::bind(format!("0.0.0.0:{port}")).await {
         Ok(l) => l,
@@ -32,6 +36,8 @@ pub async fn run_bidirectional(
         match listener.accept().await {
             Ok((socket, addr)) => {
                 tracing::info!("KISS client connected from {addr}");
+                client_count.fetch_add(1, Ordering::Relaxed);
+                let client_count = client_count.clone();
                 let mut rx = frame_tx.subscribe();
                 let kiss_in = kiss_in.clone();
                 tokio::spawn(async move {
@@ -74,6 +80,7 @@ pub async fn run_bidirectional(
                         }
                     }
                     tracing::info!("KISS client {addr} disconnected");
+                    client_count.fetch_sub(1, Ordering::Relaxed);
                 });
             }
             Err(e) => {

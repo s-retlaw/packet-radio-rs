@@ -702,8 +702,8 @@ fn parse_mic_e<'a>(info: &'a [u8], dest: &[u8]) -> Option<AprsPacket<'a>> {
 
     // Longitude offset (+100 degrees) from destination byte index 4
     let lon_offset = flags[4];
-    // E/W from destination byte index 5: flag set means East
-    let is_east = flags[5];
+    // E/W from destination byte index 5: flag set means West (APRS101 Table 10-2)
+    let is_west = flags[5];
 
     // Longitude degrees from info[1] (Dire Wolf algorithm)
     let mut d = info[1] as i32 - 28;
@@ -727,7 +727,7 @@ fn parse_mic_e<'a>(info: &'a [u8], dest: &[u8]) -> Option<AprsPacket<'a>> {
     let h = info[3] as i32 - 28;
 
     let mut lon = d * 1_000_000 + (m * 100 + h) * 10_000 / 60;
-    if !is_east {
+    if is_west {
         lon = -lon;
     }
 
@@ -1714,8 +1714,8 @@ mod tests {
     #[test]
     fn test_mic_e_decode() {
         // Encode: Lat 33°57.05'N, Lon 118°26.50'W, speed 45 kts, course 218°
-        // Destination: SSUWP5
-        //   S(digit=3,flag=1) S(3,1) U(5,1) W(7,1=North) P(0,1=lonOffset) 5(5,0=West)
+        // Destination: SSUWPU
+        //   S(digit=3,flag=1) S(3,1) U(5,1) W(7,1=North) P(0,1=lonOffset) U(5,1=West)
         // Info bytes (after DTI '`'):
         //   lon_deg: 118 with offset → (118-100)+28=46='.'
         //   lon_min: 26+28=54='6'
@@ -1724,7 +1724,7 @@ mod tests {
         //   sp_u+cse_h: 5*10+2+28=80='P'
         //   cse_tu: 18+28=46='.'
         //   symbol: '>'  table: '/'
-        let dest = b"SSUWP5";
+        let dest = b"SSUWPU";
         let info = b"`.6N P.>/";
         let pkt = parse_mic_e(info, dest).unwrap();
         match pkt {
@@ -1732,7 +1732,7 @@ mod tests {
                 // lat = 33*1e6 + (57*100+5)*10000/60 = 33_000_000 + 950_833 = 33_950_833
                 assert_eq!(position.lat, 33_950_833);
                 // lon = 118*1e6 + (26*100+50)*10000/60 = 118_000_000 + 441_666
-                // West → negative
+                // West (flag=1 at position 5) → negative
                 assert_eq!(position.lon, -118_441_666);
                 assert_eq!(speed, 45);
                 assert_eq!(course, 218);
@@ -1746,7 +1746,7 @@ mod tests {
     #[test]
     fn test_mic_e_via_parse_packet() {
         // Same test but via the top-level parse_packet function
-        let dest = b"SSUWP5";
+        let dest = b"SSUWPU";
         let info = b"`.6N P.>/";
         let pkt = parse_packet(info, dest).unwrap();
         match pkt {
@@ -1763,9 +1763,9 @@ mod tests {
     #[test]
     fn test_mic_e_south_east() {
         // Lat 34°00.00'S, Lon 5°30.00'E
-        // Dest bytes: digit3=4 digit4=0 flag=0(South), digit5=0 flag=0(noOffset), digit6=0 flag=1(East)
-        // S(3,1) T(4,1) 0(0,0) 0(0,0=South) 0(0,0=noOffset) P(0,1=East)
-        let dest = b"ST000P";
+        // Dest bytes: digit3=4 digit4=0 flag=0(South), digit5=0 flag=0(noOffset), digit6=0 flag=0(East)
+        // S(3,1) T(4,1) 0(0,0) 0(0,0=South) 0(0,0=noOffset) 0(0,0=East)
+        let dest = b"ST0000";
         // lon_deg=5, no offset → need d=5 after decode
         // d = byte-28. Need d to come from >=190 path: 5+190=195, byte=195+28=223
         // lon_min=30, byte=30+28=58=':'
@@ -1790,7 +1790,7 @@ mod tests {
     fn test_mic_e_too_short() {
         // Info too short
         assert!(parse_mic_e(b"`12345678", b"SSUWP").is_none()); // dest too short
-        assert!(parse_mic_e(b"`1234567", b"SSUWP5").is_none()); // info too short
+        assert!(parse_mic_e(b"`1234567", b"SSUWPU").is_none()); // info too short
     }
 
     #[test]

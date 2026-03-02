@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>APRS Viewer</title>
+
+    <!-- MapLibre GL JS -->
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"></script>
+
+    <!-- App styles -->
+    <link rel="stylesheet" href="/style/main.css">
+</head>
+<body>
+    <div class="app-layout">
+        <!-- Toolbar -->
+        <div class="toolbar">
+            <div class="toolbar-left">
+                <span class="toolbar-title">APRS Viewer</span>
+                <div class="connection-status" id="conn-status">
+                    <span class="status-dot disconnected" id="status-dot"></span>
+                    <span class="status-text" id="status-text">Disconnected</span>
+                </div>
+            </div>
+            <div class="toolbar-center">
+                <input type="text" class="search-input" id="search-input"
+                       placeholder="Filter stations..." autocomplete="off">
+            </div>
+            <div class="toolbar-right">
+                <label class="toggle-label">
+                    <input type="checkbox" id="show-tracks"> Tracks
+                </label>
+                <button class="toolbar-btn" id="btn-settings">Settings</button>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="station-list" id="station-list">
+                <div class="station-list-header">
+                    <span>Stations</span>
+                    <span class="station-count" id="station-count">0</span>
+                </div>
+                <div class="station-list-body">
+                    <table class="station-table">
+                        <thead>
+                            <tr>
+                                <th>Call</th>
+                                <th>Type</th>
+                                <th>Last Heard</th>
+                            </tr>
+                        </thead>
+                        <tbody id="station-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="station-detail" id="station-detail">
+                <div class="detail-empty">Select a station</div>
+            </div>
+        </div>
+
+        <!-- Map -->
+        <div class="map-container">
+            <div id="map-container"></div>
+        </div>
+
+        <!-- Packet Log -->
+        <div class="packet-log">
+            <div class="packet-log-header">
+                <h3>Packet Log</h3>
+                <span class="station-count" id="packet-count">0 packets</span>
+            </div>
+            <div class="packet-log-body">
+                <table class="packet-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Source</th>
+                            <th>Dest</th>
+                            <th>Type</th>
+                            <th>Summary</th>
+                        </tr>
+                    </thead>
+                    <tbody id="packet-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settings-modal" style="display:none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Settings</h2>
+                <button class="modal-close" id="settings-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <fieldset class="settings-section">
+                    <legend>KISS TNC</legend>
+                    <div class="settings-row">
+                        <label>Enabled</label>
+                        <input type="checkbox" id="cfg-tnc-enabled">
+                    </div>
+                    <div class="settings-row">
+                        <label>Host</label>
+                        <input type="text" class="settings-input" id="cfg-tnc-host" value="127.0.0.1">
+                    </div>
+                    <div class="settings-row">
+                        <label>Port</label>
+                        <input type="number" class="settings-input settings-input-short" id="cfg-tnc-port" value="8001">
+                    </div>
+                </fieldset>
+
+                <fieldset class="settings-section">
+                    <legend>APRS-IS</legend>
+                    <div class="settings-row">
+                        <label>Enabled</label>
+                        <input type="checkbox" id="cfg-aprs-enabled">
+                    </div>
+                    <div class="settings-row">
+                        <label>Host</label>
+                        <input type="text" class="settings-input" id="cfg-aprs-host" value="rotate.aprs2.net">
+                    </div>
+                    <div class="settings-row">
+                        <label>Port</label>
+                        <input type="number" class="settings-input settings-input-short" id="cfg-aprs-port" value="14580">
+                    </div>
+                    <div class="settings-row">
+                        <label>Callsign</label>
+                        <input type="text" class="settings-input" id="cfg-aprs-callsign" placeholder="N0CALL">
+                    </div>
+                    <div class="settings-row">
+                        <label>Passcode</label>
+                        <input type="password" class="settings-input settings-input-short" id="cfg-aprs-passcode" placeholder="-1">
+                    </div>
+                    <div class="settings-row">
+                        <label>Filter</label>
+                        <input type="text" class="settings-input" id="cfg-aprs-filter" placeholder="r/49/-72/100">
+                    </div>
+                </fieldset>
+
+                <fieldset class="settings-section">
+                    <legend>General</legend>
+                    <div class="settings-row">
+                        <label>Max Station Age</label>
+                        <input type="number" class="settings-input settings-input-short" id="cfg-max-station-age" value="48">
+                        <span class="settings-hint">hours</span>
+                    </div>
+                    <div class="settings-row">
+                        <label>Max Track Age</label>
+                        <input type="number" class="settings-input settings-input-short" id="cfg-max-track-age" value="48">
+                        <span class="settings-hint">hours</span>
+                    </div>
+                </fieldset>
+
+                <div class="settings-status" id="settings-status" style="display:none"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="settings-cancel">Cancel</button>
+                <button class="btn btn-primary" id="settings-save">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/map_init.js"></script>
+    <script src="/app.js"></script>
+</body>
+</html>

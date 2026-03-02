@@ -5,8 +5,10 @@ members = [
     "esp32",
     "esp32c3-host",
     "shared",
+    "web",
     "tests/benchmark",
     "tests/kiss_e2e",
+    "tools/kiss-dump",
 ]
 exclude = [
     "esp32c3-test",  # Requires riscv32imc target (ESP32-C3) — build separately

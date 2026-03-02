@@ -27,7 +27,7 @@ use packet_radio_core::kiss;
 use packet_radio_core::aprs;
 use packet_radio_core::SampleSource;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tokio::sync::broadcast;
 
 fn main() {
@@ -102,17 +102,19 @@ fn run_tui_mode(cli: cli::Cli) {
     };
 
     // Start KISS TCP server
+    let kiss_client_count = Arc::new(AtomicU32::new(0));
     if tnc_config.kiss.port > 0 {
         let tx = kiss_frame_tx.clone();
         let port = tnc_config.kiss.port;
         let kiss_in = kiss_in_tx.clone();
+        let client_count = kiss_client_count.clone();
         rt.spawn(async move {
-            kiss_server::run_bidirectional(port, tx, kiss_in).await;
+            kiss_server::run_bidirectional(port, tx, kiss_in, client_count).await;
         });
     }
 
     // Build the App
-    let app = tui::App::new(tnc_config, config_path, devices);
+    let app = tui::App::new(tnc_config, config_path, devices, kiss_client_count);
 
     // Closure: spawn audio processing thread on demand
     let start_audio = {
@@ -846,8 +848,9 @@ fn run_headless(cli: cli::Cli) {
         let tx = frame_tx.clone();
         let port = cli.kiss_port;
         let kiss_in = kiss_in_tx.clone();
+        let client_count = Arc::new(AtomicU32::new(0));
         rt.spawn(async move {
-            kiss_server::run_bidirectional(port, tx, kiss_in).await;
+            kiss_server::run_bidirectional(port, tx, kiss_in, client_count).await;
         });
     }
 

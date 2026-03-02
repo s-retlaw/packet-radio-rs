@@ -1,0 +1,13 @@
+[package]
+name = "kiss-dump"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "kiss-dump"
+path = "src/main.rs"
+
+[dependencies]
+packet-radio-core = { path = "../../core" }
+clap = { version = "4", features = ["derive"] }
+ctrlc = "3"
