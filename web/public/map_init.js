@@ -7,6 +7,8 @@ var mapClickCallback = null;
 var mapReady = false;
 var pendingStations = null;
 var pendingTracks = null;
+var hoverPopup = null;
+var pulseTimers = {};
 
 // Dark basemap style using Protomaps PMTiles
 function darkStyle(tileUrl) {
@@ -151,8 +153,20 @@ function simpleStyle() {
     };
 }
 
+// Age-based opacity: 0-30min = 1.0, 30-120min fade, >120min = 0.25
+function ageOpacity(ageMinutes) {
+    if (ageMinutes <= 30) return 1.0;
+    if (ageMinutes >= 120) return 0.25;
+    return 1.0 - 0.75 * (ageMinutes - 30) / 90;
+}
+
 // Add APRS data layers (stations, tracks) to the map
 function addAprsLayers() {
+    // Register APRS icons
+    if (typeof registerAprsIcons === 'function') {
+        registerAprsIcons(map);
+    }
+
     // Add station source (empty initially)
     map.addSource('aprs-stations', {
         type: 'geojson',
@@ -165,30 +179,70 @@ function addAprsLayers() {
         data: { type: 'FeatureCollection', features: [] }
     });
 
-    // Track lines layer
+    // Pulse source — expanding rings for new packets
+    map.addSource('aprs-pulse', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    // Track lines layer — uses per-segment color from properties
     map.addLayer({
         id: 'tracks-line',
         type: 'line',
         source: 'aprs-tracks',
         layout: { visibility: 'none' },
         paint: {
-            'line-color': '#4fc3f7',
-            'line-width': 2,
-            'line-opacity': 0.6,
+            'line-color': ['coalesce', ['get', 'color'], '#4fc3f7'],
+            'line-width': 2.5,
+            'line-opacity': 0.7,
         }
     });
 
-    // Station circles layer
+    // RF/NET ring — colored ring around stations based on heard_via
     map.addLayer({
-        id: 'stations-circle',
+        id: 'stations-ring',
         type: 'circle',
         source: 'aprs-stations',
         paint: {
             'circle-radius': [
                 'match', ['get', 'stationType'],
-                'Weather', 7,
-                'Mobile', 5,
-                6
+                'Weather', 15,
+                'Mobile', 13,
+                14
+            ],
+            'circle-color': 'transparent',
+            'circle-stroke-width': 2,
+            'circle-stroke-color': [
+                'case',
+                // RF heard = green ring
+                ['!=', ['index-of', 'tnc', ['get', 'heardVia']], -1], '#10b981',
+                // APRS-IS only = blue ring
+                ['!=', ['index-of', 'aprs-is', ['get', 'heardVia']], -1], '#3b82f6',
+                'transparent'
+            ],
+            'circle-opacity': [
+                'interpolate', ['linear'], ['get', 'ageMinutes'],
+                0, 1, 30, 1, 120, 0.25
+            ],
+            'circle-stroke-opacity': [
+                'interpolate', ['linear'], ['get', 'ageMinutes'],
+                0, 0.6, 30, 0.6, 120, 0.15
+            ],
+        }
+    });
+
+    // Station circles layer — fallback for stations without APRS icons
+    map.addLayer({
+        id: 'stations-circle',
+        type: 'circle',
+        source: 'aprs-stations',
+        filter: ['!', ['has', 'hasIcon']],
+        paint: {
+            'circle-radius': [
+                'match', ['get', 'stationType'],
+                'Weather', 10,
+                'Mobile', 8,
+                9
             ],
             'circle-color': [
                 'match', ['get', 'stationType'],
@@ -210,16 +264,60 @@ function addAprsLayers() {
                 ['get', 'selected'], '#6366f1',
                 'rgba(255,255,255,0.3)'
             ],
+            'circle-opacity': [
+                'interpolate', ['linear'], ['get', 'ageMinutes'],
+                0, 1, 30, 1, 120, 0.25
+            ],
         }
     });
 
-    // Station labels
+    // Station icon layer — APRS symbol icons for known symbols
+    map.addLayer({
+        id: 'stations-icon',
+        type: 'symbol',
+        source: 'aprs-stations',
+        filter: ['has', 'hasIcon'],
+        layout: {
+            'icon-image': ['get', 'iconId'],
+            'icon-size': 1,
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true,
+        },
+        paint: {
+            'icon-opacity': [
+                'interpolate', ['linear'], ['get', 'ageMinutes'],
+                0, 1, 30, 1, 120, 0.25
+            ],
+        }
+    });
+
+    // Pulse ring layer for new packet animation
+    map.addLayer({
+        id: 'stations-pulse',
+        type: 'circle',
+        source: 'aprs-pulse',
+        paint: {
+            'circle-radius': 20,
+            'circle-color': 'transparent',
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#6366f1',
+            'circle-opacity': 0,
+            'circle-stroke-opacity': ['get', 'opacity'],
+        }
+    });
+
+    // Station labels — show callsign, plus weather summary for WX stations
     map.addLayer({
         id: 'stations-label',
         type: 'symbol',
         source: 'aprs-stations',
         layout: {
-            'text-field': ['get', 'callsign'],
+            'text-field': [
+                'case',
+                ['!=', ['get', 'wxLabel'], ''],
+                ['concat', ['get', 'callsign'], '\n', ['get', 'wxLabel']],
+                ['get', 'callsign']
+            ],
             'text-font': ['Noto Sans Regular'],
             'text-size': 11,
             'text-offset': [0, 1.5],
@@ -230,30 +328,108 @@ function addAprsLayers() {
             'text-color': '#ccc',
             'text-halo-color': '#000',
             'text-halo-width': 1,
+            'text-opacity': [
+                'interpolate', ['linear'], ['get', 'ageMinutes'],
+                0, 1, 30, 1, 120, 0.3
+            ],
         }
     });
 
-    // Click on station
-    map.on('click', 'stations-circle', function(e) {
-        if (e.features.length > 0 && stationClickCallback) {
-            stationClickCallback(e.features[0].properties.callsign);
+    // Wind direction arrows for WX stations
+    map.addLayer({
+        id: 'stations-wind',
+        type: 'symbol',
+        source: 'aprs-stations',
+        filter: ['get', 'hasWind'],
+        layout: {
+            'text-field': '\u2191',  // Unicode up arrow
+            'text-size': 16,
+            'text-font': ['Noto Sans Regular'],
+            'text-rotation-alignment': 'map',
+            'text-rotate': ['get', 'windDirection'],
+            'text-offset': [1.5, 0],
+            'text-allow-overlap': true,
+            'text-ignore-placement': true,
+        },
+        paint: {
+            'text-color': '#60a5fa',
+            'text-opacity': [
+                'interpolate', ['linear'], ['get', 'ageMinutes'],
+                0, 0.8, 30, 0.8, 120, 0.2
+            ],
         }
+    });
+
+    // Click handlers for both circle and icon layers
+    var clickLayers = ['stations-circle', 'stations-icon'];
+    clickLayers.forEach(function(layerId) {
+        map.on('click', layerId, function(e) {
+            if (e.features.length > 0 && stationClickCallback) {
+                stationClickCallback(e.features[0].properties.callsign);
+            }
+        });
     });
 
     // Click on empty map
     map.on('click', function(e) {
-        var features = map.queryRenderedFeatures(e.point, { layers: ['stations-circle'] });
+        var features = map.queryRenderedFeatures(e.point, { layers: clickLayers });
         if (features.length === 0 && mapClickCallback) {
             mapClickCallback(e.lngLat.lng, e.lngLat.lat);
         }
     });
 
-    // Cursor changes
-    map.on('mouseenter', 'stations-circle', function() {
-        map.getCanvas().style.cursor = 'pointer';
+    // Hover popup
+    hoverPopup = new maplibregl.Popup({
+        closeButton: false,
+        closeOnClick: false,
+        className: 'station-popup',
+        offset: 12,
     });
-    map.on('mouseleave', 'stations-circle', function() {
-        map.getCanvas().style.cursor = '';
+
+    var hoverLayers = ['stations-circle', 'stations-icon'];
+    hoverLayers.forEach(function(layerId) {
+        map.on('mouseenter', layerId, function(e) {
+            map.getCanvas().style.cursor = 'pointer';
+            if (e.features.length === 0) return;
+
+            var props = e.features[0].properties;
+            var coords = e.features[0].geometry.coordinates.slice();
+
+            // Build popup content
+            var symDesc = '';
+            if (typeof getSymbolDescription === 'function' && props.symbolTable && props.symbolCode) {
+                symDesc = getSymbolDescription(props.symbolTable, props.symbolCode);
+            }
+            var srcHtml = '';
+            var hv = props.heardVia || '';
+            if (hv.indexOf('tnc') >= 0) srcHtml += '<span class="source-badge source-rf" style="font-size:10px">RF</span> ';
+            if (hv.indexOf('aprs-is') >= 0) srcHtml += '<span class="source-badge source-net" style="font-size:10px">NET</span>';
+
+            var html = '<div class="popup-content">' +
+                '<div class="popup-call">' + escHtml(props.callsign) + '</div>' +
+                '<div class="popup-type">' + escHtml(props.stationType);
+            if (symDesc && symDesc !== 'Unknown') html += ' &middot; ' + escHtml(symDesc);
+            html += '</div>';
+            if (srcHtml) html += '<div class="popup-source">' + srcHtml + '</div>';
+
+            // Age
+            if (props.ageMinutes !== undefined) {
+                var age = props.ageMinutes;
+                var ageStr = age < 1 ? 'just now' :
+                    age < 60 ? Math.floor(age) + 'm ago' :
+                    age < 1440 ? Math.floor(age / 60) + 'h ago' :
+                    Math.floor(age / 1440) + 'd ago';
+                html += '<div class="popup-age">' + ageStr + '</div>';
+            }
+            html += '</div>';
+
+            hoverPopup.setLngLat(coords).setHTML(html).addTo(map);
+        });
+
+        map.on('mouseleave', layerId, function() {
+            map.getCanvas().style.cursor = '';
+            hoverPopup.remove();
+        });
     });
 
     // Mark map as ready and apply any buffered data
@@ -266,6 +442,11 @@ function addAprsLayers() {
         try { map.getSource('aprs-tracks').setData(pendingTracks); } catch(e) {}
         pendingTracks = null;
     }
+}
+
+function escHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function createMap(containerId, lng, lat, zoom, style) {
@@ -327,6 +508,19 @@ function initMap(containerId, lng, lat, zoom, tileUrl, darkMode) {
 function updateStations(geojsonStr) {
     if (!map) return;
     var data = JSON.parse(geojsonStr);
+
+    // Compute iconId and hasIcon for each feature
+    for (var i = 0; i < data.features.length; i++) {
+        var p = data.features[i].properties;
+        if (typeof getSymbolIconId === 'function' && p.symbolTable && p.symbolCode) {
+            var iconId = getSymbolIconId(p.symbolTable, p.symbolCode);
+            if (iconId && map.hasImage(iconId)) {
+                p.iconId = iconId;
+                p.hasIcon = true;
+            }
+        }
+    }
+
     if (!mapReady) {
         pendingStations = data;
         return;
@@ -364,6 +558,15 @@ function flyTo(lng, lat, zoom) {
     }
 }
 
+function fitToTrack(coordinates) {
+    if (!map || !coordinates || coordinates.length === 0) return;
+    var bounds = new maplibregl.LngLatBounds();
+    for (var i = 0; i < coordinates.length; i++) {
+        bounds.extend(coordinates[i]);
+    }
+    map.fitBounds(bounds, { padding: 60, duration: 1000 });
+}
+
 function onStationClick(callback) {
     stationClickCallback = callback;
 }
@@ -387,8 +590,72 @@ function setTracksVisible(visible) {
     }
 }
 
+function clearTracks() {
+    if (!map) return;
+    try {
+        var source = map.getSource('aprs-tracks');
+        if (source) {
+            source.setData({ type: 'FeatureCollection', features: [] });
+        }
+    } catch(e) {}
+    setTracksVisible(false);
+}
+
 function getMapCenter() {
     if (!map) return "";
     var center = map.getCenter();
     return JSON.stringify({ lng: center.lng, lat: center.lat, zoom: map.getZoom() });
+}
+
+// Pulse animation: briefly show an expanding ring on a station's position
+function pulseStation(station) {
+    if (!map || !mapReady) return;
+    if (typeof station.lat !== 'number' || typeof station.lon !== 'number') return;
+
+    var key = station.callsign + (station.ssid > 0 ? '-' + station.ssid : '');
+
+    // Cancel previous pulse for this station
+    if (pulseTimers[key]) {
+        clearInterval(pulseTimers[key]);
+        delete pulseTimers[key];
+    }
+
+    var startTime = Date.now();
+    var duration = 800; // ms
+
+    function animate() {
+        var elapsed = Date.now() - startTime;
+        if (elapsed > duration) {
+            clearInterval(pulseTimers[key]);
+            delete pulseTimers[key];
+            // Clear pulse source
+            try {
+                var s = map.getSource('aprs-pulse');
+                if (s) s.setData({ type: 'FeatureCollection', features: [] });
+            } catch(e) {}
+            return;
+        }
+
+        var progress = elapsed / duration;
+        var radius = 8 + 24 * progress;
+        var opacity = 0.7 * (1 - progress);
+
+        try {
+            var s = map.getSource('aprs-pulse');
+            if (s) {
+                s.setData({
+                    type: 'FeatureCollection',
+                    features: [{
+                        type: 'Feature',
+                        geometry: { type: 'Point', coordinates: [station.lon, station.lat] },
+                        properties: { opacity: opacity },
+                    }]
+                });
+            }
+            map.setPaintProperty('stations-pulse', 'circle-radius', radius);
+        } catch(e) {}
+    }
+
+    pulseTimers[key] = setInterval(animate, 30);
+    animate();
 }

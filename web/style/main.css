@@ -515,6 +515,14 @@ body {
     color: var(--text-primary);
 }
 
+.modal-callsign {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-right: 12px;
+    white-space: nowrap;
+}
+
 .modal-close {
     background: none;
     border: none;
@@ -765,6 +773,386 @@ body {
     font-size: 13px;
 }
 
+/* ===== Source Filter (Toolbar) ===== */
+
+.source-filter {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.source-btn {
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    background: var(--bg-primary);
+    color: var(--text-muted);
+    transition: all 0.15s;
+}
+
+.source-btn:not(:last-child) {
+    border-right: 1px solid var(--border);
+}
+
+.source-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-surface);
+}
+
+.source-btn.active {
+    color: #fff;
+    background: var(--accent);
+}
+
+.source-btn[data-source="tnc"].active {
+    background: var(--success);
+    color: #fff;
+}
+
+.source-btn[data-source="aprs-is"].active {
+    background: #3b82f6;
+    color: #fff;
+}
+
+/* ===== Source Badges (RF / NET) ===== */
+
+.source-badge {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    vertical-align: middle;
+}
+
+.source-rf {
+    background: rgba(16, 185, 129, 0.18);
+    color: #6ee7b7;
+}
+
+.source-net {
+    background: rgba(59, 130, 246, 0.18);
+    color: #93c5fd;
+}
+
+.source-unknown {
+    background: rgba(113, 113, 122, 0.18);
+    color: #a1a1aa;
+}
+
+/* RF dot in station list */
+.source-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-right: 4px;
+    vertical-align: middle;
+}
+
+.source-dot-rf {
+    background: var(--success);
+    box-shadow: 0 0 3px var(--success);
+}
+
+/* ===== Station Detail Modal ===== */
+
+.station-modal {
+    width: 640px;
+    max-width: 95vw;
+    max-height: 85vh;
+    resize: both;
+    overflow: hidden;
+    min-width: 400px;
+    min-height: 300px;
+}
+
+/* Modal tabs */
+.modal-tabs {
+    display: flex;
+    gap: 0;
+}
+
+.modal-tab {
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.modal-tab:hover {
+    color: var(--text-primary);
+}
+
+.modal-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+/* Tab panels */
+.tab-panel {
+    display: none;
+}
+
+.tab-panel.active {
+    display: block;
+}
+
+/* Detail header in Info tab */
+.detail-header {
+    margin-bottom: 12px;
+}
+
+.detail-meta {
+    margin-top: 4px;
+}
+
+.detail-source {
+    margin-top: 6px;
+}
+
+.detail-fields {
+    margin-bottom: 12px;
+}
+
+.detail-field {
+    margin-bottom: 4px;
+    font-size: 13px;
+}
+
+.detail-field .label {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.detail-path {
+    margin: 8px 0;
+    font-size: 13px;
+}
+
+.detail-path .label {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+/* Copy-to-clipboard text */
+.copy-text {
+    cursor: pointer;
+    border-bottom: 1px dashed var(--text-muted);
+    transition: color 0.15s;
+}
+
+.copy-text:hover {
+    color: var(--accent);
+}
+
+.copy-text.copied {
+    color: var(--success);
+    border-bottom-color: var(--success);
+}
+
+/* ===== Digipeater Path Chain ===== */
+
+.path-chain {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.path-arrow {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.path-node {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-family: 'SF Mono', Monaco, monospace;
+    background: rgba(113, 113, 122, 0.12);
+    color: var(--text-secondary);
+}
+
+.path-node--used {
+    background: rgba(99, 102, 241, 0.18);
+    color: var(--accent-hover);
+    font-weight: 600;
+}
+
+/* ===== Weather Cards ===== */
+
+.wx-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.wx-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px;
+    text-align: center;
+}
+
+.wx-value {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+}
+
+.wx-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+/* ===== Time Range Buttons ===== */
+
+.time-range-btns,
+.packet-filter-btns {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 12px;
+}
+
+.range-btn {
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.range-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+}
+
+.range-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+/* ===== Chart Containers ===== */
+
+.chart-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 12px;
+}
+
+.chart-container {
+    position: relative;
+    height: 180px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+}
+
+/* ===== Track Stats ===== */
+
+.track-stats {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+.track-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 60px;
+}
+
+.stat-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.stat-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+/* ===== Map Hover Popup ===== */
+
+.station-popup .maplibregl-popup-content {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: var(--text-primary);
+    font-size: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.station-popup .maplibregl-popup-tip {
+    border-top-color: var(--bg-secondary);
+}
+
+.popup-content {
+    min-width: 100px;
+}
+
+.popup-call {
+    font-size: 14px;
+    font-weight: 700;
+    font-family: 'SF Mono', Monaco, monospace;
+    margin-bottom: 2px;
+}
+
+.popup-type {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 2px;
+}
+
+.popup-source {
+    margin-top: 3px;
+}
+
+.popup-age {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+/* ===== Pulse Animation ===== */
+
+@keyframes station-pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.5);
+    }
+    100% {
+        box-shadow: 0 0 0 20px rgba(99, 102, 241, 0);
+    }
+}
+
 /* ===== Responsive ===== */
 
 @media (max-width: 768px) {
@@ -783,5 +1171,20 @@ body {
 
     .toolbar-center {
         max-width: 200px;
+    }
+
+    .station-modal {
+        width: 100vw;
+        max-width: 100vw;
+        max-height: 100vh;
+        border-radius: 0;
+    }
+
+    .chart-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .source-filter {
+        display: none;
     }
 }

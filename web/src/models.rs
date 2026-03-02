@@ -17,6 +17,12 @@ pub struct StationRow {
     pub last_heard: String,
     pub packet_count: i64,
     pub weather: Option<WebWeather>,
+    /// Comma-separated set of source types: "tnc", "aprs-is", or "tnc,aprs-is".
+    #[serde(default)]
+    pub heard_via: String,
+    /// The source type of the most recent packet.
+    #[serde(default)]
+    pub last_source_type: String,
 }
 
 /// A packet row as stored in SQLite and sent to the frontend.
@@ -31,6 +37,9 @@ pub struct PacketRow {
     pub raw_info: String,
     pub summary: Option<String>,
     pub received_at: String,
+    /// How this packet was received: "tnc" or "aprs-is".
+    #[serde(default)]
+    pub source_type: String,
 }
 
 /// A position history point for drawing tracks.
@@ -70,6 +79,21 @@ pub struct WebWeather {
     pub barometric_pressure: Option<u32>,
     pub luminosity: Option<u16>,
     pub snowfall: Option<u16>,
+}
+
+/// A weather history data point for time-series charts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WeatherHistoryPoint {
+    pub temperature: Option<i16>,
+    pub wind_speed: Option<u16>,
+    pub wind_direction: Option<u16>,
+    pub wind_gust: Option<u16>,
+    pub humidity: Option<u8>,
+    pub barometric_pressure: Option<u32>,
+    pub rain_last_hour: Option<u16>,
+    pub rain_24h: Option<u16>,
+    pub luminosity: Option<u16>,
+    pub recorded_at: String,
 }
 
 /// APRS packet data — owned version of core's AprsPacket for web transport.
@@ -176,6 +200,8 @@ mod tests {
             last_heard: "2026-03-01T12:00:00Z".into(),
             packet_count: 5,
             weather: None,
+            heard_via: "tnc".into(),
+            last_source_type: "tnc".into(),
         };
         let json = serde_json::to_string(&station).unwrap();
         let back: StationRow = serde_json::from_str(&json).unwrap();
@@ -194,6 +220,7 @@ mod tests {
             raw_info: "!4903.50N/07201.75W-Test".into(),
             summary: Some("Position: 49.058N, 72.030W".into()),
             received_at: "2026-03-01T12:00:00Z".into(),
+            source_type: "tnc".into(),
         };
         let json = serde_json::to_string(&packet).unwrap();
         let back: PacketRow = serde_json::from_str(&json).unwrap();
@@ -278,6 +305,7 @@ mod tests {
                 raw_info: "!4903.50N/07201.75W-".into(),
                 summary: None,
                 received_at: "2026-03-01T12:00:00Z".into(),
+                source_type: "tnc".into(),
             }],
         };
         let json = serde_json::to_string(&event).unwrap();
@@ -306,6 +334,8 @@ mod tests {
             last_heard: "2026-03-01T12:00:00Z".into(),
             packet_count: 1,
             weather: None,
+            heard_via: String::new(),
+            last_source_type: "unknown".into(),
         };
         let json = serde_json::to_string(&station).unwrap();
         let back: StationRow = serde_json::from_str(&json).unwrap();
@@ -342,10 +372,31 @@ mod tests {
                 luminosity: None,
                 snowfall: None,
             }),
+            heard_via: "aprs-is".into(),
+            last_source_type: "aprs-is".into(),
         };
         let json = serde_json::to_string(&station).unwrap();
         let back: StationRow = serde_json::from_str(&json).unwrap();
         assert!(back.weather.is_some());
         assert_eq!(back.weather.unwrap().temperature, Some(55));
+    }
+
+    #[test]
+    fn test_weather_history_point_serde() {
+        let pt = WeatherHistoryPoint {
+            temperature: Some(72),
+            wind_speed: Some(10),
+            wind_direction: Some(180),
+            wind_gust: Some(15),
+            humidity: Some(65),
+            barometric_pressure: Some(10132),
+            rain_last_hour: Some(0),
+            rain_24h: Some(50),
+            luminosity: Some(500),
+            recorded_at: "2026-03-01 12:00:00".into(),
+        };
+        let json = serde_json::to_string(&pt).unwrap();
+        let back: WeatherHistoryPoint = serde_json::from_str(&json).unwrap();
+        assert_eq!(pt, back);
     }
 }

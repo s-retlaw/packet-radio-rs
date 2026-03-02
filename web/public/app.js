@@ -11,6 +11,7 @@
         selectedStation: null,  // callsign string or null
         connected: false,
         searchFilter: '',
+        sourceFilter: 'all',   // "all", "tnc", or "aprs-is"
         showTracks: false,
         ws: null,
         reconnectTimer: null,
@@ -123,6 +124,11 @@
         if (state.selectedStation === key) {
             renderStationDetail(station);
         }
+
+        // Trigger pulse animation on map
+        if (typeof pulseStation === 'function') {
+            pulseStation(station);
+        }
     }
 
     // ===== REST API =====
@@ -177,10 +183,22 @@
         }
     }
 
+    // ===== Source Filter =====
+    function matchesSourceFilter(station) {
+        if (state.sourceFilter === 'all') return true;
+        return station.heard_via && station.heard_via.indexOf(state.sourceFilter) >= 0;
+    }
+
+    function matchesPacketSourceFilter(pkt) {
+        if (state.sourceFilter === 'all') return true;
+        return pkt.source_type === state.sourceFilter;
+    }
+
     // ===== Rendering: Station List =====
     function renderStations() {
         const filter = state.searchFilter.toLowerCase();
         const sorted = Array.from(state.stations.values())
+            .filter(s => matchesSourceFilter(s))
             .sort((a, b) => b.last_heard.localeCompare(a.last_heard));
 
         const filtered = filter
@@ -198,9 +216,13 @@
             const typeCls = typeClass(s.station_type, s.weather);
             const callDisp = s.ssid > 0 ? `${s.callsign}-${s.ssid}` : s.callsign;
             const age = timeAgo(s.last_heard);
+            // Source indicator
+            const srcBadge = s.heard_via && s.heard_via.indexOf('tnc') >= 0
+                ? '<span class="source-dot source-dot-rf" title="Heard via RF"></span>'
+                : '';
 
             return `<tr class="station-row${selected}" data-key="${esc(key)}">
-                <td class="station-call">${esc(callDisp)}</td>
+                <td class="station-call">${srcBadge}${esc(callDisp)}</td>
                 <td><span class="type-badge ${typeCls}">${esc(classifyType(s.station_type, s.weather))}</span></td>
                 <td class="station-time">${esc(age)}</td>
             </tr>`;
@@ -208,10 +230,10 @@
 
         dom.stationTbody.innerHTML = rows.join('');
 
-        // Click handlers
+        // Click handlers — fly to station on sidebar click
         dom.stationTbody.querySelectorAll('.station-row').forEach(tr => {
             tr.addEventListener('click', () => {
-                selectStation(tr.dataset.key);
+                selectStation(tr.dataset.key, { fly: true });
             });
         });
     }
@@ -229,7 +251,12 @@
 
         let html = '<div class="detail-content">';
         html += `<div class="detail-callsign">${esc(callDisp)}</div>`;
-        html += `<div class="detail-type"><span class="type-badge ${typeCls}">${esc(typeName)}</span></div>`;
+        html += `<div class="detail-type"><span class="type-badge ${typeCls}">${esc(typeName)}</span>`;
+        // Source badges
+        if (station.heard_via) {
+            html += ' ' + heardViaBadgesHtml(station.heard_via);
+        }
+        html += '</div>';
 
         if (station.lat != null && station.lon != null) {
             html += `<div><span class="label">Position:</span> ${station.lat.toFixed(4)}, ${station.lon.toFixed(4)}</div>`;
@@ -253,19 +280,39 @@
             html += renderWeather(station.weather);
         }
 
-        // Track button
+        // Detail button
+        html += `<div style="margin-top:8px"><button class="btn btn-sm btn-primary" id="btn-station-detail">Details</button>`;
         if (station.lat != null) {
-            html += `<div style="margin-top:8px"><button class="btn btn-sm btn-secondary" id="btn-show-track">Show Track</button></div>`;
+            html += ` <button class="btn btn-sm btn-secondary" id="btn-show-track">Show Track</button>`;
         }
+        html += '</div>';
 
         html += '</div>';
         dom.stationDetail.innerHTML = html;
+
+        // Detail button handler — open modal
+        const detailBtn = document.getElementById('btn-station-detail');
+        if (detailBtn) {
+            detailBtn.addEventListener('click', () => {
+                if (typeof openStationModal === 'function') {
+                    openStationModal(station);
+                }
+            });
+        }
 
         // Track button handler
         const trackBtn = document.getElementById('btn-show-track');
         if (trackBtn) {
             trackBtn.addEventListener('click', () => loadTrack(station));
         }
+    }
+
+    function heardViaBadgesHtml(heardVia) {
+        if (!heardVia) return '';
+        let html = '';
+        if (heardVia.indexOf('tnc') >= 0) html += '<span class="source-badge source-rf">RF</span> ';
+        if (heardVia.indexOf('aprs-is') >= 0) html += '<span class="source-badge source-net">NET</span>';
+        return html;
     }
 
     function renderWeather(wx) {
@@ -288,16 +335,23 @@
 
     // ===== Rendering: Packet Log =====
     function renderPackets() {
-        dom.packetCount.textContent = `${state.packets.length} packets`;
+        const filtered = state.packets.filter(p => matchesPacketSourceFilter(p));
+        dom.packetCount.textContent = `${filtered.length} packets`;
 
-        const rows = state.packets.slice(0, 200).map(p => {
+        const rows = filtered.slice(0, 200).map(p => {
             const typeCls = typeClass(p.packet_type);
             const time = formatTime(p.received_at);
+            const srcBadge = p.source_type === 'tnc'
+                ? '<span class="source-badge source-rf" style="font-size:10px">RF</span>'
+                : p.source_type === 'aprs-is'
+                ? '<span class="source-badge source-net" style="font-size:10px">NET</span>'
+                : '';
             return `<tr class="packet-row" data-source="${esc(p.source)}">
                 <td class="pkt-time">${esc(time)}</td>
                 <td class="pkt-source">${esc(p.source)}${p.source_ssid > 0 ? '-' + p.source_ssid : ''}</td>
                 <td class="pkt-dest">${esc(p.dest)}</td>
                 <td><span class="type-badge ${typeCls}">${esc(p.packet_type || '?')}</span></td>
+                <td>${srcBadge}</td>
                 <td class="pkt-summary">${esc(p.summary || p.raw_info)}</td>
             </tr>`;
         });
@@ -320,17 +374,23 @@
     }
 
     // ===== Station Selection =====
-    function selectStation(key) {
+    // opts.fly: if true, center+zoom the map on the station
+    function selectStation(key, opts) {
         state.selectedStation = key;
         const station = state.stations.get(key);
         renderStationDetail(station || null);
         renderStations(); // re-render to update selection highlight
         updateMapStations();
 
-        // Fly to station on map
-        if (station && station.lat != null && station.lon != null) {
-            flyTo(station.lon, station.lat, 12);
+        // Center map only when explicitly requested (sidebar click)
+        if (opts && opts.fly && station && typeof station.lat === 'number' && typeof station.lon === 'number') {
+            flyTo(station.lon, station.lat, 9);
         }
+
+        // Clear any stale track from previous station
+        clearTracks();
+        state.showTracks = false;
+        dom.showTracks.checked = false;
     }
 
     // ===== Map Integration =====
@@ -344,8 +404,29 @@
         for (const [key, s] of state.stations) {
             if (typeof s.lat !== 'number' || typeof s.lon !== 'number') continue;
             if (!isFinite(s.lat) || !isFinite(s.lon)) continue;
+            if (!matchesSourceFilter(s)) continue;
 
             const callDisp = s.ssid > 0 ? `${s.callsign}-${s.ssid}` : s.callsign;
+
+            // Calculate age in minutes for opacity
+            let ageMinutes = 0;
+            if (s.last_heard) {
+                const ts = s.last_heard.replace(' ', 'T');
+                const then = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+                if (!isNaN(then)) {
+                    ageMinutes = (Date.now() - then.getTime()) / 60000;
+                }
+            }
+
+            // Build weather summary for label
+            let wxLabel = '';
+            if (s.weather) {
+                const parts = [];
+                if (s.weather.temperature != null) parts.push(s.weather.temperature + '\u00B0F');
+                if (s.weather.wind_speed != null) parts.push(s.weather.wind_speed + 'mph');
+                if (parts.length > 0) wxLabel = parts.join(' ');
+            }
+
             features.push({
                 type: 'Feature',
                 geometry: {
@@ -356,6 +437,13 @@
                     callsign: callDisp,
                     stationType: classifyType(s.station_type, s.weather) || 'Unknown',
                     selected: key === state.selectedStation,
+                    symbolTable: s.symbol_table || '',
+                    symbolCode: s.symbol_code || '',
+                    heardVia: s.heard_via || '',
+                    ageMinutes: ageMinutes,
+                    windDirection: s.weather ? (s.weather.wind_direction || 0) : 0,
+                    hasWind: !!(s.weather && s.weather.wind_speed != null && s.weather.wind_speed > 0),
+                    wxLabel: wxLabel,
                 },
             });
         }
@@ -387,6 +475,12 @@
         dom.showTracks.checked = true;
     }
 
+    // Expose track state sync for station_detail.js "Show on Map" button
+    window.syncTrackState = function(visible) {
+        state.showTracks = visible;
+        dom.showTracks.checked = visible;
+    };
+
     // Map callbacks
     function onMapStationClick(callsign) {
         // Find station by callsign display name
@@ -394,6 +488,10 @@
             const disp = s.ssid > 0 ? `${s.callsign}-${s.ssid}` : s.callsign;
             if (disp === callsign) {
                 selectStation(key);
+                // Also open modal
+                if (typeof openStationModal === 'function') {
+                    openStationModal(s);
+                }
                 return;
             }
         }
@@ -537,6 +635,18 @@
             renderStations();
         });
 
+        // Source filter buttons
+        document.querySelectorAll('.source-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.source-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                state.sourceFilter = btn.dataset.source;
+                renderStations();
+                renderPackets();
+                updateMapStations();
+            });
+        });
+
         // Show tracks toggle
         dom.showTracks.addEventListener('change', () => {
             state.showTracks = dom.showTracks.checked;
@@ -552,12 +662,18 @@
             if (e.target === dom.settingsModal) closeSettings();
         });
 
+        // Station detail modal
+        if (typeof stationDetailInit === 'function') {
+            stationDetailInit();
+        }
+
         // Start WebSocket
         connectWebSocket();
 
         // Refresh timeAgo displays periodically
         setInterval(() => {
             renderStations();
+            updateMapStations(); // refresh age-based opacity
         }, 30000);
     }
 

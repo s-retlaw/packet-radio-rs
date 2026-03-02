@@ -81,6 +81,7 @@ mod tests {
             raw_info: "!4903.50N/07201.75W-".into(),
             summary: Some("49.058N, 72.030W".into()),
             received_at: "2026-03-01T12:00:00Z".into(),
+            source_type: "tnc".into(),
         });
 
         let json = serde_json::to_string(&event).unwrap();

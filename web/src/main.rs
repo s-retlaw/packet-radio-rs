@@ -37,7 +37,56 @@ async fn main() {
     sqlx::query(include_str!("../migrations/001_initial.sql"))
         .execute(&pool)
         .await
-        .expect("Failed to run migrations");
+        .expect("Failed to run migration 001");
+
+    // Run 002 migration — individual statements since SQLite doesn't batch ALTER TABLE
+    for stmt in [
+        "CREATE TABLE IF NOT EXISTS weather_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            callsign TEXT NOT NULL,
+            ssid INTEGER NOT NULL DEFAULT 0,
+            temperature INTEGER,
+            wind_speed INTEGER,
+            wind_direction INTEGER,
+            wind_gust INTEGER,
+            humidity INTEGER,
+            barometric_pressure INTEGER,
+            rain_last_hour INTEGER,
+            rain_24h INTEGER,
+            luminosity INTEGER,
+            recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+        "CREATE INDEX IF NOT EXISTS idx_weather_history_call
+         ON weather_history(callsign, ssid, recorded_at)",
+    ] {
+        sqlx::query(stmt).execute(&pool).await.expect("Failed to run migration 002");
+    }
+    // ALTER TABLE columns — ignore errors if columns already exist
+    for stmt in [
+        "ALTER TABLE packets ADD COLUMN source_type TEXT NOT NULL DEFAULT 'unknown'",
+        "ALTER TABLE stations ADD COLUMN heard_via TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE stations ADD COLUMN last_source_type TEXT NOT NULL DEFAULT 'unknown'",
+    ] {
+        let _ = sqlx::query(stmt).execute(&pool).await;
+    }
+    // Backfill existing data as aprs-is (idempotent)
+    for stmt in [
+        "UPDATE packets SET source_type = 'aprs-is' WHERE source_type = 'unknown'",
+        "UPDATE stations SET heard_via = 'aprs-is' WHERE heard_via = ''",
+        "UPDATE stations SET last_source_type = 'aprs-is' WHERE last_source_type = 'unknown'",
+    ] {
+        let _ = sqlx::query(stmt).execute(&pool).await;
+    }
+
+    // Clean up bogus (0,0) position history (idempotent)
+    let deleted = sqlx::query("DELETE FROM position_history WHERE abs(lat) < 0.1 AND abs(lon) < 0.1")
+        .execute(&pool)
+        .await
+        .unwrap_or_default()
+        .rows_affected();
+    if deleted > 0 {
+        tracing::info!("Cleaned up {} bogus (0,0) position_history rows", deleted);
+    }
 
     // Broadcast channel for WebSocket events
     let (packet_tx, _) = broadcast::channel::<String>(256);
@@ -206,7 +255,11 @@ async fn main() {
                     (cfg.max_station_age_hours, cfg.max_track_age_hours)
                 };
                 cleanup::run_cleanup_once(pool.clone(), max_station, max_track).await;
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                // Also clean up old weather history (keep same age as tracks)
+                if let Err(e) = packet_radio_web::server::db::cleanup_weather_history(&pool, max_track).await {
+                    tracing::error!("Weather history cleanup error: {}", e);
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
             }
         });
     }
@@ -221,6 +274,8 @@ async fn main() {
         .route("/api/stations", get(api_get_stations))
         .route("/api/stations/{call}/track", get(api_get_station_track))
         .route("/api/stations/{call}/weather", get(api_get_station_weather))
+        .route("/api/stations/{call}/weather-history", get(api_get_weather_history))
+        .route("/api/stations/{call}/packets", get(api_get_station_packets))
         .route("/api/packets", get(api_get_packets))
         .route("/api/config", get(api_get_config).put(api_put_config))
         .route("/api/maps", get(api_list_maps))
@@ -346,6 +401,56 @@ async fn api_get_station_weather(
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to get weather: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct WeatherHistoryQuery {
+    hours: Option<u32>,
+}
+
+async fn api_get_weather_history(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(call): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<WeatherHistoryQuery>,
+) -> impl axum::response::IntoResponse {
+    use axum::response::IntoResponse;
+
+    let hours = query.hours.unwrap_or(6);
+    let (callsign, ssid) = parse_callsign_ssid(&call);
+
+    match packet_radio_web::server::db::get_weather_history(&state.db, &callsign, ssid, hours).await {
+        Ok(history) => axum::Json(history).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get weather history: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct StationPacketsQuery {
+    limit: Option<i64>,
+}
+
+async fn api_get_station_packets(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(call): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<StationPacketsQuery>,
+) -> impl axum::response::IntoResponse {
+    use axum::response::IntoResponse;
+
+    let limit = query.limit.unwrap_or(50).min(200);
+    let (callsign, ssid) = parse_callsign_ssid(&call);
+
+    match packet_radio_web::server::db::get_station_packets(&state.db, &callsign, ssid, limit).await {
+        Ok(packets) => axum::Json(packets).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get station packets: {}", e),
         )
             .into_response(),
     }

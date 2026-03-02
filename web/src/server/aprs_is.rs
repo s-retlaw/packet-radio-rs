@@ -120,7 +120,7 @@ pub async fn process_tnc2_line(
     };
 
     let ax25 = tnc2_to_ax25(&pkt);
-    process_raw_frame(&ax25, pool, tx, reference_db).await
+    process_raw_frame(&ax25, pool, tx, reference_db, "aprs-is").await
 }
 
 /// Run the APRS-IS client — connects and processes TNC-2 lines.

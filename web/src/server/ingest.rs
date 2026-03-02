@@ -13,8 +13,24 @@ use super::convert::{
 use super::db;
 use crate::models::{PacketRow, WebAprsData};
 
+/// Check whether a lat/lon pair is plausible for APRS.
+/// Rejects (0,0) artifacts and out-of-range coordinates.
+fn is_valid_position(lat: f64, lon: f64) -> bool {
+    // Reject near (0,0) — common APRS parser artifact / placeholder
+    if lat.abs() < 0.1 && lon.abs() < 0.1 {
+        return false;
+    }
+    // Reject out-of-range
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return false;
+    }
+    true
+}
+
 /// Process a complete AX.25 frame: parse, store in DB, broadcast.
 /// Returns Ok(true) if a packet was successfully processed.
+///
+/// `source_type` is "tnc" or "aprs-is" to indicate how the frame was received.
 ///
 /// If `reference_db` is provided, positionless stations (especially weather-only
 /// packets from CWOP) will have their positions enriched from the reference database.
@@ -23,6 +39,7 @@ pub async fn process_raw_frame(
     pool: &SqlitePool,
     tx: &broadcast::Sender<String>,
     reference_db: Option<&reference::ReferenceDb>,
+    source_type: &str,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let frame = match Frame::parse(raw_ax25) {
         Some(f) => f,
@@ -81,12 +98,14 @@ pub async fn process_raw_frame(
         packet_type,
         &raw_info,
         summary.as_deref(),
+        source_type,
     )
     .await?;
 
     // If we have APRS data, upsert station
     if let Some(ref data) = aprs_data {
-        let mut position = extract_position(data);
+        let mut position = extract_position(data)
+            .filter(|&(lat, lon)| is_valid_position(lat, lon));
         let (speed, course) = extract_speed_course(data);
 
         // Enrich positionless stations from reference data (e.g., CWOP weather stations)
@@ -137,8 +156,19 @@ pub async fn process_raw_frame(
             sym_table.as_deref(),
             sym_code.as_deref(),
             weather_json.as_deref(),
+            source_type,
         )
         .await?;
+
+        // Insert weather history for time-series charts
+        let weather_data = match data {
+            WebAprsData::Weather { weather, .. } => Some(weather),
+            WebAprsData::Position { weather: Some(w), .. } => Some(w),
+            _ => None,
+        };
+        if let Some(wx) = weather_data {
+            db::insert_weather_history(pool, &source, source_ssid, wx).await?;
+        }
 
         // Insert position history if we have a position
         if let Some((lat, lon)) = position {
@@ -181,6 +211,7 @@ pub async fn process_raw_frame(
         raw_info,
         summary,
         received_at: chrono::Utc::now().to_rfc3339(),
+        source_type: source_type.to_string(),
     };
 
     let event_json = serde_json::to_string(&crate::models::WsEvent::Packet(packet_row))?;
@@ -204,7 +235,7 @@ pub async fn process_kiss_bytes(
             if matches!(cmd, packet_radio_core::kiss::Command::DataFrame) {
                 // Copy frame data before next feed_byte call
                 let frame_copy: Vec<u8> = frame_data.to_vec();
-                if process_raw_frame(&frame_copy, pool, tx, reference_db).await? {
+                if process_raw_frame(&frame_copy, pool, tx, reference_db, "tnc").await? {
                     count += 1;
                 }
             }
@@ -250,7 +281,7 @@ pub async fn run_kiss_ingest(
                                     ) {
                                         let frame_copy: Vec<u8> = frame_data.to_vec();
                                         if let Err(e) =
-                                            process_raw_frame(&frame_copy, &pool, &tx, reference_db.as_deref()).await
+                                            process_raw_frame(&frame_copy, &pool, &tx, reference_db.as_deref(), "tnc").await
                                         {
                                             tracing::error!("Frame processing error: {}", e);
                                         }
@@ -395,7 +426,7 @@ mod tests {
         let (tx, mut rx) = broadcast::channel(16);
 
         let ax25 = build_test_ax25_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test");
-        let result = process_raw_frame(&ax25, &pool, &tx, None).await.unwrap();
+        let result = process_raw_frame(&ax25, &pool, &tx, None, "tnc").await.unwrap();
         assert!(result);
 
         // Check DB
@@ -473,8 +504,8 @@ mod tests {
         let ax25_1 = build_test_ax25_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-First");
         let ax25_2 = build_test_ax25_frame("N0CALL", "APRS", b"!4904.00N/07202.00W-Second");
 
-        process_raw_frame(&ax25_1, &pool, &tx, None).await.unwrap();
-        process_raw_frame(&ax25_2, &pool, &tx, None).await.unwrap();
+        process_raw_frame(&ax25_1, &pool, &tx, None, "tnc").await.unwrap();
+        process_raw_frame(&ax25_2, &pool, &tx, None, "tnc").await.unwrap();
 
         let stations = db::get_stations(&pool).await.unwrap();
         assert_eq!(stations.len(), 1);
@@ -490,11 +521,96 @@ mod tests {
         let (tx, _rx) = broadcast::channel(16);
 
         let ax25 = build_test_ax25_frame("N0CALL", "APRS", b":W1AW     :Hello!{001");
-        process_raw_frame(&ax25, &pool, &tx, None).await.unwrap();
+        process_raw_frame(&ax25, &pool, &tx, None, "tnc").await.unwrap();
 
         let msgs = db::get_messages(&pool, "N0CALL").await.unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].from_call, "N0CALL");
+    }
+
+    #[tokio::test]
+    async fn test_process_frame_rejects_zero_position() {
+        let pool = db::test_db().await;
+        let (tx, _rx) = broadcast::channel(16);
+
+        // APRS position at exactly (0,0) — common artifact from `@000000z0000.00N/00000.00E`
+        let ax25 = build_test_ax25_frame("N1NCB", "APRS", b"!0000.00N/00000.00E-zero");
+        process_raw_frame(&ax25, &pool, &tx, None, "tnc").await.unwrap();
+
+        // Station should exist but with no lat/lon
+        let stations = db::get_stations(&pool).await.unwrap();
+        assert_eq!(stations.len(), 1);
+        assert!(stations[0].lat.is_none(), "station lat should be None for (0,0)");
+        assert!(stations[0].lon.is_none(), "station lon should be None for (0,0)");
+
+        // Position history should have 0 rows
+        let track = db::get_station_track(&pool, "N1NCB", 0, 24).await.unwrap();
+        assert_eq!(track.len(), 0, "no track points for (0,0)");
+    }
+
+    #[tokio::test]
+    async fn test_process_frame_rejects_near_zero_position() {
+        let pool = db::test_db().await;
+        let (tx, _rx) = broadcast::channel(16);
+
+        // ~0.017° N, ~0.017° E — within the 0.1° exclusion zone
+        let ax25 = build_test_ax25_frame("KF6YVS", "APRS", b"!0001.00N/00001.00E>");
+        process_raw_frame(&ax25, &pool, &tx, None, "tnc").await.unwrap();
+
+        let track = db::get_station_track(&pool, "KF6YVS", 0, 24).await.unwrap();
+        assert_eq!(track.len(), 0, "near-zero position should be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_process_frame_stores_valid_position() {
+        let pool = db::test_db().await;
+        let (tx, _rx) = broadcast::channel(16);
+
+        let ax25 = build_test_ax25_frame("W1AW", "APRS", b"!4903.50N/07201.75W-HQ");
+        process_raw_frame(&ax25, &pool, &tx, None, "tnc").await.unwrap();
+
+        let track = db::get_station_track(&pool, "W1AW", 0, 24).await.unwrap();
+        assert_eq!(track.len(), 1, "valid position should produce a track point");
+        assert!((track[0].lat - 49.058333).abs() < 0.01);
+    }
+
+    #[tokio::test]
+    async fn test_process_frame_zero_position_does_not_update_station_coords() {
+        let pool = db::test_db().await;
+        let (tx, _rx) = broadcast::channel(16);
+
+        // First: valid position
+        let ax25_good = build_test_ax25_frame("N1NCB", "APRS", b"!4381.00N/06994.00W-Maine");
+        process_raw_frame(&ax25_good, &pool, &tx, None, "tnc").await.unwrap();
+
+        let s = db::get_station_by_callsign(&pool, "N1NCB", 0).await.unwrap().unwrap();
+        assert!(s.lat.is_some());
+        let good_lat = s.lat.unwrap();
+
+        // Second: bogus (0,0) position
+        let ax25_bad = build_test_ax25_frame("N1NCB", "APRS", b"!0000.00N/00000.00E-zero");
+        process_raw_frame(&ax25_bad, &pool, &tx, None, "tnc").await.unwrap();
+
+        // Station coords should be preserved (COALESCE keeps previous value when we pass None)
+        let s2 = db::get_station_by_callsign(&pool, "N1NCB", 0).await.unwrap().unwrap();
+        assert!((s2.lat.unwrap() - good_lat).abs() < 0.001,
+            "lat should remain {} but got {:?}", good_lat, s2.lat);
+    }
+
+    #[tokio::test]
+    async fn test_is_valid_position() {
+        // (0,0) and near-zero
+        assert!(!is_valid_position(0.0, 0.0));
+        assert!(!is_valid_position(0.05, 0.05));
+        assert!(!is_valid_position(-0.09, 0.09));
+        // Out of range
+        assert!(!is_valid_position(91.0, 0.0));
+        assert!(!is_valid_position(0.0, 181.0));
+        assert!(!is_valid_position(-91.0, 0.0));
+        // Valid positions
+        assert!(is_valid_position(49.058, -72.030));
+        assert!(is_valid_position(-33.86, 151.21)); // Sydney
+        assert!(is_valid_position(0.5, 0.5)); // Near equator/prime meridian but outside exclusion
     }
 
     #[tokio::test]
@@ -503,7 +619,7 @@ mod tests {
         let (tx, _rx) = broadcast::channel(16);
 
         // Too short to be valid AX.25
-        let result = process_raw_frame(&[0x00, 0x01, 0x02], &pool, &tx, None)
+        let result = process_raw_frame(&[0x00, 0x01, 0x02], &pool, &tx, None, "tnc")
             .await
             .unwrap();
         assert!(!result);

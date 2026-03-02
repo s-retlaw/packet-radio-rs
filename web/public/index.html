@@ -10,6 +10,10 @@
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"></script>
 
+    <!-- Chart.js with time adapter -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+
     <!-- App styles -->
     <link rel="stylesheet" href="/style/main.css">
 </head>
@@ -29,6 +33,11 @@
                        placeholder="Filter stations..." autocomplete="off">
             </div>
             <div class="toolbar-right">
+                <div class="source-filter">
+                    <button class="source-btn active" data-source="all">All</button>
+                    <button class="source-btn" data-source="tnc">RF</button>
+                    <button class="source-btn" data-source="aprs-is">NET</button>
+                </div>
                 <label class="toggle-label">
                     <input type="checkbox" id="show-tracks"> Tracks
                 </label>
@@ -80,6 +89,7 @@
                             <th>Source</th>
                             <th>Dest</th>
                             <th>Type</th>
+                            <th>Src</th>
                             <th>Summary</th>
                         </tr>
                     </thead>
@@ -164,7 +174,31 @@
         </div>
     </div>
 
+    <!-- Station Detail Modal -->
+    <div class="modal-overlay" id="station-modal" style="display:none">
+        <div class="modal-content station-modal">
+            <div class="modal-header">
+                <span class="modal-callsign" id="station-modal-call"></span>
+                <div class="modal-tabs">
+                    <button class="modal-tab active" data-tab="info">Info</button>
+                    <button class="modal-tab" data-tab="weather">Weather</button>
+                    <button class="modal-tab" data-tab="track">Track</button>
+                    <button class="modal-tab" data-tab="packets">Packets</button>
+                </div>
+                <button class="modal-close" id="station-modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="tab-panel active" id="tab-info"></div>
+                <div class="tab-panel" id="tab-weather"></div>
+                <div class="tab-panel" id="tab-track"></div>
+                <div class="tab-panel" id="tab-packets"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/aprs_symbols.js"></script>
     <script src="/map_init.js"></script>
+    <script src="/station_detail.js"></script>
     <script src="/app.js"></script>
 </body>
 </html>
