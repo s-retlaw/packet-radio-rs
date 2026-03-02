@@ -9,6 +9,8 @@ pub struct WebConfig {
     pub tnc: TncConnection,
     #[serde(default)]
     pub aprs_is: AprsIsConfig,
+    #[serde(default)]
+    pub reference: ReferenceConfig,
     #[serde(default = "default_maps_dir")]
     pub maps_dir: String,
     #[serde(default = "default_db_path")]
@@ -47,12 +49,38 @@ pub struct AprsIsConfig {
     pub filter: String,
 }
 
+/// Reference data configuration (CWOP station positions, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReferenceConfig {
+    /// Path to the reference database. Empty string = XDG default
+    /// (`~/.local/share/packet-radio/reference.db`).
+    #[serde(default)]
+    pub db_path: String,
+    /// How often to sync CWOP data (hours). 0 = disabled.
+    #[serde(default = "default_cwop_sync_interval_hours")]
+    pub cwop_sync_interval_hours: u32,
+}
+
+impl Default for ReferenceConfig {
+    fn default() -> Self {
+        Self {
+            db_path: String::new(),
+            cwop_sync_interval_hours: default_cwop_sync_interval_hours(),
+        }
+    }
+}
+
+fn default_cwop_sync_interval_hours() -> u32 {
+    24
+}
+
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
             listen_addr: default_listen_addr(),
             tnc: TncConnection::default(),
             aprs_is: AprsIsConfig::default(),
+            reference: ReferenceConfig::default(),
             maps_dir: default_maps_dir(),
             db_path: default_db_path(),
             max_station_age_hours: default_max_station_age_hours(),

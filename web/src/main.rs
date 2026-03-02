@@ -45,6 +45,26 @@ async fn main() {
     // Config change notification channel
     let (config_notify_tx, _config_notify_rx) = tokio::sync::watch::channel(());
 
+    // Open reference database (CWOP station positions, etc.)
+    let reference_db = {
+        let ref_config = &config.reference;
+        let ref_path = if ref_config.db_path.is_empty() {
+            reference::db::default_db_path()
+        } else {
+            std::path::PathBuf::from(&ref_config.db_path)
+        };
+        match reference::ReferenceDb::open(&ref_path).await {
+            Ok(db) => {
+                tracing::info!("Reference DB: {}", ref_path.display());
+                Some(Arc::new(db))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to open reference DB at {}: {}", ref_path.display(), e);
+                None
+            }
+        }
+    };
+
     // Create app state
     let config_arc = Arc::new(RwLock::new(config));
     let app_state = AppState {
@@ -53,6 +73,7 @@ async fn main() {
         config: config_arc.clone(),
         config_path: config_path.to_string(),
         config_notify: Arc::new(config_notify_tx),
+        reference_db: reference_db.clone(),
     };
 
     // Spawn KISS TNC ingest task
@@ -60,6 +81,7 @@ async fn main() {
         let pool = pool.clone();
         let tx = packet_tx.clone();
         let config_arc = config_arc.clone();
+        let reference_db = reference_db.clone();
         let mut config_rx = app_state.config_notify.subscribe();
         tokio::spawn(async move {
             loop {
@@ -69,7 +91,7 @@ async fn main() {
                 };
                 if enabled {
                     tokio::select! {
-                        _ = ingest::run_kiss_ingest(&host, port, pool.clone(), tx.clone()) => {},
+                        _ = ingest::run_kiss_ingest(&host, port, pool.clone(), tx.clone(), reference_db.clone()) => {},
                         _ = config_rx.changed() => {
                             tracing::info!("TNC config changed, reconnecting...");
                         }
@@ -88,6 +110,7 @@ async fn main() {
         let pool = pool.clone();
         let tx = packet_tx.clone();
         let config_arc = config_arc.clone();
+        let reference_db = reference_db.clone();
         let mut config_rx = app_state.config_notify.subscribe();
         tokio::spawn(async move {
             loop {
@@ -104,7 +127,7 @@ async fn main() {
                 };
                 if enabled {
                     tokio::select! {
-                        _ = aprs_is::run_aprs_is_client(&host, port, &callsign, &passcode, &filter, pool.clone(), tx.clone()) => {},
+                        _ = aprs_is::run_aprs_is_client(&host, port, &callsign, &passcode, &filter, pool.clone(), tx.clone(), reference_db.clone()) => {},
                         _ = config_rx.changed() => {
                             tracing::info!("APRS-IS config changed, reconnecting...");
                         }
@@ -114,6 +137,60 @@ async fn main() {
                         break;
                     }
                 }
+            }
+        });
+    }
+
+    // Spawn CWOP reference data sync task
+    if let Some(ref ref_db) = reference_db {
+        let ref_db = ref_db.clone();
+        let config_arc = config_arc.clone();
+        tokio::spawn(async move {
+            let sync_interval_hours = {
+                let cfg = config_arc.read().await;
+                cfg.reference.cwop_sync_interval_hours
+            };
+            if sync_interval_hours == 0 {
+                tracing::info!("CWOP sync disabled (cwop_sync_interval_hours = 0)");
+                return;
+            }
+
+            let max_age = std::time::Duration::from_secs(sync_interval_hours as u64 * 3600);
+            let fetcher = reference::cwop::fetcher::HttpFetcher::new();
+
+            // We need to clone the inner pool to create a new ReferenceDb for CwopSource.
+            // CwopSource takes ownership, so we re-open at the same path.
+            let db_path = ref_db.path().to_path_buf();
+            let cwop_db = match reference::ReferenceDb::open(&db_path).await {
+                Ok(db) => db,
+                Err(e) => {
+                    tracing::error!("Failed to open reference DB for CWOP sync: {}", e);
+                    return;
+                }
+            };
+
+            let source = reference::cwop::CwopSource::new(fetcher, cwop_db);
+
+            loop {
+                match source.sync_if_stale(max_age).await {
+                    Ok(Some(result)) => {
+                        tracing::info!(
+                            "CWOP sync: {} stations from {} regions",
+                            result.total_stations,
+                            result.total_regions
+                        );
+                    }
+                    Ok(None) => {} // Fresh, skipped
+                    Err(e) => {
+                        tracing::error!("CWOP sync error: {}", e);
+                    }
+                }
+
+                // Check again after the configured interval
+                tokio::time::sleep(std::time::Duration::from_secs(
+                    sync_interval_hours as u64 * 3600,
+                ))
+                .await;
             }
         });
     }

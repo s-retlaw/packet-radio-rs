@@ -6,6 +6,7 @@ members = [
     "esp32c3-host",
     "shared",
     "web",
+    "reference",
     "tests/benchmark",
     "tests/kiss_e2e",
     "tools/kiss-dump",

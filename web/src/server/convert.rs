@@ -145,6 +145,7 @@ pub fn to_web_packet(pkt: &aprs::AprsPacket<'_>) -> WebAprsData {
 /// Get the packet type name for a WebAprsData variant.
 pub fn packet_type_name(data: &WebAprsData) -> &'static str {
     match data {
+        WebAprsData::Position { weather: Some(_), .. } => "Weather",
         WebAprsData::Position { .. } => "Position",
         WebAprsData::MicE { .. } => "MicE",
         WebAprsData::Message { .. } => "Message",
@@ -403,6 +404,33 @@ mod tests {
             }
             _ => panic!("Expected Status"),
         }
+    }
+
+    #[test]
+    fn test_convert_position_with_weather() {
+        let pkt = aprs::AprsPacket::Position {
+            position: Position {
+                lat: 49_058_333,
+                lon: -72_029_583,
+                ambiguity: 0,
+            },
+            symbol_table: b'/',
+            symbol_code: b'_',
+            comment: b"220/004g005t077r000p000P000h50b09900",
+            timestamp: None,
+            compressed_extra: None,
+        };
+        let web = to_web_packet(&pkt);
+        match &web {
+            WebAprsData::Position { weather, .. } => {
+                let wx = weather.as_ref().expect("weather should be extracted");
+                assert_eq!(wx.wind_direction, Some(220));
+                assert_eq!(wx.temperature, Some(77));
+            }
+            _ => panic!("Expected Position"),
+        }
+        // Should classify as Weather, not Position
+        assert_eq!(packet_type_name(&web), "Weather");
     }
 
     #[test]

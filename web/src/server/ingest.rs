@@ -2,6 +2,7 @@ use packet_radio_core::aprs;
 use packet_radio_core::ax25::Frame;
 use packet_radio_core::kiss::KissDecoder;
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::sync::broadcast;
 
@@ -14,10 +15,14 @@ use crate::models::{PacketRow, WebAprsData};
 
 /// Process a complete AX.25 frame: parse, store in DB, broadcast.
 /// Returns Ok(true) if a packet was successfully processed.
+///
+/// If `reference_db` is provided, positionless stations (especially weather-only
+/// packets from CWOP) will have their positions enriched from the reference database.
 pub async fn process_raw_frame(
     raw_ax25: &[u8],
     pool: &SqlitePool,
     tx: &broadcast::Sender<String>,
+    reference_db: Option<&reference::ReferenceDb>,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let frame = match Frame::parse(raw_ax25) {
         Some(f) => f,
@@ -81,8 +86,23 @@ pub async fn process_raw_frame(
 
     // If we have APRS data, upsert station
     if let Some(ref data) = aprs_data {
-        let position = extract_position(data);
+        let mut position = extract_position(data);
         let (speed, course) = extract_speed_course(data);
+
+        // Enrich positionless stations from reference data (e.g., CWOP weather stations)
+        if position.is_none() {
+            if let Some(ref_db) = reference_db {
+                if let Ok(Some(ref_pos)) = ref_db.lookup_position(&source).await {
+                    position = Some((ref_pos.lat, ref_pos.lon));
+                    tracing::debug!(
+                        "Enriched {} with reference position: {:.4}, {:.4}",
+                        source,
+                        ref_pos.lat,
+                        ref_pos.lon
+                    );
+                }
+            }
+        }
         let (sym_table, sym_code) = extract_symbol(data)
             .map(|(t, c)| (Some(t.to_string()), Some(c.to_string())))
             .unwrap_or((None, None));
@@ -174,6 +194,7 @@ pub async fn process_kiss_bytes(
     data: &[u8],
     pool: &SqlitePool,
     tx: &broadcast::Sender<String>,
+    reference_db: Option<&reference::ReferenceDb>,
 ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
     let mut decoder = KissDecoder::new();
     let mut count = 0u32;
@@ -183,7 +204,7 @@ pub async fn process_kiss_bytes(
             if matches!(cmd, packet_radio_core::kiss::Command::DataFrame) {
                 // Copy frame data before next feed_byte call
                 let frame_copy: Vec<u8> = frame_data.to_vec();
-                if process_raw_frame(&frame_copy, pool, tx).await? {
+                if process_raw_frame(&frame_copy, pool, tx, reference_db).await? {
                     count += 1;
                 }
             }
@@ -199,6 +220,7 @@ pub async fn run_kiss_ingest(
     port: u16,
     pool: SqlitePool,
     tx: broadcast::Sender<String>,
+    reference_db: Option<Arc<reference::ReferenceDb>>,
 ) {
     let mut backoff = std::time::Duration::from_secs(1);
     let max_backoff = std::time::Duration::from_secs(60);
@@ -228,7 +250,7 @@ pub async fn run_kiss_ingest(
                                     ) {
                                         let frame_copy: Vec<u8> = frame_data.to_vec();
                                         if let Err(e) =
-                                            process_raw_frame(&frame_copy, &pool, &tx).await
+                                            process_raw_frame(&frame_copy, &pool, &tx, reference_db.as_deref()).await
                                         {
                                             tracing::error!("Frame processing error: {}", e);
                                         }
@@ -373,7 +395,7 @@ mod tests {
         let (tx, mut rx) = broadcast::channel(16);
 
         let ax25 = build_test_ax25_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test");
-        let result = process_raw_frame(&ax25, &pool, &tx).await.unwrap();
+        let result = process_raw_frame(&ax25, &pool, &tx, None).await.unwrap();
         assert!(result);
 
         // Check DB
@@ -407,7 +429,7 @@ mod tests {
         let ax25 = build_test_ax25_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test");
         let kiss = kiss_encode(&ax25);
 
-        let count = process_kiss_bytes(&kiss, &pool, &tx).await.unwrap();
+        let count = process_kiss_bytes(&kiss, &pool, &tx, None).await.unwrap();
         assert_eq!(count, 1);
 
         let stations = db::get_stations(&pool).await.unwrap();
@@ -436,7 +458,7 @@ mod tests {
             b"!3400.00N/11800.00W-",
         )));
 
-        let count = process_kiss_bytes(&all_kiss, &pool, &tx).await.unwrap();
+        let count = process_kiss_bytes(&all_kiss, &pool, &tx, None).await.unwrap();
         assert_eq!(count, 3);
 
         let stations = db::get_stations(&pool).await.unwrap();
@@ -451,8 +473,8 @@ mod tests {
         let ax25_1 = build_test_ax25_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-First");
         let ax25_2 = build_test_ax25_frame("N0CALL", "APRS", b"!4904.00N/07202.00W-Second");
 
-        process_raw_frame(&ax25_1, &pool, &tx).await.unwrap();
-        process_raw_frame(&ax25_2, &pool, &tx).await.unwrap();
+        process_raw_frame(&ax25_1, &pool, &tx, None).await.unwrap();
+        process_raw_frame(&ax25_2, &pool, &tx, None).await.unwrap();
 
         let stations = db::get_stations(&pool).await.unwrap();
         assert_eq!(stations.len(), 1);
@@ -468,7 +490,7 @@ mod tests {
         let (tx, _rx) = broadcast::channel(16);
 
         let ax25 = build_test_ax25_frame("N0CALL", "APRS", b":W1AW     :Hello!{001");
-        process_raw_frame(&ax25, &pool, &tx).await.unwrap();
+        process_raw_frame(&ax25, &pool, &tx, None).await.unwrap();
 
         let msgs = db::get_messages(&pool, "N0CALL").await.unwrap();
         assert_eq!(msgs.len(), 1);
@@ -481,7 +503,7 @@ mod tests {
         let (tx, _rx) = broadcast::channel(16);
 
         // Too short to be valid AX.25
-        let result = process_raw_frame(&[0x00, 0x01, 0x02], &pool, &tx)
+        let result = process_raw_frame(&[0x00, 0x01, 0x02], &pool, &tx, None)
             .await
             .unwrap();
         assert!(!result);

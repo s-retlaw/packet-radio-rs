@@ -14,4 +14,6 @@ pub struct AppState {
     pub config_path: String,
     /// Watch channel to notify background tasks of config changes.
     pub config_notify: Arc<tokio::sync::watch::Sender<()>>,
+    /// Reference database for enriching packets with static station data (CWOP, etc.).
+    pub reference_db: Option<Arc<reference::ReferenceDb>>,
 }

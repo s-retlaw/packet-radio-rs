@@ -929,25 +929,57 @@ fn parse_weather<'a>(info: &'a [u8]) -> Option<AprsPacket<'a>> {
 
 /// Parse weather fields embedded in a position report comment.
 ///
-/// Some position reports contain weather data in their comment field
-/// starting with `cSSS` (wind direction). Returns `None` if no weather
-/// data is found.
+/// Handles two formats:
+/// - Format 1 (positionless): `cDDDsSSSgXXXtXXX...` — starts with `c`
+/// - Format 2 (position+weather): `DDD/SSSgXXXtXXX...` — 3-digit wind dir, `/`, 3-digit speed
+///
+/// Returns `None` if no weather data is found.
 pub fn parse_weather_from_comment(comment: &[u8]) -> Option<WeatherData> {
-    // Weather in position comments starts with wind direction 'c' or '_'
     if comment.is_empty() {
         return None;
     }
-    // Must start with wind direction marker
-    if comment[0] != b'c' {
-        return None;
+
+    // Format 1: cDDDsSSSgXXXtXXX... (positionless weather comment)
+    if comment[0] == b'c' {
+        let (wx, _) = parse_weather_fields(comment);
+        if wx.wind_direction.is_some() || wx.temperature.is_some()
+            || wx.barometric_pressure.is_some()
+        {
+            return Some(wx);
+        }
     }
-    let (wx, _) = parse_weather_fields(comment);
-    // Only return if we actually parsed something useful
-    if wx.wind_direction.is_some() || wx.temperature.is_some() || wx.barometric_pressure.is_some() {
-        Some(wx)
-    } else {
-        None
+
+    // Format 2: DDD/SSSgXXXtXXX... (position+weather comment)
+    // Wind direction is 3 chars (digits or '.'), then '/', then 3 chars wind speed
+    if comment.len() >= 7 && comment[3] == b'/' {
+        let dir_ok = comment[..3].iter().all(|&b| b.is_ascii_digit() || b == b'.');
+        let spd_ok = comment[4..7].iter().all(|&b| b.is_ascii_digit() || b == b'.');
+        if dir_ok && spd_ok {
+            let mut wx = WeatherData::default();
+            wx.wind_direction = parse_wx_int(comment, 0, 3);
+            wx.wind_speed = parse_wx_int(comment, 4, 3);
+            // Parse remaining standard weather fields starting at offset 7
+            if comment.len() > 7 {
+                let (more_wx, _) = parse_weather_fields(&comment[7..]);
+                wx.wind_gust = more_wx.wind_gust;
+                wx.temperature = more_wx.temperature;
+                wx.rain_last_hour = more_wx.rain_last_hour;
+                wx.rain_24h = more_wx.rain_24h;
+                wx.rain_since_midnight = more_wx.rain_since_midnight;
+                wx.humidity = more_wx.humidity;
+                wx.barometric_pressure = more_wx.barometric_pressure;
+                wx.luminosity = more_wx.luminosity;
+                wx.snowfall = more_wx.snowfall;
+            }
+            if wx.wind_direction.is_some() || wx.temperature.is_some()
+                || wx.barometric_pressure.is_some()
+            {
+                return Some(wx);
+            }
+        }
     }
+
+    None
 }
 
 // ── Object Parsing ──────────────────────────────────────────────────
@@ -1970,6 +2002,48 @@ mod tests {
         // Not a weather comment
         assert!(parse_weather_from_comment(b"PHG2360/Hello").is_none());
         assert!(parse_weather_from_comment(b"").is_none());
+    }
+
+    #[test]
+    fn test_weather_from_position_comment_underscore_format() {
+        // Real APRS-IS format: DDD/SSS then standard weather fields
+        let comment = b"220/004g005t077r000p000P000h50b09900";
+        let wx = parse_weather_from_comment(comment).unwrap();
+        assert_eq!(wx.wind_direction, Some(220));
+        assert_eq!(wx.wind_speed, Some(4));
+        assert_eq!(wx.wind_gust, Some(5));
+        assert_eq!(wx.temperature, Some(77));
+        assert_eq!(wx.humidity, Some(50));
+        assert_eq!(wx.barometric_pressure, Some(9900));
+    }
+
+    #[test]
+    fn test_weather_position_packet_end_to_end() {
+        // Full packet: @timestamp + position + _ symbol + weather comment
+        let info = b"@092345z4903.50N/07201.75W_220/004g005t077r000p000P000h50b09900";
+        let pkt = parse_packet(info, b"APRS").unwrap();
+        match pkt {
+            AprsPacket::Position { position, symbol_code, comment, .. } => {
+                assert_eq!(symbol_code, b'_');
+                assert!((position.lat as f64 / 1_000_000.0 - 49.058333).abs() < 0.001);
+                // Weather should be parseable from comment
+                let wx = parse_weather_from_comment(comment).unwrap();
+                assert_eq!(wx.wind_direction, Some(220));
+                assert_eq!(wx.temperature, Some(77));
+            }
+            _ => panic!("Expected Position"),
+        }
+    }
+
+    #[test]
+    fn test_weather_comment_missing_wind_data() {
+        // Wind direction "..." means not available
+        let comment = b".../...g005t077";
+        let wx = parse_weather_from_comment(comment).unwrap();
+        assert_eq!(wx.wind_direction, None);
+        assert_eq!(wx.wind_speed, None);
+        assert_eq!(wx.wind_gust, Some(5));
+        assert_eq!(wx.temperature, Some(77));
     }
 
     #[test]

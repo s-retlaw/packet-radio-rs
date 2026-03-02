@@ -1,4 +1,5 @@
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::broadcast;
 
@@ -111,6 +112,7 @@ pub async fn process_tnc2_line(
     line: &str,
     pool: &SqlitePool,
     tx: &broadcast::Sender<String>,
+    reference_db: Option<&reference::ReferenceDb>,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let pkt = match parse_tnc2_line(line) {
         Some(p) => p,
@@ -118,7 +120,7 @@ pub async fn process_tnc2_line(
     };
 
     let ax25 = tnc2_to_ax25(&pkt);
-    process_raw_frame(&ax25, pool, tx).await
+    process_raw_frame(&ax25, pool, tx, reference_db).await
 }
 
 /// Run the APRS-IS client — connects and processes TNC-2 lines.
@@ -130,6 +132,7 @@ pub async fn run_aprs_is_client(
     filter: &str,
     pool: SqlitePool,
     tx: broadcast::Sender<String>,
+    reference_db: Option<Arc<reference::ReferenceDb>>,
 ) {
     // Default to receive-only if callsign is empty
     let callsign = if callsign.trim().is_empty() {
@@ -175,7 +178,7 @@ pub async fn run_aprs_is_client(
 
                 // Read lines
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if let Err(e) = process_tnc2_line(&line, &pool, &tx).await {
+                    if let Err(e) = process_tnc2_line(&line, &pool, &tx, reference_db.as_deref()).await {
                         tracing::error!("APRS-IS packet processing error: {}", e);
                     }
                 }
@@ -267,7 +270,7 @@ mod tests {
         let (tx, _rx) = broadcast::channel(16);
 
         let result =
-            process_tnc2_line("N0CALL>APRS:!4903.50N/07201.75W-Test", &pool, &tx)
+            process_tnc2_line("N0CALL>APRS:!4903.50N/07201.75W-Test", &pool, &tx, None)
                 .await
                 .unwrap();
         assert!(result);
@@ -282,7 +285,7 @@ mod tests {
         let pool = super::super::db::test_db().await;
         let (tx, _rx) = broadcast::channel(16);
 
-        let result = process_tnc2_line("# server comment", &pool, &tx)
+        let result = process_tnc2_line("# server comment", &pool, &tx, None)
             .await
             .unwrap();
         assert!(!result);

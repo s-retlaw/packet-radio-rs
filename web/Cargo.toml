@@ -18,6 +18,9 @@ toml = "1"
 # Core crate
 packet-radio-core = { path = "../core", features = ["std", "multi-decoder"] }
 
+# Reference data (CWOP station positions, etc.)
+reference = { path = "../reference" }
+
 # WebSocket support
 futures = "0.3"
 
