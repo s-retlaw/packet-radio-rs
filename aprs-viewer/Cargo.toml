@@ -1,5 +1,5 @@
 [package]
-name = "packet-radio-web"
+name = "aprs-viewer"
 version = "0.1.0"
 edition = "2021"
 description = "APRS web viewer with real-time map display"

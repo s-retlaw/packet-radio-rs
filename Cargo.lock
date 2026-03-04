@@ -105,6 +105,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "aprs-viewer"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "futures",
+ "open",
+ "packet-radio-core",
+ "reference",
+ "reqwest",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "toml 1.0.3+spec-1.1.0",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2494,30 +2518,6 @@ name = "packet-radio-shared"
 version = "0.1.0"
 dependencies = [
  "packet-radio-core",
-]
-
-[[package]]
-name = "packet-radio-web"
-version = "0.1.0"
-dependencies = [
- "axum",
- "chrono",
- "futures",
- "open",
- "packet-radio-core",
- "reference",
- "reqwest",
- "rust-embed",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "tokio",
- "toml 1.0.3+spec-1.1.0",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

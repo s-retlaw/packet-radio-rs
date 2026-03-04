@@ -157,7 +157,7 @@ pub async fn run_aprs_is_client(
 
                 // Send login
                 let login = format!(
-                    "user {} pass {} vers packet-radio-web 0.1 filter {}\r\n",
+                    "user {} pass {} vers aprs-viewer 0.1 filter {}\r\n",
                     callsign, passcode, filter
                 );
                 if let Err(e) = writer.write_all(login.as_bytes()).await {

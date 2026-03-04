@@ -5,7 +5,7 @@ members = [
     "esp32",
     "esp32c3-host",
     "shared",
-    "web",
+    "aprs-viewer",
     "reference",
     "tests/benchmark",
     "tests/kiss_e2e",

@@ -1,6 +1,6 @@
 use axum::routing::{delete, get, put};
 use axum::Router;
-use packet_radio_web::server::{
+use aprs_viewer::server::{
     aprs_is, cleanup, config::WebConfig, ingest, state::AppState, tiles, ws,
 };
 use sqlx::SqlitePool;
@@ -256,7 +256,7 @@ async fn main() {
                 };
                 cleanup::run_cleanup_once(pool.clone(), max_station, max_track).await;
                 // Also clean up old weather history (keep same age as tracks)
-                if let Err(e) = packet_radio_web::server::db::cleanup_weather_history(&pool, max_track).await {
+                if let Err(e) = aprs_viewer::server::db::cleanup_weather_history(&pool, max_track).await {
                     tracing::error!("Weather history cleanup error: {}", e);
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(600)).await;
@@ -352,7 +352,7 @@ async fn api_get_stations(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> impl axum::response::IntoResponse {
     use axum::response::IntoResponse;
-    match packet_radio_web::server::db::get_stations(&state.db).await {
+    match aprs_viewer::server::db::get_stations(&state.db).await {
         Ok(stations) => axum::Json(stations).into_response(),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -377,7 +377,7 @@ async fn api_get_station_track(
     let hours = query.hours.unwrap_or(24);
     let (callsign, ssid) = parse_callsign_ssid(&call);
 
-    match packet_radio_web::server::db::get_station_track(&state.db, &callsign, ssid, hours).await {
+    match aprs_viewer::server::db::get_station_track(&state.db, &callsign, ssid, hours).await {
         Ok(track) => axum::Json(track).into_response(),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -395,7 +395,7 @@ async fn api_get_station_weather(
 
     let (callsign, ssid) = parse_callsign_ssid(&call);
 
-    match packet_radio_web::server::db::get_station_by_callsign(&state.db, &callsign, ssid).await {
+    match aprs_viewer::server::db::get_station_by_callsign(&state.db, &callsign, ssid).await {
         Ok(Some(station)) => axum::Json(station.weather).into_response(),
         Ok(None) => (axum::http::StatusCode::NOT_FOUND, "Station not found").into_response(),
         Err(e) => (
@@ -421,7 +421,7 @@ async fn api_get_weather_history(
     let hours = query.hours.unwrap_or(6);
     let (callsign, ssid) = parse_callsign_ssid(&call);
 
-    match packet_radio_web::server::db::get_weather_history(&state.db, &callsign, ssid, hours).await {
+    match aprs_viewer::server::db::get_weather_history(&state.db, &callsign, ssid, hours).await {
         Ok(history) => axum::Json(history).into_response(),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -446,7 +446,7 @@ async fn api_get_station_packets(
     let limit = query.limit.unwrap_or(50).min(200);
     let (callsign, ssid) = parse_callsign_ssid(&call);
 
-    match packet_radio_web::server::db::get_station_packets(&state.db, &callsign, ssid, limit).await {
+    match aprs_viewer::server::db::get_station_packets(&state.db, &callsign, ssid, limit).await {
         Ok(packets) => axum::Json(packets).into_response(),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -469,7 +469,7 @@ async fn api_get_packets(
 
     let limit = query.limit.unwrap_or(200).min(1000);
 
-    match packet_radio_web::server::db::get_recent_packets(&state.db, limit).await {
+    match aprs_viewer::server::db::get_recent_packets(&state.db, limit).await {
         Ok(packets) => axum::Json(packets).into_response(),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -519,7 +519,7 @@ async fn api_list_maps(
         let cfg = state.config.read().await;
         cfg.maps_dir.clone()
     };
-    match packet_radio_web::server::map_manager::list_installed_packs(&maps_dir).await {
+    match aprs_viewer::server::map_manager::list_installed_packs(&maps_dir).await {
         Ok(packs) => axum::Json(packs).into_response(),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -540,7 +540,7 @@ async fn api_delete_map(
         let cfg = state.config.read().await;
         cfg.maps_dir.clone()
     };
-    match packet_radio_web::server::map_manager::delete_pack(&maps_dir, &name).await {
+    match aprs_viewer::server::map_manager::delete_pack(&maps_dir, &name).await {
         Ok(()) => (StatusCode::OK, "Deleted").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{}", e)).into_response(),
     }
@@ -563,7 +563,7 @@ async fn api_download_map(
         let cfg = state.config.read().await;
         cfg.maps_dir.clone()
     };
-    match packet_radio_web::server::map_manager::download_pack(&req.url, &req.filename, &maps_dir)
+    match aprs_viewer::server::map_manager::download_pack(&req.url, &req.filename, &maps_dir)
         .await
     {
         Ok(()) => (StatusCode::OK, "Downloaded").into_response(),
