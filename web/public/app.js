@@ -444,6 +444,7 @@
                     windDirection: s.weather ? (s.weather.wind_direction || 0) : 0,
                     hasWind: !!(s.weather && s.weather.wind_speed != null && s.weather.wind_speed > 0),
                     wxLabel: wxLabel,
+                    hasMoved: s.has_moved || false,
                 },
             });
         }

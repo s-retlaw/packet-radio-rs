@@ -205,10 +205,11 @@ function addAprsLayers() {
         source: 'aprs-stations',
         paint: {
             'circle-radius': [
-                'match', ['get', 'stationType'],
-                'Weather', 15,
-                'Mobile', 13,
-                14
+                'interpolate', ['linear'], ['zoom'],
+                4, ['match', ['get', 'stationType'], 'Weather', 8, 'Mobile', 7, 7],
+                8, ['match', ['get', 'stationType'], 'Weather', 12, 'Mobile', 10, 11],
+                12, ['match', ['get', 'stationType'], 'Weather', 15, 'Mobile', 13, 14],
+                16, ['match', ['get', 'stationType'], 'Weather', 18, 'Mobile', 16, 17]
             ],
             'circle-color': 'transparent',
             'circle-stroke-width': 2,
@@ -239,10 +240,11 @@ function addAprsLayers() {
         filter: ['!', ['has', 'hasIcon']],
         paint: {
             'circle-radius': [
-                'match', ['get', 'stationType'],
-                'Weather', 10,
-                'Mobile', 8,
-                9
+                'interpolate', ['linear'], ['zoom'],
+                4, ['match', ['get', 'stationType'], 'Weather', 6, 'Mobile', 5, 5],
+                8, ['match', ['get', 'stationType'], 'Weather', 8, 'Mobile', 6, 7],
+                12, ['match', ['get', 'stationType'], 'Weather', 10, 'Mobile', 8, 9],
+                16, ['match', ['get', 'stationType'], 'Weather', 14, 'Mobile', 11, 12]
             ],
             'circle-color': [
                 'match', ['get', 'stationType'],
@@ -252,7 +254,7 @@ function addAprsLayers() {
                 'Object', '#f59e0b',
                 'Item', '#f59e0b',
                 'Message', '#a855f7',
-                '#71717a'
+                '#22d3ee'
             ],
             'circle-stroke-width': [
                 'case',
@@ -262,7 +264,7 @@ function addAprsLayers() {
             'circle-stroke-color': [
                 'case',
                 ['get', 'selected'], '#6366f1',
-                'rgba(255,255,255,0.3)'
+                'rgba(255,255,255,0.5)'
             ],
             'circle-opacity': [
                 'interpolate', ['linear'], ['get', 'ageMinutes'],
@@ -279,7 +281,13 @@ function addAprsLayers() {
         filter: ['has', 'hasIcon'],
         layout: {
             'icon-image': ['get', 'iconId'],
-            'icon-size': 1,
+            'icon-size': [
+                'interpolate', ['linear'], ['zoom'],
+                4, 0.4,
+                8, 0.55,
+                12, 0.75,
+                16, 0.9
+            ],
             'icon-allow-overlap': true,
             'icon-ignore-placement': true,
         },
@@ -518,6 +526,8 @@ function updateStations(geojsonStr) {
                 p.iconId = iconId;
                 p.hasIcon = true;
             }
+            // Non-prominent symbols: no hasIcon → falls through to
+            // stations-circle layer (colored dot based on station type)
         }
     }
 
@@ -554,7 +564,10 @@ function updateTracks(geojsonStr) {
 
 function flyTo(lng, lat, zoom) {
     if (map) {
-        map.flyTo({ center: [lng, lat], zoom: zoom, duration: 1000 });
+        // Use current zoom if already closer than requested
+        var currentZoom = map.getZoom();
+        var targetZoom = (currentZoom > zoom) ? currentZoom : zoom;
+        map.flyTo({ center: [lng, lat], zoom: targetZoom, duration: 1000 });
     }
 }
 

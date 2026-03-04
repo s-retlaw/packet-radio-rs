@@ -1,52 +1,92 @@
-// APRS Symbol Icon Generation — Canvas-based icons for MapLibre
-// Maps (symbol_table, symbol_code) to rendered 32x32 icons
+// APRS Symbol Icon Generation — Sprite-based with canvas fallbacks for MapLibre
+// Sprite sheets from OK-DMR/aprs-symbols (MIT), 64px cells, 16col x 6row per table
+// Phase 1: Register canvas fallbacks synchronously (instant render)
+// Phase 2: Load sprite PNGs async, upgrade icons seamlessly via map.updateImage()
 
 (function() {
     'use strict';
 
-    // Symbol lookup: [table][code] -> { name, color, shape }
-    var SYMBOLS = {
-        '/': {
-            '-': { name: 'House (QTH)', color: '#10b981', shape: 'house' },
-            '>': { name: 'Car', color: '#84cc16', shape: 'car' },
-            '_': { name: 'WX Station', color: '#3b82f6', shape: 'wx' },
-            'k': { name: 'Truck', color: '#f59e0b', shape: 'truck' },
-            'y': { name: 'Yacht', color: '#06b6d4', shape: 'boat' },
-            'b': { name: 'Bicycle', color: '#8b5cf6', shape: 'bike' },
-            '.': { name: 'X Digi', color: '#ef4444', shape: 'digi' },
-            'r': { name: 'Antenna', color: '#ef4444', shape: 'antenna' },
-            'O': { name: 'Balloon', color: '#f97316', shape: 'balloon' },
-            '$': { name: 'Phone', color: '#a855f7', shape: 'phone' },
-            '=': { name: 'Train', color: '#71717a', shape: 'train' },
-            'a': { name: 'Ambulance', color: '#ef4444', shape: 'cross' },
-            'f': { name: 'Fire', color: '#ef4444', shape: 'fire' },
-            'j': { name: 'Jeep', color: '#84cc16', shape: 'car' },
-            's': { name: 'Ship', color: '#3b82f6', shape: 'boat' },
-            'u': { name: 'Bus', color: '#f59e0b', shape: 'bus' },
-            'v': { name: 'Van', color: '#84cc16', shape: 'car' },
-            '#': { name: 'Digi', color: '#ef4444', shape: 'digi' },
-            '&': { name: 'Gateway', color: '#6366f1', shape: 'gateway' },
-            'p': { name: 'Rover (Dog)', color: '#f97316', shape: 'dot' },
-            'n': { name: 'Node', color: '#71717a', shape: 'dot' },
-            'W': { name: 'NWS Site', color: '#3b82f6', shape: 'wx' },
-            'I': { name: 'TCP/IP', color: '#6366f1', shape: 'dot' },
-            'K': { name: 'School', color: '#f59e0b', shape: 'dot' },
-            'R': { name: 'Rec Vehicle', color: '#84cc16', shape: 'car' },
-            'U': { name: 'Bus', color: '#f59e0b', shape: 'bus' },
-            'Y': { name: 'Sailboat', color: '#06b6d4', shape: 'boat' },
-            '[': { name: 'Runner', color: '#10b981', shape: 'person' },
-        },
-        '\\': {
-            '-': { name: 'House (HF)', color: '#10b981', shape: 'house' },
-            '>': { name: 'Car (Alt)', color: '#84cc16', shape: 'car' },
-            '_': { name: 'WX Station (Alt)', color: '#3b82f6', shape: 'wx' },
-            'O': { name: 'Rocket', color: '#f97316', shape: 'balloon' },
-            '#': { name: 'Star Digi', color: '#ef4444', shape: 'digi' },
-        }
+    var SIZE = 64;
+    var HALF = SIZE / 2;
+    var CELL = 64;
+    var COLS = 16;
+    var SPRITE_BASE = 'sprites/aprs-symbols-64-';
+
+    // Color palette for canvas fallbacks
+    var C = {
+        r: '#ef4444', g: '#10b981', l: '#84cc16', b: '#3b82f6',
+        a: '#f59e0b', o: '#f97316', c: '#06b6d4', i: '#6366f1',
+        p: '#a855f7', x: '#71717a'
     };
 
-    var SIZE = 48;
-    var HALF = SIZE / 2;
+    // Parse compact symbol data: "Name|c;Name|c;..." -> [{name, color}, ...]
+    function parseData(str) {
+        return str.split(';').map(function(e) {
+            var p = e.split('|');
+            return { name: p[0], color: C[p[1]] || C.x };
+        });
+    }
+
+    // Primary table '/' — 94 symbols (ASCII 33 '!' through 126 '~')
+    var PRIMARY = parseData(
+        'Police|r;Reserved|x;Digi|r;Phone|p;DX Cluster|i;Gateway|i;Small Aircraft|o;' +
+        'Mobile Satellite|x;Wheelchair|g;Snowmobile|l;Red Cross|r;Boy Scouts|g;' +
+        'House (QTH)|g;X|x;Red Dot|r;Circle 0|a;Circle 1|a;Circle 2|a;Circle 3|a;' +
+        'Circle 4|a;Circle 5|a;Circle 6|a;Circle 7|a;Circle 8|a;Circle 9|a;Fire|r;' +
+        'Campground|g;Motorcycle|l;Train|x;Car|l;File Server|i;Hurricane|r;' +
+        'Aid Station|r;BBS|i;Canoe|c;Reserved|x;Eyeball|g;Farm Vehicle|l;Grid Square|x;' +
+        'Hotel|a;TCP/IP|i;Reserved|x;School|a;PC User|i;MacAPRS|i;NTS Station|b;' +
+        'Balloon|o;Police|r;TBD|x;Rec Vehicle|l;Space Shuttle|o;SSTV|i;Bus|a;ATV|i;' +
+        'NWS Site|b;Helicopter|o;Yacht|c;WinAPRS|i;Jogger|g;Triangle (DF)|a;PBBS|i;' +
+        'Large Aircraft|o;Weather Station|b;Dish Antenna|r;Ambulance|r;Bicycle|p;' +
+        'Incident Command|r;Fire Dept|r;Horse|l;Fire Truck|r;Glider|o;Hospital|r;' +
+        'IOTA|x;Jeep|l;Truck|a;Laptop|i;Mic-E Repeater|r;Node|c;Emergency|r;' +
+        'Rover (Dog)|o;Grid Square|x;Antenna|r;Ship|b;Truck Stop|a;18-Wheeler|a;' +
+        'Van|l;Water Station|b;xAPRS (Unix)|i;Yagi|r;Shelter|g;Reserved|x;' +
+        'TNC Stream Sw1|x;Reserved|x;TNC Stream Sw2|x'
+    );
+
+    // Alternate table '\' — 94 symbols (ASCII 33 '!' through 126 '~')
+    var ALTERNATE = parseData(
+        'Emergency|r;Reserved|x;Star Digi|r;Bank/ATM|a;Reserved|x;Diamond|i;' +
+        'Crash Site|r;Cloudy|b;Reserved|x;Snow|b;Church|a;Girl Scouts|g;House HF|g;' +
+        'Ambiguous|x;Reserved|x;Circle|a;Reserved|x;Reserved|x;Reserved|x;Reserved|x;' +
+        'Reserved|x;Reserved|x;Reserved|x;802.11/WiFi|i;Gas Station|a;Hail|b;Park|g;' +
+        'Gale Flag|b;APRStt|i;Car|l;Info Kiosk|i;Hurricane|r;Box|a;Blowing Snow|b;' +
+        'Coast Guard|b;Drizzle|b;Smoke|x;Freezing Rain|b;Snow Shower|b;Haze|x;' +
+        'Rain Shower|b;Lightning|a;Kenwood|i;Lighthouse|a;Reserved|x;Nav Buoy|c;' +
+        'Rocket|o;Parking|a;Earthquake|r;Restaurant|a;Satellite|o;Thunderstorm|b;' +
+        'Sunny|a;VORTAC|i;NWS Site|b;Pharmacy|r;Reserved|x;Reserved|x;Wall Cloud|b;' +
+        'Reserved|x;Reserved|x;Large Aircraft|o;WX Station|b;Rain|b;ARRL/Field Day|r;' +
+        'Blowing Dust|a;Civil Defense|r;DX Spot|i;Sleet|b;Funnel Cloud|r;Gale Flags|b;' +
+        'Ham Store|a;Indoor/POI|i;Work Zone|a;SUV/ATV|l;Area|x;Milepost|x;Triangle|a;' +
+        'Small Circle|x;Partly Cloudy|b;Reserved|x;Restrooms|a;Ship|b;Tornado|r;' +
+        'Truck|a;Van|l;Flooding|b;Wreck|r;Skywarn|b;Shelter|g;Reserved|x;' +
+        'TNC Stream Sw1|x;Reserved|x;TNC Stream Sw2|x'
+    );
+
+    var TABLES = { '/': PRIMARY, '\\': ALTERNATE };
+
+    // Look up symbol data for (table, code)
+    function lookup(table, code) {
+        var data = TABLES[table];
+        if (!data) return null;
+        var offset = code.charCodeAt(0) - 33;
+        if (offset < 0 || offset >= data.length) return null;
+        return data[offset];
+    }
+
+    // Sprite grid position for a symbol code char
+    function toGrid(code) {
+        var offset = code.charCodeAt(0) - 33;
+        if (offset < 0 || offset > 93) return null;
+        return { row: Math.floor(offset / COLS), col: offset % COLS };
+    }
+
+    // MapLibre image ID for a (table, code) pair
+    function imgId(table, code) {
+        return 'aprs-' + table + code;
+    }
 
     function createCanvas() {
         var c = document.createElement('canvas');
@@ -55,359 +95,137 @@
         return c;
     }
 
-    // Draw a dark backdrop behind each icon for visibility on any map
+    // Dark circular backdrop for visibility on any map tile
     function drawBackdrop(ctx) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
         ctx.beginPath();
-        ctx.arc(HALF, HALF, 20, 0, Math.PI * 2);
+        ctx.arc(HALF, HALF, 27, 0, Math.PI * 2);
         ctx.fill();
     }
 
-    // Shape drawing functions (48x48 canvas, centered)
-    var shapes = {
-        house: function(ctx, color) {
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.moveTo(HALF, 8);
-            ctx.lineTo(40, 22);
-            ctx.lineTo(40, 40);
-            ctx.lineTo(8, 40);
-            ctx.lineTo(8, 22);
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-        },
-        car: function(ctx, color) {
-            ctx.fillStyle = color;
-            // Car body
-            ctx.beginPath();
-            ctx.roundRect(6, 16, 36, 20, 4);
-            ctx.fill();
-            // Roof
-            ctx.beginPath();
-            ctx.roundRect(12, 8, 24, 14, 3);
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.roundRect(6, 16, 36, 20, 4);
-            ctx.stroke();
-        },
-        wx: function(ctx, color) {
-            ctx.fillStyle = color;
-            // Circle with cross (weather station)
-            ctx.beginPath();
-            ctx.arc(HALF, HALF, 16, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2.5;
-            ctx.stroke();
-            // Cross
-            ctx.beginPath();
-            ctx.moveTo(HALF, 9);
-            ctx.lineTo(HALF, 39);
-            ctx.moveTo(9, HALF);
-            ctx.lineTo(39, HALF);
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-        },
-        truck: function(ctx, color) {
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.rect(5, 14, 30, 22);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.rect(35, 20, 8, 16);
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.rect(5, 14, 38, 22);
-            ctx.stroke();
-        },
-        boat: function(ctx, color) {
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.moveTo(9, 30);
-            ctx.lineTo(HALF, 42);
-            ctx.lineTo(39, 30);
-            ctx.lineTo(HALF, 6);
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-        },
-        bike: function(ctx, color) {
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 3;
-            // Two wheels
-            ctx.beginPath();
-            ctx.arc(15, 32, 9, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.arc(33, 32, 9, 0, Math.PI * 2);
-            ctx.stroke();
-            // Frame
-            ctx.beginPath();
-            ctx.moveTo(15, 32);
-            ctx.lineTo(HALF, 16);
-            ctx.lineTo(33, 32);
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-        },
-        digi: function(ctx, color) {
-            ctx.fillStyle = color;
-            // Star shape (digipeater)
-            ctx.beginPath();
-            for (var i = 0; i < 5; i++) {
-                var angle = (i * 72 - 90) * Math.PI / 180;
-                var x = HALF + 18 * Math.cos(angle);
-                var y = HALF + 18 * Math.sin(angle);
-                if (i === 0) ctx.moveTo(x, y);
-                else ctx.lineTo(x, y);
-                angle = ((i * 72 + 36) - 90) * Math.PI / 180;
-                x = HALF + 7 * Math.cos(angle);
-                y = HALF + 7 * Math.sin(angle);
-                ctx.lineTo(x, y);
-            }
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-        },
-        antenna: function(ctx, color) {
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 4;
-            // Vertical mast
-            ctx.beginPath();
-            ctx.moveTo(HALF, 42);
-            ctx.lineTo(HALF, 12);
-            ctx.stroke();
-            // Antenna elements
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.moveTo(12, 14);
-            ctx.lineTo(36, 14);
-            ctx.moveTo(15, 9);
-            ctx.lineTo(33, 9);
-            ctx.stroke();
-            // Base
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.arc(HALF, 42, 4, 0, Math.PI * 2);
-            ctx.fill();
-        },
-        balloon: function(ctx, color) {
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.arc(HALF, 19, 15, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            // String
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(HALF, 34);
-            ctx.lineTo(HALF, 44);
-            ctx.stroke();
-        },
-        phone: function(ctx, color) {
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.roundRect(14, 5, 20, 38, 4);
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            // Screen
-            ctx.fillStyle = 'rgba(255,255,255,0.3)';
-            ctx.fillRect(17, 11, 14, 22);
-        },
-        train: function(ctx, color) {
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.roundRect(9, 9, 30, 30, 3);
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            // Windows
-            ctx.fillStyle = 'rgba(255,255,255,0.4)';
-            ctx.fillRect(13, 13, 9, 9);
-            ctx.fillRect(26, 13, 9, 9);
-        },
-        cross: function(ctx, color) {
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.moveTo(18, 6);
-            ctx.lineTo(30, 6);
-            ctx.lineTo(30, 18);
-            ctx.lineTo(42, 18);
-            ctx.lineTo(42, 30);
-            ctx.lineTo(30, 30);
-            ctx.lineTo(30, 42);
-            ctx.lineTo(18, 42);
-            ctx.lineTo(18, 30);
-            ctx.lineTo(6, 30);
-            ctx.lineTo(6, 18);
-            ctx.lineTo(18, 18);
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-        },
-        fire: function(ctx, color) {
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.moveTo(HALF, 3);
-            ctx.bezierCurveTo(12, 18, 9, 33, HALF, 45);
-            ctx.bezierCurveTo(39, 33, 36, 18, HALF, 3);
-            ctx.fill();
-            // Inner flame
-            ctx.fillStyle = '#fcd34d';
-            ctx.beginPath();
-            ctx.moveTo(HALF, 18);
-            ctx.bezierCurveTo(18, 27, 17, 36, HALF, 42);
-            ctx.bezierCurveTo(31, 36, 30, 27, HALF, 18);
-            ctx.fill();
-        },
-        bus: function(ctx, color) {
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.roundRect(8, 8, 32, 32, 4);
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            // Windows
-            ctx.fillStyle = 'rgba(255,255,255,0.4)';
-            ctx.fillRect(12, 12, 10, 10);
-            ctx.fillRect(26, 12, 10, 10);
-        },
-        gateway: function(ctx, color) {
-            ctx.fillStyle = color;
-            // Diamond
-            ctx.beginPath();
-            ctx.moveTo(HALF, 6);
-            ctx.lineTo(42, HALF);
-            ctx.lineTo(HALF, 42);
-            ctx.lineTo(6, HALF);
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            // Arrow in center
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2.5;
-            ctx.beginPath();
-            ctx.moveTo(18, HALF);
-            ctx.lineTo(32, HALF);
-            ctx.moveTo(27, HALF - 5);
-            ctx.lineTo(32, HALF);
-            ctx.lineTo(27, HALF + 5);
-            ctx.stroke();
-        },
-        person: function(ctx, color) {
-            ctx.fillStyle = color;
-            // Head
-            ctx.beginPath();
-            ctx.arc(HALF, 12, 7, 0, Math.PI * 2);
-            ctx.fill();
-            // Body
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 4;
-            ctx.beginPath();
-            ctx.moveTo(HALF, 19);
-            ctx.lineTo(HALF, 32);
-            // Arms
-            ctx.moveTo(12, 25);
-            ctx.lineTo(36, 25);
-            // Legs
-            ctx.moveTo(HALF, 32);
-            ctx.lineTo(14, 44);
-            ctx.moveTo(HALF, 32);
-            ctx.lineTo(34, 44);
-            ctx.stroke();
-        },
-        dot: function(ctx, color) {
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.arc(HALF, HALF, 12, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2.5;
-            ctx.stroke();
-        },
-    };
-
-    // Default icon for unknown symbols
-    function drawDefault(ctx, color) {
-        ctx.fillStyle = color || '#71717a';
-        ctx.beginPath();
-        ctx.arc(HALF, HALF, 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-        ctx.lineWidth = 2.5;
-        ctx.stroke();
-    }
-
-    function renderIcon(sym) {
+    // Canvas fallback: colored circle with ASCII character in white
+    function renderFallback(ch, color) {
         var canvas = createCanvas();
         var ctx = canvas.getContext('2d');
         drawBackdrop(ctx);
-        var drawFn = shapes[sym.shape] || drawDefault;
-        drawFn(ctx, sym.color);
+        // Colored circle
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(HALF, HALF, 18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        // Character label
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 22px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(ch, HALF, HALF + 1);
         return ctx.getImageData(0, 0, SIZE, SIZE);
     }
 
-    // Register all known APRS icons with a MapLibre map instance
-    window.registerAprsIcons = function(map) {
-        var tables = Object.keys(SYMBOLS);
+    // === Phase 1: Register canvas fallbacks for ALL valid symbols ===
+    function registerFallbacks(map) {
+        var tables = ['/', '\\'];
         for (var t = 0; t < tables.length; t++) {
             var table = tables[t];
-            var codes = Object.keys(SYMBOLS[table]);
-            for (var c = 0; c < codes.length; c++) {
-                var code = codes[c];
-                var sym = SYMBOLS[table][code];
-                var id = 'aprs-' + table + code;
+            for (var c = 33; c <= 126; c++) {
+                var ch = String.fromCharCode(c);
+                var sym = lookup(table, ch);
+                var color = sym ? sym.color : C.x;
+                var id = imgId(table, ch);
                 if (!map.hasImage(id)) {
-                    map.addImage(id, renderIcon(sym), { pixelRatio: 1 });
+                    map.addImage(id, renderFallback(ch, color), { pixelRatio: 1 });
                 }
             }
         }
+        // Bright default for completely unknown symbols
+        if (!map.hasImage('aprs-default')) {
+            map.addImage('aprs-default', renderFallback('?', '#22d3ee'), { pixelRatio: 1 });
+        }
+    }
+
+    // === Phase 2: Load sprite PNGs and seamlessly upgrade icons ===
+    function loadSprites(map) {
+        var sheets = [
+            { table: '/', file: SPRITE_BASE + '0.png' },
+            { table: '\\', file: SPRITE_BASE + '1.png' }
+        ];
+        sheets.forEach(function(entry) {
+            var img = new Image();
+            img.onload = function() { upgradeFromSprite(map, img, entry.table); };
+            img.onerror = function() {
+                console.warn('APRS sprite sheet failed to load: ' + entry.file);
+            };
+            img.src = entry.file;
+        });
+    }
+
+    function upgradeFromSprite(map, img, table) {
+        var canvas = createCanvas();
+        var ctx = canvas.getContext('2d');
+
+        for (var c = 33; c <= 126; c++) {
+            var ch = String.fromCharCode(c);
+            var grid = toGrid(ch);
+            if (!grid) continue;
+
+            var id = imgId(table, ch);
+            if (!map.hasImage(id)) continue;
+
+            ctx.clearRect(0, 0, SIZE, SIZE);
+            drawBackdrop(ctx);
+            // Composite sprite cell over dark backdrop
+            ctx.drawImage(img,
+                grid.col * CELL, grid.row * CELL, CELL, CELL,
+                0, 0, SIZE, SIZE);
+
+            map.updateImage(id, ctx.getImageData(0, 0, SIZE, SIZE));
+        }
+    }
+
+    // === Public API ===
+
+    // Register all icons and start async sprite loading
+    window.registerAprsIcons = function(map) {
+        registerFallbacks(map);
+        loadSprites(map);
     };
 
-    // Get MapLibre image ID for a symbol. Returns empty string if unknown.
+    // Symbols with clear, recognizable sprites worth showing on the map.
+    // Everything else falls through to the colored circle layer.
+    var PROMINENT = {
+        '/':  '!#$&\'->.=@CFHKOPRSTUWXY[\\^_`abdefjknorsuvyw<',
+        '\\': '!#&>@CKLNOQRSTUW_^ahksuvy'
+    };
+
+    // Get MapLibre image ID for a symbol (handles overlay tables)
+    // Returns '' for non-prominent symbols so they use the circle layer instead
     window.getSymbolIconId = function(table, code) {
-        if (SYMBOLS[table] && SYMBOLS[table][code]) {
-            return 'aprs-' + table + code;
-        }
-        return '';
+        if (!table || !code) return '';
+        var offset = code.charCodeAt(0) - 33;
+        if (offset < 0 || offset > 93) return '';
+        // Any table char other than '/' maps to alternate table '\'
+        var effective = (table === '/') ? '/' : '\\';
+        var prom = PROMINENT[effective];
+        if (!prom || prom.indexOf(code) < 0) return '';
+        return imgId(effective, code);
     };
 
-    // Get human-readable symbol description
+    // Human-readable symbol name
     window.getSymbolDescription = function(table, code) {
-        if (SYMBOLS[table] && SYMBOLS[table][code]) {
-            return SYMBOLS[table][code].name;
-        }
-        return 'Unknown';
+        if (!table || !code) return 'Unknown';
+        var effective = (table === '/') ? '/' : '\\';
+        var sym = lookup(effective, code);
+        return sym ? sym.name : 'Unknown';
     };
 
-    // Get symbol color for use in source badges, etc.
+    // Symbol color (for badges, UI accents)
     window.getSymbolColor = function(table, code) {
-        if (SYMBOLS[table] && SYMBOLS[table][code]) {
-            return SYMBOLS[table][code].color;
-        }
-        return '#71717a';
+        if (!table || !code) return C.x;
+        var effective = (table === '/') ? '/' : '\\';
+        var sym = lookup(effective, code);
+        return sym ? sym.color : C.x;
     };
 })();

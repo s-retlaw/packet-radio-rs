@@ -23,6 +23,9 @@ pub struct StationRow {
     /// The source type of the most recent packet.
     #[serde(default)]
     pub last_source_type: String,
+    /// Whether the station has moved (2+ distinct positions in history).
+    #[serde(default)]
+    pub has_moved: bool,
 }
 
 /// A packet row as stored in SQLite and sent to the frontend.
@@ -202,6 +205,7 @@ mod tests {
             weather: None,
             heard_via: "tnc".into(),
             last_source_type: "tnc".into(),
+            has_moved: false,
         };
         let json = serde_json::to_string(&station).unwrap();
         let back: StationRow = serde_json::from_str(&json).unwrap();
@@ -336,6 +340,7 @@ mod tests {
             weather: None,
             heard_via: String::new(),
             last_source_type: "unknown".into(),
+            has_moved: false,
         };
         let json = serde_json::to_string(&station).unwrap();
         let back: StationRow = serde_json::from_str(&json).unwrap();
@@ -374,6 +379,7 @@ mod tests {
             }),
             heard_via: "aprs-is".into(),
             last_source_type: "aprs-is".into(),
+            has_moved: false,
         };
         let json = serde_json::to_string(&station).unwrap();
         let back: StationRow = serde_json::from_str(&json).unwrap();

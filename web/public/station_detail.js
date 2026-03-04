@@ -8,6 +8,7 @@
     var pressureChart = null;
     var humidityChart = null;
     var rainChart = null;
+    var windDirChart = null;
     var altitudeChart = null;
     var currentWeatherHours = 6;
     var currentTrackHours = 24;
@@ -179,7 +180,7 @@
         var wxTab = document.querySelector('[data-tab="weather"]');
         var trackTab = document.querySelector('[data-tab="track"]');
         if (wxTab) wxTab.style.display = s.weather ? '' : 'none';
-        if (trackTab) trackTab.style.display = (s.lat != null) ? '' : 'none';
+        if (trackTab) trackTab.style.display = s.has_moved ? '' : 'none';
     }
 
     function renderWeatherCards(wx) {
@@ -291,10 +292,10 @@
     }
 
     function destroyCharts() {
-        [weatherChart, windChart, pressureChart, humidityChart, rainChart, altitudeChart].forEach(function(c) {
+        [weatherChart, windChart, windDirChart, pressureChart, humidityChart, rainChart, altitudeChart].forEach(function(c) {
             if (c) c.destroy();
         });
-        weatherChart = windChart = pressureChart = humidityChart = rainChart = altitudeChart = null;
+        weatherChart = windChart = windDirChart = pressureChart = humidityChart = rainChart = altitudeChart = null;
     }
 
     function chartDefaults(hours, data) {
@@ -390,7 +391,7 @@
 
         var windPts = toXY(data, 'wind_speed');
         var gustPts = toXY(data, 'wind_gust');
-        if (windPts.length > 0) {
+        if (windPts.length > 0 || gustPts.length > 0) {
             charts.push({ id: 'chart-wind', build: function(ctx) {
                 windChart = new Chart(ctx, {
                     type: 'line',
@@ -400,6 +401,24 @@
                     ] },
                     options: Object.assign({}, defaults, {
                         plugins: { legend: { display: true, labels: { color: '#a1a1aa' } }, title: { display: true, text: 'Wind (mph)', color: '#a1a1aa' } }
+                    })
+                });
+            }});
+        }
+
+        var dirPts = toXY(data, 'wind_direction');
+        if (dirPts.length > 0) {
+            charts.push({ id: 'chart-wind-dir', build: function(ctx) {
+                windDirChart = new Chart(ctx, {
+                    type: 'line',
+                    data: { datasets: [{
+                        label: 'Direction', data: dirPts,
+                        borderColor: '#60a5fa', backgroundColor: 'rgba(96,165,250,0.1)',
+                        fill: false, tension: 0, pointRadius: 2, borderWidth: 1,
+                    }] },
+                    options: Object.assign({}, defaults, {
+                        scales: { x: defaults.scales.x, y: Object.assign({}, defaults.scales.y, { min: 0, max: 360, ticks: Object.assign({}, defaults.scales.y.ticks, { stepSize: 90 }) }) },
+                        plugins: { legend: { display: false }, title: { display: true, text: 'Wind Direction (\u00B0)', color: '#a1a1aa' } }
                     })
                 });
             }});

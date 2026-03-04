@@ -155,6 +155,7 @@ fn row_to_station(r: &sqlx::sqlite::SqliteRow) -> StationRow {
         weather: weather_json.and_then(|j| serde_json::from_str::<WebWeather>(&j).ok()),
         heard_via: r.get("heard_via"),
         last_source_type: r.get("last_source_type"),
+        has_moved: r.get::<bool, _>("has_moved"),
     }
 }
 
@@ -179,8 +180,12 @@ pub async fn get_stations(pool: &SqlitePool) -> Result<Vec<StationRow>, sqlx::Er
     let rows = sqlx::query(
         "SELECT callsign, ssid, station_type, lat, lon, speed, course, altitude,
                 comment, symbol_table, symbol_code, last_heard, packet_count, weather_json,
-                heard_via, last_source_type
-         FROM stations ORDER BY last_heard DESC",
+                heard_via, last_source_type,
+                (SELECT (MAX(lat) - MIN(lat)) > 0.003 OR (MAX(lon) - MIN(lon)) > 0.003
+                    FROM position_history
+                    WHERE callsign = s.callsign AND ssid = s.ssid
+                ) AS has_moved
+         FROM stations s ORDER BY last_heard DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -195,8 +200,12 @@ pub async fn get_stations_with_position(
     let rows = sqlx::query(
         "SELECT callsign, ssid, station_type, lat, lon, speed, course, altitude,
                 comment, symbol_table, symbol_code, last_heard, packet_count, weather_json,
-                heard_via, last_source_type
-         FROM stations WHERE lat IS NOT NULL AND lon IS NOT NULL
+                heard_via, last_source_type,
+                (SELECT (MAX(lat) - MIN(lat)) > 0.003 OR (MAX(lon) - MIN(lon)) > 0.003
+                    FROM position_history
+                    WHERE callsign = s.callsign AND ssid = s.ssid
+                ) AS has_moved
+         FROM stations s WHERE lat IS NOT NULL AND lon IS NOT NULL
          ORDER BY last_heard DESC",
     )
     .fetch_all(pool)
@@ -299,8 +308,12 @@ pub async fn get_station_by_callsign(
     let row = sqlx::query(
         "SELECT callsign, ssid, station_type, lat, lon, speed, course, altitude,
                 comment, symbol_table, symbol_code, last_heard, packet_count, weather_json,
-                heard_via, last_source_type
-         FROM stations WHERE callsign = ? AND ssid = ?",
+                heard_via, last_source_type,
+                (SELECT (MAX(lat) - MIN(lat)) > 0.003 OR (MAX(lon) - MIN(lon)) > 0.003
+                    FROM position_history
+                    WHERE callsign = s.callsign AND ssid = s.ssid
+                ) AS has_moved
+         FROM stations s WHERE callsign = ? AND ssid = ?",
     )
     .bind(callsign)
     .bind(ssid as i64)
