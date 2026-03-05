@@ -33,9 +33,18 @@ esp32/sdkconfig.old
 esp32c3-test/target/
 esp32c6-test/target/
 rp2040-test/target/
+pico2w-test/target/
 
 # Lock files for excluded (non-workspace) crates
 esp32c3-test/Cargo.lock
 esp32c6-test/Cargo.lock
 rp2040-test/Cargo.lock
+pico2w-test/Cargo.lock
+
+# Runtime data
+aprs-viewer.db
+aprs-viewer.toml
+
+# Firmware binaries
+*.uf2
 .claude/
