@@ -26,6 +26,9 @@ pub struct StationRow {
     /// Whether the station has moved (2+ distinct positions in history).
     #[serde(default)]
     pub has_moved: bool,
+    /// The digipeater path from the most recent packet (e.g. "WIDE1-1,W1ABC-1*,qAR,W2DEF").
+    #[serde(default)]
+    pub last_path: Option<String>,
 }
 
 /// A packet row as stored in SQLite and sent to the frontend.
@@ -172,6 +175,36 @@ pub enum WsEvent {
     StationUpdate(StationRow),
 }
 
+/// An RF link between a hearer (IGate/digi) and a heard station.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RfLinkRow {
+    pub hearer: String,
+    pub hearer_ssid: u8,
+    pub heard: String,
+    pub heard_ssid: u8,
+    pub link_type: String,
+    pub packet_count: i64,
+    pub last_seen: String,
+}
+
+/// A station with its position, used in coverage responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverageStation {
+    pub callsign: String,
+    pub ssid: u8,
+    pub lat: f64,
+    pub lon: f64,
+    pub packet_count: i64,
+    pub link_type: String,
+}
+
+/// Coverage response: who this station hears and who hears it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverageResponse {
+    pub hears: Vec<CoverageStation>,
+    pub heard_by: Vec<CoverageStation>,
+}
+
 /// Map pack metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapPack {
@@ -206,6 +239,7 @@ mod tests {
             heard_via: "tnc".into(),
             last_source_type: "tnc".into(),
             has_moved: false,
+            last_path: None,
         };
         let json = serde_json::to_string(&station).unwrap();
         let back: StationRow = serde_json::from_str(&json).unwrap();
@@ -341,6 +375,7 @@ mod tests {
             heard_via: String::new(),
             last_source_type: "unknown".into(),
             has_moved: false,
+            last_path: None,
         };
         let json = serde_json::to_string(&station).unwrap();
         let back: StationRow = serde_json::from_str(&json).unwrap();
@@ -380,6 +415,7 @@ mod tests {
             heard_via: "aprs-is".into(),
             last_source_type: "aprs-is".into(),
             has_moved: false,
+            last_path: None,
         };
         let json = serde_json::to_string(&station).unwrap();
         let back: StationRow = serde_json::from_str(&json).unwrap();

@@ -157,6 +157,7 @@ pub async fn process_raw_frame(
             sym_code.as_deref(),
             weather_json.as_deref(),
             source_type,
+            path.as_deref(),
         )
         .await?;
 
@@ -198,6 +199,11 @@ pub async fn process_raw_frame(
             db::insert_message(pool, &source, addressee.trim(), text, message_no.as_deref())
                 .await?;
         }
+    }
+
+    // Extract RF links from the digipeater path
+    if let Some(ref path_str) = path {
+        extract_and_store_rf_links(pool, &source, source_ssid, path_str).await;
     }
 
     // Broadcast the packet event
@@ -310,6 +316,111 @@ pub async fn run_kiss_ingest(
     }
 }
 
+/// Parse a callsign string like "N0CALL-9" into ("N0CALL", 9).
+fn parse_call_ssid(call: &str) -> (&str, u8) {
+    if let Some((cs, ssid_str)) = call.rsplit_once('-') {
+        if let Ok(ssid) = ssid_str.parse::<u8>() {
+            return (cs, ssid);
+        }
+    }
+    (call, 0)
+}
+
+/// Generic APRS path aliases and APRS-IS server prefixes that are not real stations.
+const PATH_ALIASES: &[&str] = &[
+    "WIDE", "RELAY", "TRACE", "RFONLY", "NOGATE", "GATE", "TCPIP",
+    // APRS-IS server naming: T2*, FIRST through TENTH, etc.
+    "FIRST", "SECON", "THIRD", "FOURT", "FIFTH", "SIXTH", "SEVEN", "EIGHT", "NINTH", "TENTH",
+    "AMBCW",
+];
+
+/// Check if a callsign base is a path alias or APRS-IS server name.
+fn is_path_alias(base: &str) -> bool {
+    // T2* = APRS-IS tier-2 servers (T2CHIL, T2FINL, T2PANA, etc.)
+    if base.starts_with("T2") {
+        return true;
+    }
+    PATH_ALIASES.iter().any(|a| base.starts_with(a))
+}
+
+/// Extract IGate and digipeater relationships from a packet path and store them.
+///
+/// Path format: "WIDE1-1,W1ABC-1*,qAR,KD1KE-5"
+///   - W1ABC-1 has H-bit → it's a digipeater that forwarded source's packet
+///   - KD1KE-5 after qAR → it's the IGate that heard the packet
+async fn extract_and_store_rf_links(
+    pool: &SqlitePool,
+    source: &str,
+    source_ssid: u8,
+    path_str: &str,
+) {
+    let hops: Vec<&str> = path_str.split(',').collect();
+    let mut after_q = false;
+
+    for hop in &hops {
+        let hop = hop.trim();
+        if hop.is_empty() {
+            continue;
+        }
+
+        // Check for q-construct (qAR, qAO, qAS, qAC, etc.)
+        if hop.starts_with('q') && hop.len() <= 4 {
+            // qAC = client-to-server direct, station after it is the APRS-IS server not an IGate
+            // Only qAR/qAO/qAS indicate real RF IGates
+            if hop == "qAR" || hop == "qAO" || hop == "qAS" {
+                after_q = true;
+            }
+            continue;
+        }
+
+        let has_hbit = hop.ends_with('*');
+        let call = if has_hbit { &hop[..hop.len() - 1] } else { hop };
+        let (base, _ssid) = parse_call_ssid(call);
+
+        // Skip aliases and very short callsigns
+        if is_path_alias(base) || base.len() <= 2 {
+            continue;
+        }
+
+        let (hearer_call, hearer_ssid) = parse_call_ssid(call);
+
+        // Skip self-links (same base callsign, any SSID)
+        if hearer_call.eq_ignore_ascii_case(source) {
+            continue;
+        }
+
+        if has_hbit {
+            // Digipeater with H-bit: it forwarded source's packet
+            if let Err(e) = db::upsert_rf_link(
+                pool,
+                hearer_call,
+                hearer_ssid,
+                source,
+                source_ssid,
+                "digi",
+            )
+            .await
+            {
+                tracing::debug!("Failed to upsert digi RF link: {}", e);
+            }
+        } else if after_q {
+            // Station after q-construct: IGate that heard the packet
+            if let Err(e) = db::upsert_rf_link(
+                pool,
+                hearer_call,
+                hearer_ssid,
+                source,
+                source_ssid,
+                "igate",
+            )
+            .await
+            {
+                tracing::debug!("Failed to upsert igate RF link: {}", e);
+            }
+        }
+    }
+}
+
 /// Format a short summary line for a packet.
 fn format_summary(data: &WebAprsData) -> String {
     match data {
@@ -367,6 +478,7 @@ fn format_summary(data: &WebAprsData) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::Row;
 
     /// Helper: build a minimal AX.25 UI frame with the given info field.
     fn build_test_ax25_frame(src: &str, dest: &str, info: &[u8]) -> Vec<u8> {
@@ -626,5 +738,94 @@ mod tests {
 
         let stations = db::get_stations(&pool).await.unwrap();
         assert_eq!(stations.len(), 0);
+    }
+
+    // === RF link extraction tests ===
+
+    #[test]
+    fn test_parse_call_ssid() {
+        assert_eq!(parse_call_ssid("N0CALL"), ("N0CALL", 0));
+        assert_eq!(parse_call_ssid("N0CALL-9"), ("N0CALL", 9));
+        assert_eq!(parse_call_ssid("KD1KE-5"), ("KD1KE", 5));
+    }
+
+    #[test]
+    fn test_is_path_alias() {
+        assert!(is_path_alias("WIDE1"));
+        assert!(is_path_alias("WIDE2"));
+        assert!(is_path_alias("RELAY"));
+        assert!(is_path_alias("TCPIP"));
+        assert!(!is_path_alias("KD1KE"));
+        assert!(!is_path_alias("N0CALL"));
+    }
+
+    #[tokio::test]
+    async fn test_extract_rf_links_igate() {
+        let pool = db::test_db().await;
+        // Typical APRS-IS path: source heard by IGate KD1KE-5 via qAR
+        extract_and_store_rf_links(&pool, "N0CALL", 0, "WIDE1-1,WIDE2-1,qAR,KD1KE-5").await;
+
+        let row = sqlx::query("SELECT * FROM rf_links WHERE hearer = 'KD1KE' AND hearer_ssid = 5")
+            .fetch_optional(&pool).await.unwrap();
+        assert!(row.is_some(), "IGate link should be created");
+        let row = row.unwrap();
+        assert_eq!(row.get::<String, _>("heard"), "N0CALL");
+        assert_eq!(row.get::<String, _>("link_type"), "igate");
+    }
+
+    #[tokio::test]
+    async fn test_extract_rf_links_digi() {
+        let pool = db::test_db().await;
+        // Path with digipeater H-bit: W1ABC-1 forwarded N0CALL's packet
+        extract_and_store_rf_links(&pool, "N0CALL", 0, "W1ABC-1*,WIDE2*,qAR,KD1KE").await;
+
+        // W1ABC-1 should be a digi link
+        let row = sqlx::query("SELECT * FROM rf_links WHERE hearer = 'W1ABC' AND link_type = 'digi'")
+            .fetch_optional(&pool).await.unwrap();
+        assert!(row.is_some(), "Digi link should be created for W1ABC-1");
+
+        // WIDE2* should be skipped (alias)
+        let alias_row = sqlx::query("SELECT * FROM rf_links WHERE hearer = 'WIDE2'")
+            .fetch_optional(&pool).await.unwrap();
+        assert!(alias_row.is_none(), "WIDE alias should be skipped");
+
+        // KD1KE should be an igate link
+        let igate = sqlx::query("SELECT * FROM rf_links WHERE hearer = 'KD1KE' AND link_type = 'igate'")
+            .fetch_optional(&pool).await.unwrap();
+        assert!(igate.is_some(), "IGate link should be created for KD1KE");
+    }
+
+    #[tokio::test]
+    async fn test_extract_rf_links_tcpip_skipped() {
+        let pool = db::test_db().await;
+        // TCPIP* paths are pure APRS-IS originated — qAC means server, not IGate
+        extract_and_store_rf_links(&pool, "N0CALL", 0, "TCPIP*,qAC,SERVER").await;
+
+        // Nothing should be stored: TCPIP is alias, qAC is filtered, SERVER after qAC ignored
+        let all = sqlx::query("SELECT COUNT(*) as cnt FROM rf_links")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(all.get::<i64, _>("cnt"), 0, "qAC path should produce no RF links");
+    }
+
+    #[tokio::test]
+    async fn test_extract_rf_links_self_link_skipped() {
+        let pool = db::test_db().await;
+        // VE9RMO-10 IGate hearing VE9RMO-9 mobile — same operator, should skip
+        extract_and_store_rf_links(&pool, "VE9RMO", 9, "WIDE1-1,qAR,VE9RMO-10").await;
+
+        let all = sqlx::query("SELECT COUNT(*) as cnt FROM rf_links")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(all.get::<i64, _>("cnt"), 0, "Self-links should be skipped");
+    }
+
+    #[tokio::test]
+    async fn test_extract_rf_links_t2_server_skipped() {
+        let pool = db::test_db().await;
+        // T2 servers should be skipped even after qAR (shouldn't happen in practice)
+        extract_and_store_rf_links(&pool, "N0CALL", 0, "WIDE1-1,qAR,T2CHIL").await;
+
+        let all = sqlx::query("SELECT COUNT(*) as cnt FROM rf_links")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(all.get::<i64, _>("cnt"), 0, "T2 server should be skipped");
     }
 }

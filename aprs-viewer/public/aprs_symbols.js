@@ -101,6 +101,10 @@
         ctx.beginPath();
         ctx.arc(HALF, HALF, 27, 0, Math.PI * 2);
         ctx.fill();
+        // Contrasting border for visibility on dark backgrounds
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
     }
 
     // Canvas fallback: colored circle with ASCII character in white

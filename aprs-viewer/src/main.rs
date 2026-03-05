@@ -66,9 +66,34 @@ async fn main() {
         "ALTER TABLE packets ADD COLUMN source_type TEXT NOT NULL DEFAULT 'unknown'",
         "ALTER TABLE stations ADD COLUMN heard_via TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE stations ADD COLUMN last_source_type TEXT NOT NULL DEFAULT 'unknown'",
+        "ALTER TABLE stations ADD COLUMN last_path TEXT",
     ] {
         let _ = sqlx::query(stmt).execute(&pool).await;
     }
+    // 003: rf_links table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS rf_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hearer TEXT NOT NULL,
+            hearer_ssid INTEGER NOT NULL DEFAULT 0,
+            heard TEXT NOT NULL,
+            heard_ssid INTEGER NOT NULL DEFAULT 0,
+            link_type TEXT NOT NULL,
+            packet_count INTEGER NOT NULL DEFAULT 1,
+            last_seen TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(hearer, hearer_ssid, heard, heard_ssid, link_type)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("Failed to create rf_links table");
+    for stmt in [
+        "CREATE INDEX IF NOT EXISTS idx_rf_links_hearer ON rf_links(hearer, hearer_ssid)",
+        "CREATE INDEX IF NOT EXISTS idx_rf_links_heard ON rf_links(heard, heard_ssid)",
+    ] {
+        sqlx::query(stmt).execute(&pool).await.expect("Failed to create rf_links index");
+    }
+
     // Backfill existing data as aprs-is (idempotent)
     for stmt in [
         "UPDATE packets SET source_type = 'aprs-is' WHERE source_type = 'unknown'",
@@ -259,6 +284,10 @@ async fn main() {
                 if let Err(e) = aprs_viewer::server::db::cleanup_weather_history(&pool, max_track).await {
                     tracing::error!("Weather history cleanup error: {}", e);
                 }
+                // Clean up old RF links
+                if let Err(e) = aprs_viewer::server::db::cleanup_rf_links(&pool, max_track).await {
+                    tracing::error!("RF links cleanup error: {}", e);
+                }
                 tokio::time::sleep(std::time::Duration::from_secs(600)).await;
             }
         });
@@ -276,6 +305,7 @@ async fn main() {
         .route("/api/stations/{call}/weather", get(api_get_station_weather))
         .route("/api/stations/{call}/weather-history", get(api_get_weather_history))
         .route("/api/stations/{call}/packets", get(api_get_station_packets))
+        .route("/api/stations/{call}/coverage", get(api_get_station_coverage))
         .route("/api/packets", get(api_get_packets))
         .route("/api/config", get(api_get_config).put(api_put_config))
         .route("/api/maps", get(api_list_maps))
@@ -451,6 +481,29 @@ async fn api_get_station_packets(
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to get station packets: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_get_station_coverage(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(call): axum::extract::Path<String>,
+) -> impl axum::response::IntoResponse {
+    use axum::response::IntoResponse;
+
+    let (callsign, ssid) = parse_callsign_ssid(&call);
+
+    let hears = aprs_viewer::server::db::get_station_heard(&state.db, &callsign, ssid).await;
+    let heard_by = aprs_viewer::server::db::get_station_hearers(&state.db, &callsign, ssid).await;
+
+    match (hears, heard_by) {
+        (Ok(hears), Ok(heard_by)) => {
+            axum::Json(aprs_viewer::models::CoverageResponse { hears, heard_by }).into_response()
+        }
+        (Err(e), _) | (_, Err(e)) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get coverage: {}", e),
         )
             .into_response(),
     }

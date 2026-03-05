@@ -1,6 +1,6 @@
 use sqlx::{Row, SqlitePool};
 
-use crate::models::{MessageRow, PacketRow, StationRow, TrackPoint, WebWeather, WeatherHistoryPoint};
+use crate::models::{CoverageStation, MessageRow, PacketRow, StationRow, TrackPoint, WebWeather, WeatherHistoryPoint};
 
 /// Insert a decoded packet into the database.
 pub async fn insert_packet(
@@ -49,10 +49,11 @@ pub async fn upsert_station(
     symbol_code: Option<&str>,
     weather_json: Option<&str>,
     source_type: &str,
+    last_path: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO stations (callsign, ssid, station_type, lat, lon, speed, course, altitude, comment, symbol_table, symbol_code, weather_json, packet_count, last_heard, heard_via, last_source_type)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), ?, ?)
+        "INSERT INTO stations (callsign, ssid, station_type, lat, lon, speed, course, altitude, comment, symbol_table, symbol_code, weather_json, packet_count, last_heard, heard_via, last_source_type, last_path)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), ?, ?, ?)
          ON CONFLICT(callsign, ssid) DO UPDATE SET
            station_type = excluded.station_type,
            lat = COALESCE(excluded.lat, stations.lat),
@@ -71,7 +72,8 @@ pub async fn upsert_station(
              WHEN instr(stations.heard_via, excluded.heard_via) > 0 THEN stations.heard_via
              ELSE stations.heard_via || ',' || excluded.heard_via
            END,
-           last_source_type = excluded.last_source_type",
+           last_source_type = excluded.last_source_type,
+           last_path = COALESCE(excluded.last_path, stations.last_path)",
     )
     .bind(callsign)
     .bind(ssid as i64)
@@ -87,6 +89,7 @@ pub async fn upsert_station(
     .bind(weather_json)
     .bind(source_type)
     .bind(source_type)
+    .bind(last_path)
     .execute(pool)
     .await?;
     Ok(())
@@ -156,6 +159,7 @@ fn row_to_station(r: &sqlx::sqlite::SqliteRow) -> StationRow {
         heard_via: r.get("heard_via"),
         last_source_type: r.get("last_source_type"),
         has_moved: r.get::<bool, _>("has_moved"),
+        last_path: r.get("last_path"),
     }
 }
 
@@ -180,7 +184,7 @@ pub async fn get_stations(pool: &SqlitePool) -> Result<Vec<StationRow>, sqlx::Er
     let rows = sqlx::query(
         "SELECT callsign, ssid, station_type, lat, lon, speed, course, altitude,
                 comment, symbol_table, symbol_code, last_heard, packet_count, weather_json,
-                heard_via, last_source_type,
+                heard_via, last_source_type, last_path,
                 (SELECT (MAX(lat) - MIN(lat)) > 0.003 OR (MAX(lon) - MIN(lon)) > 0.003
                     FROM position_history
                     WHERE callsign = s.callsign AND ssid = s.ssid
@@ -200,7 +204,7 @@ pub async fn get_stations_with_position(
     let rows = sqlx::query(
         "SELECT callsign, ssid, station_type, lat, lon, speed, course, altitude,
                 comment, symbol_table, symbol_code, last_heard, packet_count, weather_json,
-                heard_via, last_source_type,
+                heard_via, last_source_type, last_path,
                 (SELECT (MAX(lat) - MIN(lat)) > 0.003 OR (MAX(lon) - MIN(lon)) > 0.003
                     FROM position_history
                     WHERE callsign = s.callsign AND ssid = s.ssid
@@ -308,7 +312,7 @@ pub async fn get_station_by_callsign(
     let row = sqlx::query(
         "SELECT callsign, ssid, station_type, lat, lon, speed, course, altitude,
                 comment, symbol_table, symbol_code, last_heard, packet_count, weather_json,
-                heard_via, last_source_type,
+                heard_via, last_source_type, last_path,
                 (SELECT (MAX(lat) - MIN(lat)) > 0.003 OR (MAX(lon) - MIN(lon)) > 0.003
                     FROM position_history
                     WHERE callsign = s.callsign AND ssid = s.ssid
@@ -436,6 +440,114 @@ pub async fn cleanup_stale_stations(
     Ok(result.rows_affected())
 }
 
+/// Upsert an RF link — insert or increment packet_count on conflict.
+pub async fn upsert_rf_link(
+    pool: &SqlitePool,
+    hearer: &str,
+    hearer_ssid: u8,
+    heard: &str,
+    heard_ssid: u8,
+    link_type: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO rf_links (hearer, hearer_ssid, heard, heard_ssid, link_type, packet_count, last_seen)
+         VALUES (?, ?, ?, ?, ?, 1, datetime('now'))
+         ON CONFLICT(hearer, hearer_ssid, heard, heard_ssid, link_type) DO UPDATE SET
+           packet_count = rf_links.packet_count + 1,
+           last_seen = datetime('now')",
+    )
+    .bind(hearer)
+    .bind(hearer_ssid as i64)
+    .bind(heard)
+    .bind(heard_ssid as i64)
+    .bind(link_type)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Get stations that this station hears (its RX coverage).
+/// Returns heard stations with their positions (joined from stations table).
+pub async fn get_station_heard(
+    pool: &SqlitePool,
+    callsign: &str,
+    ssid: u8,
+) -> Result<Vec<CoverageStation>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT r.heard AS callsign, r.heard_ssid AS ssid, s.lat, s.lon,
+                r.packet_count, r.link_type
+         FROM rf_links r
+         JOIN stations s ON s.callsign = r.heard AND s.ssid = r.heard_ssid
+         WHERE r.hearer = ? AND r.hearer_ssid = ?
+           AND s.lat IS NOT NULL AND s.lon IS NOT NULL
+         ORDER BY r.packet_count DESC",
+    )
+    .bind(callsign)
+    .bind(ssid as i64)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| CoverageStation {
+            callsign: r.get("callsign"),
+            ssid: r.get::<i64, _>("ssid") as u8,
+            lat: r.get("lat"),
+            lon: r.get("lon"),
+            packet_count: r.get("packet_count"),
+            link_type: r.get("link_type"),
+        })
+        .collect())
+}
+
+/// Get stations that hear this station (who picks up its TX).
+/// Returns hearer stations with their positions.
+pub async fn get_station_hearers(
+    pool: &SqlitePool,
+    callsign: &str,
+    ssid: u8,
+) -> Result<Vec<CoverageStation>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT r.hearer AS callsign, r.hearer_ssid AS ssid, s.lat, s.lon,
+                r.packet_count, r.link_type
+         FROM rf_links r
+         JOIN stations s ON s.callsign = r.hearer AND s.ssid = r.hearer_ssid
+         WHERE r.heard = ? AND r.heard_ssid = ?
+           AND s.lat IS NOT NULL AND s.lon IS NOT NULL
+         ORDER BY r.packet_count DESC",
+    )
+    .bind(callsign)
+    .bind(ssid as i64)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| CoverageStation {
+            callsign: r.get("callsign"),
+            ssid: r.get::<i64, _>("ssid") as u8,
+            lat: r.get("lat"),
+            lon: r.get("lon"),
+            packet_count: r.get("packet_count"),
+            link_type: r.get("link_type"),
+        })
+        .collect())
+}
+
+/// Prune old RF link entries.
+pub async fn cleanup_rf_links(
+    pool: &SqlitePool,
+    max_age_hours: u32,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "DELETE FROM rf_links WHERE last_seen < datetime('now', '-' || ? || ' hours')",
+    )
+    .bind(max_age_hours)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// Prune old position history entries.
 pub async fn cleanup_position_history(
     pool: &SqlitePool,
@@ -502,6 +614,35 @@ pub async fn test_db() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("ALTER TABLE stations ADD COLUMN last_path TEXT")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // rf_links table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS rf_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hearer TEXT NOT NULL,
+            hearer_ssid INTEGER NOT NULL DEFAULT 0,
+            heard TEXT NOT NULL,
+            heard_ssid INTEGER NOT NULL DEFAULT 0,
+            link_type TEXT NOT NULL,
+            packet_count INTEGER NOT NULL DEFAULT 1,
+            last_seen TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(hearer, hearer_ssid, heard, heard_ssid, link_type)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_rf_links_hearer ON rf_links(hearer, hearer_ssid)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_rf_links_heard ON rf_links(heard, heard_ssid)")
+        .execute(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -528,7 +669,7 @@ mod tests {
     async fn test_upsert_station_insert() {
         let pool = test_db().await;
 
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.058), Some(-72.030), None, None, None, Some("Test"), Some("/"), Some(">"), None, "tnc").await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.058), Some(-72.030), None, None, None, Some("Test"), Some("/"), Some(">"), None, "tnc", None).await.unwrap();
 
         let stations = get_stations(&pool).await.unwrap();
         assert_eq!(stations.len(), 1);
@@ -543,8 +684,8 @@ mod tests {
     async fn test_upsert_station_update() {
         let pool = test_db().await;
 
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, Some("First"), Some("/"), Some(">"), None, "tnc").await.unwrap();
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.1), Some(-72.1), Some(60.0), None, None, Some("Second"), None, None, None, "tnc").await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, Some("First"), Some("/"), Some(">"), None, "tnc", None).await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.1), Some(-72.1), Some(60.0), None, None, Some("Second"), None, None, None, "tnc", None).await.unwrap();
 
         let stations = get_stations(&pool).await.unwrap();
         assert_eq!(stations.len(), 1);
@@ -559,8 +700,8 @@ mod tests {
     async fn test_upsert_coalesce_preserves_position() {
         let pool = test_db().await;
 
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc").await.unwrap();
-        upsert_station(&pool, "N0CALL", 0, "Message", None, None, None, None, None, None, None, None, None, "tnc").await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Message", None, None, None, None, None, None, None, None, None, "tnc", None).await.unwrap();
 
         let stations = get_stations(&pool).await.unwrap();
         assert_eq!(stations.len(), 1);
@@ -572,8 +713,8 @@ mod tests {
     async fn test_get_stations_with_position() {
         let pool = test_db().await;
 
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc").await.unwrap();
-        upsert_station(&pool, "W1AW", 0, "Message", None, None, None, None, None, None, None, None, None, "tnc").await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, "W1AW", 0, "Message", None, None, None, None, None, None, None, None, None, "tnc", None).await.unwrap();
 
         let stations = get_stations_with_position(&pool).await.unwrap();
         assert_eq!(stations.len(), 1);
@@ -609,11 +750,11 @@ mod tests {
     async fn test_cleanup_stale_stations() {
         let pool = test_db().await;
 
-        upsert_station(&pool, "OLD", 0, "Position", Some(40.0), Some(-74.0), None, None, None, None, None, None, None, "tnc").await.unwrap();
+        upsert_station(&pool, "OLD", 0, "Position", Some(40.0), Some(-74.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
         sqlx::query("UPDATE stations SET last_heard = datetime('now', '-49 hours') WHERE callsign = 'OLD'")
             .execute(&pool).await.unwrap();
 
-        upsert_station(&pool, "NEW", 0, "Position", Some(41.0), Some(-74.0), None, None, None, None, None, None, None, "tnc").await.unwrap();
+        upsert_station(&pool, "NEW", 0, "Position", Some(41.0), Some(-74.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
 
         let deleted = cleanup_stale_stations(&pool, 48).await.unwrap();
         assert_eq!(deleted, 1);
@@ -654,7 +795,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_station_heard_via_single() {
         let pool = test_db().await;
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc").await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
         let s = get_station_by_callsign(&pool, "N0CALL", 0).await.unwrap().unwrap();
         assert_eq!(s.heard_via, "tnc");
     }
@@ -662,8 +803,8 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_station_heard_via_both() {
         let pool = test_db().await;
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc").await.unwrap();
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "aprs-is").await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "aprs-is", None).await.unwrap();
         let s = get_station_by_callsign(&pool, "N0CALL", 0).await.unwrap().unwrap();
         assert_eq!(s.heard_via, "tnc,aprs-is");
     }
@@ -671,8 +812,8 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_station_heard_via_no_duplicates() {
         let pool = test_db().await;
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc").await.unwrap();
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc").await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
         let s = get_station_by_callsign(&pool, "N0CALL", 0).await.unwrap().unwrap();
         assert_eq!(s.heard_via, "tnc");
     }
@@ -680,10 +821,10 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_station_last_source_type() {
         let pool = test_db().await;
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc").await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
         let s = get_station_by_callsign(&pool, "N0CALL", 0).await.unwrap().unwrap();
         assert_eq!(s.last_source_type, "tnc");
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "aprs-is").await.unwrap();
+        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "aprs-is", None).await.unwrap();
         let s = get_station_by_callsign(&pool, "N0CALL", 0).await.unwrap().unwrap();
         assert_eq!(s.last_source_type, "aprs-is");
     }
@@ -751,6 +892,54 @@ mod tests {
         assert_eq!(deleted, 1);
         let remaining = get_weather_history(&pool, "WX0STA", 0, 100).await.unwrap();
         assert_eq!(remaining.len(), 1);
+    }
+
+    // === RF links tests ===
+
+    #[tokio::test]
+    async fn test_upsert_rf_link() {
+        let pool = test_db().await;
+        upsert_rf_link(&pool, "KD1KE", 0, "N0CALL", 0, "igate").await.unwrap();
+        upsert_rf_link(&pool, "KD1KE", 0, "N0CALL", 0, "igate").await.unwrap();
+
+        let row = sqlx::query("SELECT packet_count FROM rf_links WHERE hearer = 'KD1KE' AND heard = 'N0CALL'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(row.get::<i64, _>("packet_count"), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_station_heard_and_hearers() {
+        let pool = test_db().await;
+
+        // Create stations with positions
+        upsert_station(&pool, "IGATE", 0, "Position", Some(42.0), Some(-71.0), None, None, None, None, None, None, None, "aprs-is", None).await.unwrap();
+        upsert_station(&pool, "MOBILE", 0, "MicE", Some(42.1), Some(-71.1), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, "MOBILE2", 0, "MicE", Some(42.2), Some(-71.2), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+
+        // IGATE hears MOBILE and MOBILE2
+        upsert_rf_link(&pool, "IGATE", 0, "MOBILE", 0, "igate").await.unwrap();
+        upsert_rf_link(&pool, "IGATE", 0, "MOBILE2", 0, "igate").await.unwrap();
+
+        // What does IGATE hear?
+        let heard = get_station_heard(&pool, "IGATE", 0).await.unwrap();
+        assert_eq!(heard.len(), 2);
+
+        // Who hears MOBILE?
+        let hearers = get_station_hearers(&pool, "MOBILE", 0).await.unwrap();
+        assert_eq!(hearers.len(), 1);
+        assert_eq!(hearers[0].callsign, "IGATE");
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_rf_links() {
+        let pool = test_db().await;
+        upsert_rf_link(&pool, "OLD", 0, "SRC", 0, "igate").await.unwrap();
+        sqlx::query("UPDATE rf_links SET last_seen = datetime('now', '-49 hours') WHERE hearer = 'OLD'")
+            .execute(&pool).await.unwrap();
+        upsert_rf_link(&pool, "NEW", 0, "SRC", 0, "igate").await.unwrap();
+
+        let deleted = cleanup_rf_links(&pool, 48).await.unwrap();
+        assert_eq!(deleted, 1);
     }
 
     // === Station packets test ===
