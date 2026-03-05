@@ -445,6 +445,7 @@
                     hasWind: !!(s.weather && s.weather.wind_speed != null && s.weather.wind_speed > 0),
                     wxLabel: wxLabel,
                     hasMoved: s.has_moved || false,
+                    lastPath: s.last_path || '',
                 },
             });
         }
@@ -677,6 +678,18 @@
             updateMapStations(); // refresh age-based opacity
         }, 30000);
     }
+
+    // Expose station position lookup for path visualization
+    window.getStationPosition = function(callsign) {
+        for (var entry of state.stations) {
+            var s = entry[1];
+            var disp = s.ssid > 0 ? s.callsign + '-' + s.ssid : s.callsign;
+            if (disp === callsign && typeof s.lat === 'number' && typeof s.lon === 'number') {
+                return [s.lon, s.lat];
+            }
+        }
+        return null;
+    };
 
     // Start when DOM is ready
     if (document.readyState === 'loading') {

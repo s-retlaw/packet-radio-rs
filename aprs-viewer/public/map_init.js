@@ -9,6 +9,7 @@ var pendingStations = null;
 var pendingTracks = null;
 var hoverPopup = null;
 var pulseTimers = {};
+var coverageCache = {};
 
 // Dark basemap style using Protomaps PMTiles
 function darkStyle(tileUrl) {
@@ -153,13 +154,6 @@ function simpleStyle() {
     };
 }
 
-// Age-based opacity: 0-30min = 1.0, 30-120min fade, >120min = 0.25
-function ageOpacity(ageMinutes) {
-    if (ageMinutes <= 30) return 1.0;
-    if (ageMinutes >= 120) return 0.25;
-    return 1.0 - 0.75 * (ageMinutes - 30) / 90;
-}
-
 // Add APRS data layers (stations, tracks) to the map
 function addAprsLayers() {
     // Register APRS icons
@@ -183,6 +177,73 @@ function addAprsLayers() {
     map.addSource('aprs-pulse', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] }
+    });
+
+    // Digipeater path line source (shown on hover)
+    map.addSource('aprs-path', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    // RF coverage polygon source (shown on "Show Coverage" click)
+    map.addSource('aprs-coverage', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    // RF coverage link lines source
+    map.addSource('aprs-coverage-links', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    // RF coverage fill polygon
+    map.addLayer({
+        id: 'coverage-fill',
+        type: 'fill',
+        source: 'aprs-coverage',
+        paint: {
+            'fill-color': ['get', 'color'],
+            'fill-opacity': 0.18,
+        }
+    });
+
+    // RF coverage polygon outline
+    map.addLayer({
+        id: 'coverage-outline',
+        type: 'line',
+        source: 'aprs-coverage',
+        paint: {
+            'line-color': ['get', 'color'],
+            'line-width': 2,
+            'line-opacity': 0.5,
+        }
+    });
+
+    // RF coverage link lines
+    map.addLayer({
+        id: 'coverage-links',
+        type: 'line',
+        source: 'aprs-coverage-links',
+        paint: {
+            'line-color': ['get', 'color'],
+            'line-width': 1.5,
+            'line-opacity': 0.6,
+            'line-dasharray': [2, 3],
+        }
+    });
+
+    // Digipeater path line layer — magenta dashed like APRS.fi
+    map.addLayer({
+        id: 'path-line',
+        type: 'line',
+        source: 'aprs-path',
+        paint: {
+            'line-color': '#e040fb',
+            'line-width': 2,
+            'line-opacity': 0.85,
+            'line-dasharray': [4, 2],
+        }
     });
 
     // Track lines layer — uses per-segment color from properties
@@ -221,14 +282,8 @@ function addAprsLayers() {
                 ['!=', ['index-of', 'aprs-is', ['get', 'heardVia']], -1], '#3b82f6',
                 'transparent'
             ],
-            'circle-opacity': [
-                'interpolate', ['linear'], ['get', 'ageMinutes'],
-                0, 1, 30, 1, 120, 0.25
-            ],
-            'circle-stroke-opacity': [
-                'interpolate', ['linear'], ['get', 'ageMinutes'],
-                0, 0.6, 30, 0.6, 120, 0.15
-            ],
+            'circle-opacity': 1,
+            'circle-stroke-opacity': 0.6,
         }
     });
 
@@ -266,10 +321,7 @@ function addAprsLayers() {
                 ['get', 'selected'], '#6366f1',
                 'rgba(255,255,255,0.5)'
             ],
-            'circle-opacity': [
-                'interpolate', ['linear'], ['get', 'ageMinutes'],
-                0, 1, 30, 1, 120, 0.25
-            ],
+            'circle-opacity': 1,
         }
     });
 
@@ -292,10 +344,7 @@ function addAprsLayers() {
             'icon-ignore-placement': true,
         },
         paint: {
-            'icon-opacity': [
-                'interpolate', ['linear'], ['get', 'ageMinutes'],
-                0, 1, 30, 1, 120, 0.25
-            ],
+            'icon-opacity': 1,
         }
     });
 
@@ -336,10 +385,7 @@ function addAprsLayers() {
             'text-color': '#ccc',
             'text-halo-color': '#000',
             'text-halo-width': 1,
-            'text-opacity': [
-                'interpolate', ['linear'], ['get', 'ageMinutes'],
-                0, 1, 30, 1, 120, 0.3
-            ],
+            'text-opacity': 1,
         }
     });
 
@@ -361,10 +407,7 @@ function addAprsLayers() {
         },
         paint: {
             'text-color': '#60a5fa',
-            'text-opacity': [
-                'interpolate', ['linear'], ['get', 'ageMinutes'],
-                0, 0.8, 30, 0.8, 120, 0.2
-            ],
+            'text-opacity': 0.8,
         }
     });
 
@@ -432,11 +475,89 @@ function addAprsLayers() {
             html += '</div>';
 
             hoverPopup.setLngLat(coords).setHTML(html).addTo(map);
+
+            // Draw digipeater path line
+            var lastPath = props.lastPath || '';
+            if (lastPath) {
+                var pathCoords = resolvePathCoords(lastPath);
+                // Prepend the source station's position
+                pathCoords.unshift(coords);
+                if (pathCoords.length >= 2) {
+                    try {
+                        var pathSource = map.getSource('aprs-path');
+                        if (pathSource) {
+                            pathSource.setData({
+                                type: 'FeatureCollection',
+                                features: [{
+                                    type: 'Feature',
+                                    geometry: { type: 'LineString', coordinates: pathCoords },
+                                    properties: {}
+                                }]
+                            });
+                        }
+                    } catch(e) {}
+                }
+            }
+
+            // Show RF coverage on hover
+            var covCall = props.callsign;
+            if (covCall) {
+                var showCov = function(hears, heardBy) {
+                    showCoverage(coords, hears, heardBy);
+                    // Append coverage stats to popup
+                    if (hears.length > 0 || heardBy.length > 0) {
+                        var popupEl = hoverPopup.getElement();
+                        if (popupEl) {
+                            var content = popupEl.querySelector('.popup-content');
+                            if (content && !content.querySelector('.popup-coverage')) {
+                                var covHtml = '';
+                                if (hears.length > 0) covHtml += '<span style="color:#10b981">Hears ' + hears.length + '</span>';
+                                if (hears.length > 0 && heardBy.length > 0) covHtml += ' <span style="color:#a1a1aa">\u00b7</span> ';
+                                if (heardBy.length > 0) covHtml += '<span style="color:#3b82f6">Heard by ' + heardBy.length + '</span>';
+                                var covDiv = document.createElement('div');
+                                covDiv.className = 'popup-coverage';
+                                covDiv.style.cssText = 'font-size:10px;margin-top:2px';
+                                covDiv.innerHTML = covHtml;
+                                content.appendChild(covDiv);
+                            }
+                        }
+                    }
+                };
+
+                if (coverageCache[covCall]) {
+                    var cached = coverageCache[covCall];
+                    showCov(cached.hears, cached.heardBy);
+                } else {
+                    fetch('/api/stations/' + encodeURIComponent(covCall) + '/coverage')
+                        .then(function(resp) { return resp.ok ? resp.json() : null; })
+                        .then(function(data) {
+                            if (!data) return;
+                            var hears = (data.hears || []).map(function(s) {
+                                return { lon: s.lon, lat: s.lat, callsign: s.callsign, packet_count: s.packet_count };
+                            });
+                            var heardBy = (data.heard_by || []).map(function(s) {
+                                return { lon: s.lon, lat: s.lat, callsign: s.callsign, packet_count: s.packet_count };
+                            });
+                            coverageCache[covCall] = { hears: hears, heardBy: heardBy };
+                            showCov(hears, heardBy);
+                        })
+                        .catch(function() {});
+                }
+            }
         });
 
         map.on('mouseleave', layerId, function() {
             map.getCanvas().style.cursor = '';
             hoverPopup.remove();
+            // Clear path line
+            try {
+                var pathSource = map.getSource('aprs-path');
+                if (pathSource) {
+                    pathSource.setData({ type: 'FeatureCollection', features: [] });
+                }
+            } catch(e) {}
+            // Clear coverage
+            clearCoverage();
         });
     });
 
@@ -450,6 +571,62 @@ function addAprsLayers() {
         try { map.getSource('aprs-tracks').setData(pendingTracks); } catch(e) {}
         pendingTracks = null;
     }
+}
+
+// Resolve a digipeater path string to an array of [lon, lat] coordinates.
+// Handles both RF paths (with H-bit *) and APRS-IS paths (qAR/qAO construct).
+//
+// RF path example:  "W1ABC-1*,WIDE2*,qAR,W2DEF"
+//   → W1ABC-1 (H-bit digi) + W2DEF (IGate after qAR)
+//
+// APRS-IS path example: "WIDE2-1,qAR,K1WH"
+//   → K1WH (IGate that heard the packet)
+//
+// Pure APRS-IS (TCPIP*,qAC,...) → filtered out, no path drawn.
+function resolvePathCoords(pathStr) {
+    if (!pathStr) return [];
+    // Skip pure APRS-IS originated packets (TCPIP* paths)
+    if (pathStr.indexOf('TCPIP') >= 0) return [];
+
+    var aliases = ['WIDE', 'RELAY', 'TRACE', 'RFONLY', 'NOGATE', 'GATE'];
+    var coords = [];
+    var hops = pathStr.split(',');
+    var afterQ = false;
+
+    for (var i = 0; i < hops.length; i++) {
+        var hop = hops[i].trim();
+        if (!hop) continue;
+
+        // Check for q-construct (qAR, qAO, qAS, qAC, etc.)
+        if (hop.charAt(0) === 'q' && hop.length <= 4) {
+            afterQ = true;
+            continue;
+        }
+
+        // Strip H-bit marker if present
+        var hasHbit = hop.charAt(hop.length - 1) === '*';
+        var call = hasHbit ? hop.slice(0, -1) : hop;
+        var base = call.split('-')[0];
+
+        // Skip generic aliases (WIDE1-1, RELAY, etc.)
+        var isAlias = false;
+        for (var j = 0; j < aliases.length; j++) {
+            if (base.indexOf(aliases[j]) === 0) { isAlias = true; break; }
+        }
+        if (isAlias) continue;
+
+        // Skip very short callsigns
+        if (base.length <= 2) continue;
+
+        // Include this hop if:
+        // - It has H-bit set (RF digi that forwarded)
+        // - It's after the q-construct (IGate that heard the packet)
+        if (hasHbit || afterQ) {
+            var pos = window.getStationPosition ? window.getStationPosition(call) : null;
+            if (pos) coords.push(pos);
+        }
+    }
+    return coords;
 }
 
 function escHtml(s) {
@@ -612,6 +789,125 @@ function clearTracks() {
         }
     } catch(e) {}
     setTracksVisible(false);
+}
+
+// Show RF coverage on the map.
+// `stationCoords` is [lon, lat] of the center station.
+// `hearsStations` and `heardByStations` are arrays of {lon, lat, callsign, packet_count}.
+function showCoverage(stationCoords, hearsStations, heardByStations) {
+    if (!map || !mapReady) return;
+
+    var coverageFeatures = [];
+    var linkFeatures = [];
+
+    // RX coverage (what this station hears) — green
+    if (hearsStations.length > 0) {
+        var rxPoints = hearsStations.map(function(s) { return [s.lon, s.lat]; });
+        // Add link lines
+        for (var i = 0; i < rxPoints.length; i++) {
+            linkFeatures.push({
+                type: 'Feature',
+                geometry: { type: 'LineString', coordinates: [stationCoords, rxPoints[i]] },
+                properties: { color: '#10b981' }
+            });
+        }
+        // Convex hull polygon
+        if (rxPoints.length >= 3) {
+            var hull = convexHull(rxPoints);
+            if (hull.length >= 3) {
+                hull.push(hull[0]); // close polygon
+                coverageFeatures.push({
+                    type: 'Feature',
+                    geometry: { type: 'Polygon', coordinates: [hull] },
+                    properties: { color: '#10b981', type: 'rx' }
+                });
+            }
+        }
+    }
+
+    // TX coverage (who hears this station) — blue
+    if (heardByStations.length > 0) {
+        var txPoints = heardByStations.map(function(s) { return [s.lon, s.lat]; });
+        for (var i = 0; i < txPoints.length; i++) {
+            linkFeatures.push({
+                type: 'Feature',
+                geometry: { type: 'LineString', coordinates: [stationCoords, txPoints[i]] },
+                properties: { color: '#3b82f6' }
+            });
+        }
+        if (txPoints.length >= 3) {
+            var hull = convexHull(txPoints);
+            if (hull.length >= 3) {
+                hull.push(hull[0]);
+                coverageFeatures.push({
+                    type: 'Feature',
+                    geometry: { type: 'Polygon', coordinates: [hull] },
+                    properties: { color: '#3b82f6', type: 'tx' }
+                });
+            }
+        }
+    }
+
+    try {
+        var covSrc = map.getSource('aprs-coverage');
+        if (covSrc) covSrc.setData({ type: 'FeatureCollection', features: coverageFeatures });
+        var linkSrc = map.getSource('aprs-coverage-links');
+        if (linkSrc) linkSrc.setData({ type: 'FeatureCollection', features: linkFeatures });
+    } catch(e) {
+        console.error('Failed to show coverage:', e);
+    }
+}
+
+function clearCoverage() {
+    if (!map || !mapReady) return;
+    try {
+        var covSrc = map.getSource('aprs-coverage');
+        if (covSrc) covSrc.setData({ type: 'FeatureCollection', features: [] });
+        var linkSrc = map.getSource('aprs-coverage-links');
+        if (linkSrc) linkSrc.setData({ type: 'FeatureCollection', features: [] });
+    } catch(e) {}
+}
+
+// Convex hull — Graham scan algorithm.
+// Input: array of [lon, lat] points. Returns hull points in CCW order.
+function convexHull(points) {
+    if (points.length < 3) return points.slice();
+
+    // Find bottom-most (then left-most) point
+    var start = 0;
+    for (var i = 1; i < points.length; i++) {
+        if (points[i][1] < points[start][1] ||
+            (points[i][1] === points[start][1] && points[i][0] < points[start][0])) {
+            start = i;
+        }
+    }
+    var pivot = points[start];
+
+    // Sort by polar angle relative to pivot
+    var sorted = points.slice();
+    sorted.splice(start, 1);
+    sorted.sort(function(a, b) {
+        var angleA = Math.atan2(a[1] - pivot[1], a[0] - pivot[0]);
+        var angleB = Math.atan2(b[1] - pivot[1], b[0] - pivot[0]);
+        if (angleA !== angleB) return angleA - angleB;
+        // Same angle: closer point first
+        var distA = (a[0] - pivot[0]) * (a[0] - pivot[0]) + (a[1] - pivot[1]) * (a[1] - pivot[1]);
+        var distB = (b[0] - pivot[0]) * (b[0] - pivot[0]) + (b[1] - pivot[1]) * (b[1] - pivot[1]);
+        return distA - distB;
+    });
+
+    var hull = [pivot, sorted[0]];
+    for (var i = 1; i < sorted.length; i++) {
+        while (hull.length > 1 && cross(hull[hull.length - 2], hull[hull.length - 1], sorted[i]) <= 0) {
+            hull.pop();
+        }
+        hull.push(sorted[i]);
+    }
+    return hull;
+}
+
+function cross(o, a, b) {
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
 }
 
 function getMapCenter() {
