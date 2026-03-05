@@ -15,6 +15,7 @@ exclude = [
     "esp32c3-test",  # Requires riscv32imc target (ESP32-C3) — build separately
     "esp32c6-test",  # Requires riscv32imac target (ESP32-C6) — build separately
     "rp2040-test",   # Requires thumbv6m-none-eabi target — build separately
+    "pico2w-test",   # Requires thumbv8m.main-none-eabihf target (RP2350) — build separately
 ]
 resolver = "2"
 

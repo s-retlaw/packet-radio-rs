@@ -1,0 +1,38 @@
+[package]
+name = "pico2w-test"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Pico 2 W (RP2350) Embassy test harness — benchmarks packet-radio-core decoders over USB-CDC"
+
+[dependencies]
+# Embassy runtime + RP2350 HAL
+embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread"] }
+embassy-rp = { version = "0.9", features = ["rp235xb", "critical-section-impl", "time-driver"] }
+embassy-time = { version = "0.5" }
+embassy-usb = { version = "0.5" }
+
+# Logging
+defmt = "1.0"
+defmt-rtt = "1.1"
+
+# Cortex-M + panic handler
+cortex-m = { version = "0.7", features = ["inline-asm"] }
+cortex-m-rt = "0.7"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+
+# Static allocation for USB buffers
+static_cell = "2"
+
+# Packet radio core (no_std, no alloc)
+packet-radio-core = { path = "../core", default-features = false, features = ["multi-decoder"] }
+
+[profile.dev]
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1
+opt-level = "s"
+lto = "fat"
+overflow-checks = false
+debug = 2
