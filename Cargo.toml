@@ -10,6 +10,7 @@ members = [
     "tests/benchmark",
     "tests/kiss_e2e",
     "tools/kiss-dump",
+    "fcc-data",
 ]
 exclude = [
     "esp32c3-test",  # Requires riscv32imc target (ESP32-C3) — build separately
