@@ -152,10 +152,7 @@ impl WebConfig {
     }
 
     pub fn load_or_default(path: &str) -> Self {
-        match Self::load(path) {
-            Ok(config) => config,
-            Err(_) => Self::default(),
-        }
+        Self::load(path).unwrap_or_default()
     }
 
     /// Save config to a TOML file.

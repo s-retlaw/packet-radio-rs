@@ -95,10 +95,8 @@ async fn main() {
                             tracing::info!("TNC config changed, reconnecting...");
                         }
                     }
-                } else {
-                    if config_rx.changed().await.is_err() {
-                        break;
-                    }
+                } else if config_rx.changed().await.is_err() {
+                    break;
                 }
             }
         });
@@ -113,28 +111,28 @@ async fn main() {
         let mut config_rx = app_state.config_notify.subscribe();
         tokio::spawn(async move {
             loop {
-                let (enabled, host, port, callsign, passcode, filter) = {
+                let (enabled, aprs_is_config) = {
                     let cfg = config_arc.read().await;
                     (
                         cfg.aprs_is.enabled,
-                        cfg.aprs_is.host.clone(),
-                        cfg.aprs_is.port,
-                        cfg.aprs_is.callsign.clone(),
-                        cfg.aprs_is.passcode.clone(),
-                        cfg.aprs_is.filter.clone(),
+                        aprs_is::AprsIsClientConfig {
+                            host: cfg.aprs_is.host.clone(),
+                            port: cfg.aprs_is.port,
+                            callsign: cfg.aprs_is.callsign.clone(),
+                            passcode: cfg.aprs_is.passcode.clone(),
+                            filter: cfg.aprs_is.filter.clone(),
+                        },
                     )
                 };
                 if enabled {
                     tokio::select! {
-                        _ = aprs_is::run_aprs_is_client(&host, port, &callsign, &passcode, &filter, pool.clone(), tx.clone(), reference_db.clone()) => {},
+                        _ = aprs_is::run_aprs_is_client(&aprs_is_config, pool.clone(), tx.clone(), reference_db.clone()) => {},
                         _ = config_rx.changed() => {
                             tracing::info!("APRS-IS config changed, reconnecting...");
                         }
                     }
-                } else {
-                    if config_rx.changed().await.is_err() {
-                        break;
-                    }
+                } else if config_rx.changed().await.is_err() {
+                    break;
                 }
             }
         });

@@ -597,6 +597,7 @@ impl App {
     pub fn handle_async_event(&mut self, evt: AsyncEvent) {
         match evt {
             AsyncEvent::FrameDecoded(frame) => {
+                let frame = *frame;
                 // Update APRS station list if applicable
                 if let Some(ref summary) = frame.aprs_summary {
                     self.update_aprs_station(&frame, summary);
@@ -1241,7 +1242,7 @@ mod tests {
         let mut app = App::new_for_testing();
         assert!(app.frames.is_empty());
 
-        app.handle_async_event(AsyncEvent::FrameDecoded(DecodedFrameInfo {
+        app.handle_async_event(AsyncEvent::FrameDecoded(Box::new(DecodedFrameInfo {
             frame_number: 1,
             timestamp: "12:00:00".into(),
             source: "W1AW".into(),
@@ -1260,7 +1261,7 @@ mod tests {
                 compressed_extra: None,
             }),
             raw_len: 50,
-        }));
+        })));
 
         assert_eq!(app.frames.len(), 1);
         assert_eq!(app.stats.unique_frames, 1);

@@ -22,7 +22,7 @@ fn is_allowed_url(url: &str) -> bool {
     }
 
     match parsed.host_str() {
-        Some(host) => ALLOWED_DOWNLOAD_DOMAINS.iter().any(|&d| host == d),
+        Some(host) => ALLOWED_DOWNLOAD_DOMAINS.contains(&host),
         None => false,
     }
 }

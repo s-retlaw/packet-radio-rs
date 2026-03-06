@@ -1147,7 +1147,7 @@ fn compute_rrc_coeffs(coeffs: &mut [i16], sps: usize, alpha_pct: u32) {
     let mut max_val: f64 = 0.0;
     let mut f_coeffs = [0.0f64; MAX_RRC_TAPS];
 
-    for i in 0..n {
+    for (i, coeff) in f_coeffs[..n].iter_mut().enumerate() {
         let t = (i as f64 - half) / sps as f64;
 
         let val = if t.abs() < 1e-10 {
@@ -1163,7 +1163,7 @@ fn compute_rrc_coeffs(coeffs: &mut [i16], sps: usize, alpha_pct: u32) {
             if den.abs() < 1e-20 { 0.0 } else { num / den }
         };
 
-        f_coeffs[i] = val;
+        *coeff = val;
         if val.abs() > max_val {
             max_val = val.abs();
         }

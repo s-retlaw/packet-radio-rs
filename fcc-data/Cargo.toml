@@ -44,7 +44,7 @@ encoding_rs = "0.8"
 indicatif = "0.17"
 
 # TUI
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 
 # Futures for streaming

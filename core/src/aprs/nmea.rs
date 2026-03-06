@@ -329,35 +329,28 @@ fn parse_rmc(fields: &[&[u8]], n: usize) -> Option<NmeaData> {
         return None;
     }
 
-    let mut data = NmeaData::default();
-
-    // Time
-    data.time = parse_nmea_time(fields[1]);
-
-    // Status: A=valid, V=void
-    data.fix_valid = fields[2] == b"A";
-
     // Position
     let lat = parse_nmea_lat(fields[3], fields[4]);
     let lon = parse_nmea_lon(fields[5], fields[6]);
-    if let (Some(lat_val), Some(lon_val)) = (lat, lon) {
-        data.position = Some(super::Position {
+    let position = if let (Some(lat_val), Some(lon_val)) = (lat, lon) {
+        Some(super::Position {
             lat: lat_val,
             lon: lon_val,
             ambiguity: 0,
-        });
-    }
+        })
+    } else {
+        None
+    };
 
-    // Speed (knots)
-    data.speed_tenths_kts = parse_decimal_tenths(fields[7]);
-
-    // Course
-    data.course_tenths_deg = parse_decimal_tenths(fields[8]);
-
-    // Date
-    data.date = parse_nmea_date(fields[9]);
-
-    Some(data)
+    Some(NmeaData {
+        time: parse_nmea_time(fields[1]),
+        fix_valid: fields[2] == b"A",
+        position,
+        speed_tenths_kts: parse_decimal_tenths(fields[7]),
+        course_tenths_deg: parse_decimal_tenths(fields[8]),
+        date: parse_nmea_date(fields[9]),
+        ..NmeaData::default()
+    })
 }
 
 /// Parse GGA sentence fields into NmeaData.
@@ -369,42 +362,33 @@ fn parse_gga(fields: &[&[u8]], n: usize) -> Option<NmeaData> {
         return None;
     }
 
-    let mut data = NmeaData::default();
-
-    // Time
-    data.time = parse_nmea_time(fields[1]);
-
     // Position
     let lat = parse_nmea_lat(fields[2], fields[3]);
     let lon = parse_nmea_lon(fields[4], fields[5]);
-    if let (Some(lat_val), Some(lon_val)) = (lat, lon) {
-        data.position = Some(super::Position {
+    let position = if let (Some(lat_val), Some(lon_val)) = (lat, lon) {
+        Some(super::Position {
             lat: lat_val,
             lon: lon_val,
             ambiguity: 0,
-        });
-    }
+        })
+    } else {
+        None
+    };
 
-    // Fix quality
-    if let Some(q) = parse_uint(fields[6]) {
-        data.fix_quality = Some(q as u8);
-        data.fix_valid = q > 0;
-    }
+    // Fix quality and validity
+    let fix_quality = parse_uint(fields[6]).map(|q| q as u8);
+    let fix_valid = fix_quality.is_some_and(|q| q > 0);
 
-    // Satellites
-    if let Some(s) = parse_uint(fields[7]) {
-        data.satellites = Some(s as u8);
-    }
-
-    // HDOP
-    data.hdop_tenths = parse_decimal_tenths(fields[8]).map(|v| v as u16);
-
-    // Altitude
-    if n > 9 {
-        data.altitude_dm = parse_signed_decimal_tenths(fields[9]);
-    }
-
-    Some(data)
+    Some(NmeaData {
+        time: parse_nmea_time(fields[1]),
+        position,
+        fix_quality,
+        fix_valid,
+        satellites: parse_uint(fields[7]).map(|s| s as u8),
+        hdop_tenths: parse_decimal_tenths(fields[8]).map(|v| v as u16),
+        altitude_dm: if n > 9 { parse_signed_decimal_tenths(fields[9]) } else { None },
+        ..NmeaData::default()
+    })
 }
 
 #[cfg(test)]

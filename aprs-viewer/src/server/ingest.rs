@@ -10,7 +10,8 @@ use super::convert::{
     bytes_to_string, extract_position, extract_speed_course, extract_symbol, packet_type_name,
     to_web_packet,
 };
-use super::db;
+use super::db::{self, PacketInsert, StationUpsert};
+use super::error::ServerError;
 use crate::models::{PacketRow, WebAprsData};
 
 /// Check whether a lat/lon pair is plausible for APRS.
@@ -40,7 +41,7 @@ pub async fn process_raw_frame(
     tx: &broadcast::Sender<String>,
     reference_db: Option<&reference::ReferenceDb>,
     source_type: &str,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<bool, ServerError> {
     let frame = match Frame::parse(raw_ax25) {
         Some(f) => f,
         None => return Ok(false),
@@ -86,19 +87,21 @@ pub async fn process_raw_frame(
     let aprs_data = aprs::parse_packet(frame.info, dest_callsign).map(|pkt| to_web_packet(&pkt));
 
     let packet_type = aprs_data.as_ref().map(|d| packet_type_name(d));
-    let summary = aprs_data.as_ref().map(|d| format_summary(d));
+    let summary = aprs_data.as_ref().map(format_summary);
 
     // Insert packet
     let packet_id = db::insert_packet(
         pool,
-        &source,
-        source_ssid,
-        &dest,
-        path.as_deref(),
-        packet_type,
-        &raw_info,
-        summary.as_deref(),
-        source_type,
+        &PacketInsert {
+            source: &source,
+            source_ssid,
+            dest: &dest,
+            path: path.as_deref(),
+            packet_type,
+            raw_info: &raw_info,
+            summary: summary.as_deref(),
+            source_type,
+        },
     )
     .await?;
 
@@ -144,20 +147,22 @@ pub async fn process_raw_frame(
 
         db::upsert_station(
             pool,
-            &source,
-            source_ssid,
-            packet_type.unwrap_or("Unknown"),
-            position.map(|(lat, _)| lat),
-            position.map(|(_, lon)| lon),
-            speed,
-            course,
-            None, // altitude not in simplified core types
-            comment,
-            sym_table.as_deref(),
-            sym_code.as_deref(),
-            weather_json.as_deref(),
-            source_type,
-            path.as_deref(),
+            &StationUpsert {
+                callsign: &source,
+                ssid: source_ssid,
+                station_type: packet_type.unwrap_or("Unknown"),
+                lat: position.map(|(lat, _)| lat),
+                lon: position.map(|(_, lon)| lon),
+                speed,
+                course,
+                altitude: None, // altitude not in simplified core types
+                comment,
+                symbol_table: sym_table.as_deref(),
+                symbol_code: sym_code.as_deref(),
+                weather_json: weather_json.as_deref(),
+                source_type,
+                last_path: path.as_deref(),
+            },
         )
         .await?;
 
@@ -232,7 +237,7 @@ pub async fn process_kiss_bytes(
     pool: &SqlitePool,
     tx: &broadcast::Sender<String>,
     reference_db: Option<&reference::ReferenceDb>,
-) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<u32, ServerError> {
     let mut decoder = KissDecoder::new();
     let mut count = 0u32;
 

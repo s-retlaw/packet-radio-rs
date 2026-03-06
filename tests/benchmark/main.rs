@@ -395,8 +395,8 @@ fn decode_fast(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+        for sym in &symbols[..n] {
+            if let Some(frame) = hdlc.feed_bit(sym.bit) {
                 frames.push(frame.to_vec());
             }
         }
@@ -421,8 +421,8 @@ fn decode_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
 
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+        for sym in &symbols[..n] {
+            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                 let data = match &result {
                     FrameResult::Valid(d) => d,
                     FrameResult::Recovered { data, .. } => data,
@@ -523,8 +523,8 @@ fn decode_fast_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+        for sym in &symbols[..n] {
+            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                 let data = match &result {
                     FrameResult::Valid(d) => d,
                     FrameResult::Recovered { data, .. } => data,
@@ -553,8 +553,8 @@ fn decode_quality_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+        for sym in &symbols[..n] {
+            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                 let data = match &result {
                     FrameResult::Valid(d) => d,
                     FrameResult::Recovered { data, .. } => data,
@@ -596,8 +596,8 @@ fn decode_best_single(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let start = Instant::now();
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+        for sym in &symbols[..n] {
+            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                 let data = match &result {
                     FrameResult::Valid(d) => d,
                     FrameResult::Recovered { data, .. } => data,
@@ -652,8 +652,8 @@ fn decode_custom_goertzel(
     let start = Instant::now();
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+        for sym in &symbols[..n] {
+            if let Some(frame) = hdlc.feed_bit(sym.bit) {
                 frames.push(frame.to_vec());
             }
         }
@@ -689,25 +689,6 @@ fn resample_to(samples: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
     out
 }
 
-/// Upsample audio 2x using linear interpolation.
-fn upsample_2x(samples: &[i16]) -> Vec<i16> {
-    if samples.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::with_capacity(samples.len() * 2);
-    for i in 0..samples.len() {
-        out.push(samples[i]);
-        if i + 1 < samples.len() {
-            // Linear interpolation between adjacent samples
-            let mid = ((samples[i] as i32 + samples[i + 1] as i32) / 2) as i16;
-            out.push(mid);
-        } else {
-            out.push(samples[i]);
-        }
-    }
-    out
-}
-
 /// Decode audio samples using the delay-multiply demodulator + hard HDLC.
 ///
 /// Uses BPF + LPF for real-world signals. Optionally upsamples to 22050 Hz.
@@ -723,8 +704,8 @@ fn decode_dm(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+        for sym in &symbols[..n] {
+            if let Some(frame) = hdlc.feed_bit(sym.bit) {
                 frames.push(frame.to_vec());
             }
         }
@@ -749,8 +730,8 @@ fn decode_corr(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+        for sym in &symbols[..n] {
+            if let Some(frame) = hdlc.feed_bit(sym.bit) {
                 frames.push(frame.to_vec());
             }
         }
@@ -777,8 +758,8 @@ fn decode_corr_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32)
 
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+        for sym in &symbols[..n] {
+            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                 let data = match &result {
                     FrameResult::Valid(d) => d,
                     FrameResult::Recovered { data, .. } => data,
@@ -824,8 +805,8 @@ fn decode_corr_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
         for chunk in samples.chunks(1024) {
             let n = demod.process_samples(chunk, &mut symbols);
-            for i in 0..n {
-                if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+            for sym in &symbols[..n] {
+                if let Some(frame) = hdlc.feed_bit(sym.bit) {
                     let hash = fnv1a_hash(frame);
                     frames.push((hash, sample_pos, frame.to_vec()));
                 }
@@ -885,8 +866,8 @@ fn decode_corr_3phase_quality(samples: &[i16], sample_rate: u32) -> (DecodeResul
 
         for chunk in samples.chunks(1024) {
             let n = demod.process_samples(chunk, &mut symbols);
-            for i in 0..n {
-                if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+            for sym in &symbols[..n] {
+                if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                     let data = match &result {
                         FrameResult::Valid(d) => d,
                         FrameResult::Recovered { data, .. } => data,
@@ -932,90 +913,6 @@ fn fnv1a_hash(data: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
-}
-
-/// Decode using fast demod with cascaded BPF.
-fn decode_fast_cascade(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let config = config_for_rate(sample_rate, get_baud());
-
-    let mut demod = FastDemodulator::new(config)
-        .with_adaptive_gain()
-        .with_cascade_bpf();
-    let mut hdlc = HdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
-                frames.push(frame.to_vec());
-            }
-        }
-    }
-    DecodeResult { frames, elapsed: start.elapsed() }
-}
-
-/// Decode using correlation demod with cascaded BPF.
-fn decode_corr_cascade(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let config = config_for_rate(sample_rate, get_baud());
-
-    let mut demod = CorrelationDemodulator::new(config)
-        .with_adaptive_gain()
-        .with_cascade_bpf();
-    let mut hdlc = HdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
-                frames.push(frame.to_vec());
-            }
-        }
-    }
-    DecodeResult { frames, elapsed: start.elapsed() }
-}
-
-/// Decode using DM at 22050 Hz (upsampled if needed).
-fn decode_dm_22k(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let (effective_rate, owned);
-    let work_samples: &[i16] = if sample_rate <= 11025 {
-        owned = upsample_2x(samples);
-        effective_rate = sample_rate * 2;
-        &owned
-    } else {
-        effective_rate = sample_rate;
-        owned = Vec::new();
-        let _ = &owned;
-        samples
-    };
-
-    let config = config_for_rate(effective_rate, get_baud());
-
-    let mut demod = DmDemodulator::with_bpf(config);
-    let mut hdlc = HdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-
-    for chunk in work_samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
-                frames.push(frame.to_vec());
-            }
-        }
-    }
-
-    DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }
 }
 
 // ─── Unified Result & Grid Printer ────────────────────────────────────────
@@ -1088,11 +985,11 @@ fn print_unified_grid(title: &str, results: &[UnifiedResult], mcu_only: bool) {
     // Header
     let dw_hdr = if have_dw { format!("{:>5}", "DW") } else { String::new() };
     let mut hdr = format!("{:<30} {}", "Track", dw_hdr);
-    for i in 0..cols {
+    for (i, col_name) in COL_NAMES.iter().enumerate().take(cols) {
         if i == MCU_COLS && !mcu_only {
             hdr.push_str(" \u{2502}");
         }
-        hdr.push_str(&format!(" {:>5}", COL_NAMES[i]));
+        hdr.push_str(&format!(" {:>5}", col_name));
     }
     println!("{}", hdr);
 
@@ -1118,14 +1015,14 @@ fn print_unified_grid(title: &str, results: &[UnifiedResult], mcu_only: bool) {
             String::new()
         };
         let mut row = format!("{:<30}{}", r.display_name, dw_str);
-        for i in 0..cols {
+        for (i, total) in totals.iter_mut().enumerate() {
             if i == MCU_COLS && !mcu_only {
                 row.push_str(" \u{2502}");
             }
             match r.count(i) {
                 Some(c) => {
                     row.push_str(&format!(" {:>5}", c));
-                    totals[i] += c;
+                    *total += c;
                 }
                 None => row.push_str("     -"),
             }
@@ -1151,12 +1048,12 @@ fn print_unified_grid(title: &str, results: &[UnifiedResult], mcu_only: bool) {
         String::new()
     };
     let mut total_row = format!("{:<30}{}", "TOTAL", dw_total_str);
-    for i in 0..cols {
+    for (i, total) in totals.iter().enumerate() {
         if i == MCU_COLS && !mcu_only {
             total_row.push_str(" \u{2502}");
         }
         if results.iter().any(|r| r.count(i).is_some()) {
-            total_row.push_str(&format!(" {:>5}", totals[i]));
+            total_row.push_str(&format!(" {:>5}", total));
         } else {
             total_row.push_str("     -");
         }
@@ -1166,12 +1063,12 @@ fn print_unified_grid(title: &str, results: &[UnifiedResult], mcu_only: bool) {
     // %DW row
     if have_dw && total_dw > 0 {
         let mut pct_row = format!("{:<30}{}", "%DW", if have_dw { "      " } else { "" });
-        for i in 0..cols {
+        for (i, total) in totals.iter().enumerate() {
             if i == MCU_COLS && !mcu_only {
                 pct_row.push_str(" \u{2502}");
             }
             if results.iter().any(|r| r.count(i).is_some()) {
-                let pct = totals[i] as f64 / total_dw as f64 * 100.0;
+                let pct = *total as f64 / total_dw as f64 * 100.0;
                 pct_row.push_str(&format!(" {:>5.1}", pct));
             } else {
                 pct_row.push_str("     -");
@@ -1188,11 +1085,11 @@ fn print_timing_summary(results: &[UnifiedResult], mcu_only: bool) {
     let cols = num_cols(mcu_only);
     println!("Timing (x real-time):");
     let mut hdr = format!("  {:<28}", "Track");
-    for i in 0..cols {
+    for (i, col_name) in COL_NAMES.iter().enumerate().take(cols) {
         if i == MCU_COLS && !mcu_only {
             hdr.push_str("  \u{2502}");
         }
-        hdr.push_str(&format!("  {:>5}", COL_NAMES[i]));
+        hdr.push_str(&format!("  {:>5}", col_name));
     }
     println!("{}", hdr);
     println!("  {}", "\u{2500}".repeat(28 + cols * 7 + if mcu_only { 0 } else { 3 }));
@@ -1338,7 +1235,7 @@ fn run_smart3(path: &str) {
     let gain = smart3.frames.len() as i64 - fast.frames.len() as i64;
     println!("  Gain:    {:>+4} packets ({:.1}% improvement over fast)",
         gain,
-        if fast.frames.len() > 0 { gain as f64 / fast.frames.len() as f64 * 100.0 } else { 0.0 });
+        if !fast.frames.is_empty() { gain as f64 / fast.frames.len() as f64 * 100.0 } else { 0.0 });
     println!();
 }
 
@@ -1722,8 +1619,8 @@ fn run_corr_lpf_sweep(path: &str) {
         let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
         for chunk in samples.chunks(1024) {
             let n = demod.process_samples(chunk, &mut symbols);
-            for i in 0..n {
-                if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+            for sym in &symbols[..n] {
+                if let Some(frame) = hdlc.feed_bit(sym.bit) {
                     frames.push(frame.to_vec());
                 }
             }
@@ -1741,8 +1638,8 @@ fn run_corr_lpf_sweep(path: &str) {
         let mut symbols2 = [DemodSymbol { bit: false, llr: 0 }; 1024];
         for chunk in samples.chunks(1024) {
             let n = demod2.process_samples(chunk, &mut symbols2);
-            for i in 0..n {
-                if let Some(result) = soft_hdlc.feed_soft_bit(symbols2[i].llr) {
+            for sym in &symbols2[..n] {
+                if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                     let data = match &result {
                         FrameResult::Valid(d) => d,
                         FrameResult::Recovered { data, .. } => data,
@@ -1776,8 +1673,8 @@ fn decode_corr_pll(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let start = Instant::now();
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+        for sym in &symbols[..n] {
+            if let Some(frame) = hdlc.feed_bit(sym.bit) {
                 frames.push(frame.to_vec());
             }
         }
@@ -1800,8 +1697,8 @@ fn decode_corr_pll_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, 
     let start = Instant::now();
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+        for sym in &symbols[..n] {
+            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                 let data = match &result {
                     FrameResult::Valid(d) => d,
                     FrameResult::Recovered { data, .. } => data,
@@ -1832,8 +1729,8 @@ fn decode_corr_pll_custom(samples: &[i16], sample_rate: u32, alpha: i16, error_s
     let start = Instant::now();
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+        for sym in &symbols[..n] {
+            if let Some(frame) = hdlc.feed_bit(sym.bit) {
                 frames.push(frame.to_vec());
             }
         }
@@ -1860,8 +1757,8 @@ fn decode_corr_2phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
         for chunk in samples.chunks(1024) {
             let n = demod.process_samples(chunk, &mut symbols);
-            for i in 0..n {
-                if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+            for sym in &symbols[..n] {
+                if let Some(frame) = hdlc.feed_bit(sym.bit) {
                     let hash = fnv1a_hash(frame);
                     frames.push((hash, sample_pos, frame.to_vec()));
                 }
@@ -1911,8 +1808,8 @@ fn decode_corr_2phase_pll(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
         for chunk in samples.chunks(1024) {
             let n = demod.process_samples(chunk, &mut symbols);
-            for i in 0..n {
-                if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+            for sym in &symbols[..n] {
+                if let Some(frame) = hdlc.feed_bit(sym.bit) {
                     let hash = fnv1a_hash(frame);
                     frames.push((hash, sample_pos, frame.to_vec()));
                 }
@@ -2053,8 +1950,8 @@ fn run_soft_diag(path: &str) {
 
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+        for sym in &symbols[..n] {
+            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                 let data = match &result {
                     FrameResult::Valid(d) => d,
                     FrameResult::Recovered { data, .. } => data,
@@ -2109,29 +2006,6 @@ fn run_soft_diag(path: &str) {
             println!();
         }
     }
-}
-
-// ─── DM Single WAV Decode ────────────────────────────────────────────────
-
-/// Decode DM without BPF/LPF (raw discriminator).
-fn decode_dm_raw(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let config = config_for_rate(sample_rate, get_baud());
-
-    let mut demod = DmDemodulator::new(config); // no BPF
-    let mut hdlc = HdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
-                frames.push(frame.to_vec());
-            }
-        }
-    }
-    DecodeResult { frames, elapsed: start.elapsed() }
 }
 
 /// Decode with DM using a specific delay value and optional BPF/LPF.
@@ -2549,8 +2423,8 @@ fn decode_twist(
     let start = Instant::now();
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+        for sym in &symbols[..n] {
+            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                 let data = match &result {
                     FrameResult::Valid(d) => d,
                     FrameResult::Recovered { data, .. } => data,
@@ -2718,6 +2592,7 @@ fn run_smart3_sweep(path: &str) {
 
     // Parameters to sweep
     let freq_offsets = [-125i32, -100, -75, -50, -25, 0, 25, 50, 75, 100, 125];
+    #[allow(clippy::type_complexity)]
     let bpf_types: [(&str, Box<dyn Fn(u32, f64) -> packet_radio_core::modem::filter::BiquadFilter>); 3] = [
         ("narrow", Box::new(|sr, center| filter::bandpass_coeffs(sr, center, 1200.0))),
         ("std",    Box::new(|sr, center| filter::bandpass_coeffs(sr, center, 1600.0))),
@@ -2758,8 +2633,8 @@ fn run_smart3_sweep(path: &str) {
 
                 for chunk in samples.chunks(1024) {
                     let n = demod.process_samples(chunk, &mut symbols);
-                    for i in 0..n {
-                        if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+                    for sym in &symbols[..n] {
+                        if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                             let data = match &result {
                                 FrameResult::Valid(d) => d,
                                 FrameResult::Recovered { data, .. } => data,
@@ -2825,6 +2700,7 @@ fn run_smart3_sweep(path: &str) {
 
     // Sweep D1 across top configs, D2/D3 as narrow with timing diversity
     let d1_freq_offsets = [-125i32, -100, -75, -50, -25, 0, 25, 50, 75, 100];
+    #[allow(clippy::type_complexity)]
     let d1_bpf_types: [(&str, Box<dyn Fn(u32, f64) -> filter::BiquadFilter>); 2] = [
         ("std",  Box::new(|sr, center| filter::bandpass_coeffs(sr, center, 1600.0))),
         ("wide", Box::new(|sr, center| filter::bandpass_coeffs(sr, center, 2000.0))),
@@ -2856,7 +2732,7 @@ fn run_smart3_sweep(path: &str) {
 
                     let mut d1 = FastDemodulator::new(config).filter(bpf1).phase_offset(off1).frequencies(mark1, space1).with_energy_llr();
                     let mut d2 = FastDemodulator::new(config).filter(narrow).phase_offset(off2).with_energy_llr();
-                    let mut d3 = FastDemodulator::new(config).filter(narrow.clone()).phase_offset(off3).with_energy_llr();
+                    let mut d3 = FastDemodulator::new(config).filter(narrow).phase_offset(off3).with_energy_llr();
                     let mut h1 = SoftHdlcDecoder::new();
                     let mut h2 = SoftHdlcDecoder::new();
                     let mut h3 = SoftHdlcDecoder::new();
@@ -2866,8 +2742,8 @@ fn run_smart3_sweep(path: &str) {
 
                     for chunk in samples.chunks(1024) {
                         let n1 = d1.process_samples(chunk, &mut symbols);
-                        for i in 0..n1 {
-                            if let Some(result) = h1.feed_soft_bit(symbols[i].llr) {
+                        for sym in &symbols[..n1] {
+                            if let Some(result) = h1.feed_soft_bit(sym.llr) {
                                 let data = match &result {
                                     FrameResult::Valid(d) => d,
                                     FrameResult::Recovered { data, .. } => data,
@@ -2876,8 +2752,8 @@ fn run_smart3_sweep(path: &str) {
                             }
                         }
                         let n2 = d2.process_samples(chunk, &mut symbols);
-                        for i in 0..n2 {
-                            if let Some(result) = h2.feed_soft_bit(symbols[i].llr) {
+                        for sym in &symbols[..n2] {
+                            if let Some(result) = h2.feed_soft_bit(sym.llr) {
                                 let data = match &result {
                                     FrameResult::Valid(d) => d,
                                     FrameResult::Recovered { data, .. } => data,
@@ -2886,8 +2762,8 @@ fn run_smart3_sweep(path: &str) {
                             }
                         }
                         let n3 = d3.process_samples(chunk, &mut symbols);
-                        for i in 0..n3 {
-                            if let Some(result) = h3.feed_soft_bit(symbols[i].llr) {
+                        for sym in &symbols[..n3] {
+                            if let Some(result) = h3.feed_soft_bit(sym.llr) {
                                 let data = match &result {
                                     FrameResult::Valid(d) => d,
                                     FrameResult::Recovered { data, .. } => data,
@@ -2898,7 +2774,7 @@ fn run_smart3_sweep(path: &str) {
                     }
 
                     ensembles.push(EnsembleResult {
-                        d1_freq: d1_freq,
+                        d1_freq,
                         d1_bpf: d1_bpf_name.to_string(),
                         d1_timing: d1_t,
                         d2_timing: d2_t,
@@ -2941,8 +2817,8 @@ fn decode_xor(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+        for sym in &symbols[..n] {
+            if let Some(frame) = hdlc.feed_bit(sym.bit) {
                 frames.push(frame.to_vec());
             }
         }
@@ -2968,8 +2844,8 @@ fn decode_xor_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) 
 
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+        for sym in &symbols[..n] {
+            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                 let data = match &result {
                     FrameResult::Valid(d) => d,
                     FrameResult::Recovered { data, .. } => {
@@ -3372,11 +3248,11 @@ fn print_best_across_rates(
     let have_dw = all_rate_results.iter().any(|(_, rs)| rs.iter().any(|r| r.dw_count.is_some()));
     let dw_hdr = if have_dw { format!("{:>5}", "DW") } else { String::new() };
     let mut hdr = format!("{:<30} {}", "Track", dw_hdr);
-    for i in 0..cols {
+    for (i, col_name) in COL_NAMES.iter().enumerate().take(cols) {
         if i == MCU_COLS && !mcu_only {
             hdr.push_str(" \u{2502}");
         }
-        hdr.push_str(&format!(" {:>5}", COL_NAMES[i]));
+        hdr.push_str(&format!(" {:>5}", col_name));
     }
     println!("{}", hdr);
 
@@ -3399,11 +3275,11 @@ fn print_best_across_rates(
 
                 if dw.is_none() { dw = r.dw_count; }
 
-                for i in 0..cols {
+                for (i, (bc, br)) in best_count.iter_mut().zip(best_rate.iter_mut()).enumerate() {
                     if let Some(c) = r.count(i) {
-                        if c > best_count[i] {
-                            best_count[i] = c;
-                            best_rate[i] = *rate;
+                        if c > *bc {
+                            *bc = c;
+                            *br = *rate;
                         }
                     }
                 }
@@ -3418,12 +3294,12 @@ fn print_best_across_rates(
         };
         let truncated = if track_name.len() > 30 { &track_name[..30] } else { track_name.as_str() };
         let mut row = format!("{:<30}{}", truncated, dw_str);
-        for i in 0..cols {
+        for (i, bc) in best_count.iter().enumerate() {
             if i == MCU_COLS && !mcu_only {
                 row.push_str(" \u{2502}");
             }
-            if best_count[i] > 0 {
-                row.push_str(&format!(" {:>5}", best_count[i]));
+            if *bc > 0 {
+                row.push_str(&format!(" {:>5}", bc));
             } else {
                 row.push_str("     -");
             }
@@ -3432,12 +3308,12 @@ fn print_best_across_rates(
 
         // Rate annotation row
         let mut rate_row = format!("{:<30}{}", "", if have_dw { "      " } else { "" });
-        for i in 0..cols {
+        for (i, (bc, br)) in best_count.iter().zip(best_rate.iter()).enumerate() {
             if i == MCU_COLS && !mcu_only {
                 rate_row.push_str("  \u{2502}");
             }
-            if best_count[i] > 0 {
-                let abbr = if best_rate[i] == 0 { "nat" } else { rate_abbrev(best_rate[i]) };
+            if *bc > 0 {
+                let abbr = if *br == 0 { "nat" } else { rate_abbrev(*br) };
                 rate_row.push_str(&format!(" {:>5}", abbr));
             } else {
                 rate_row.push_str("      ");
@@ -3736,8 +3612,8 @@ fn decode_dm_pll_opts(
     let start = Instant::now();
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+        for sym in &symbols[..n] {
+            if let Some(frame) = hdlc.feed_bit(sym.bit) {
                 frames.push(frame.to_vec());
             }
         }
@@ -3776,8 +3652,8 @@ fn decode_dm_pll_soft(
     let start = Instant::now();
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+        for sym in &symbols[..n] {
+            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                 let data = match &result {
                     FrameResult::Valid(d) => d,
                     FrameResult::Recovered { data, .. } => data,
@@ -3811,10 +3687,10 @@ fn decode_dm_pll_counted(samples: &[i16], sample_rate: u32, alpha: i16, beta: i1
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
         total_syms += n;
-        for i in 0..n {
-            shift_reg = (shift_reg >> 1) | if symbols[i].bit { 0x80 } else { 0 };
+        for sym in &symbols[..n] {
+            shift_reg = (shift_reg >> 1) | if sym.bit { 0x80 } else { 0 };
             if shift_reg == 0x7E { flags += 1; }
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+            if let Some(frame) = hdlc.feed_bit(sym.bit) {
                 frames.push(frame.to_vec());
             }
         }
@@ -3850,8 +3726,8 @@ fn run_dm_pll(path: &str) {
         let mut dm = demod;
         for chunk in samples.chunks(1024) {
             let n = dm.process_samples(chunk, &mut symbols);
-            for i in 0..n {
-                if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+            for sym in &symbols[..n] {
+                if let Some(frame) = hdlc.feed_bit(sym.bit) {
                     frames.push(frame.to_vec());
                 }
             }
@@ -3885,8 +3761,8 @@ fn run_dm_pll(path: &str) {
         for chunk in samples.chunks(1024) {
             let n = demod.process_samples(chunk, &mut symbols_buf);
             bres_syms += n;
-            for i in 0..n {
-                shift = (shift >> 1) | if symbols_buf[i].bit { 0x80 } else { 0 };
+            for sym in &symbols_buf[..n] {
+                shift = (shift >> 1) | if sym.bit { 0x80 } else { 0 };
                 if shift == 0x7E { bres_flags += 1; }
             }
         }
@@ -4008,6 +3884,7 @@ fn run_dm_pll_sweep(path: &str) {
 // ─── DM+PLL Parameter Tune (Two-Stage Sweep) ─────────────────────────
 
 /// Decode DM+PLL with all tunable parameters.
+#[allow(clippy::too_many_arguments)]
 fn decode_dm_pll_tuned(
     samples: &[i16],
     sample_rate: u32,
@@ -4033,8 +3910,8 @@ fn decode_dm_pll_tuned(
 
         for chunk in samples.chunks(1024) {
             let n = demod.process_samples(chunk, &mut symbols);
-            for i in 0..n {
-                if soft_hdlc.feed_soft_bit(symbols[i].llr).is_some() {
+            for sym in &symbols[..n] {
+                if soft_hdlc.feed_soft_bit(sym.llr).is_some() {
                     frame_count += 1;
                 }
             }
@@ -4047,8 +3924,8 @@ fn decode_dm_pll_tuned(
 
         for chunk in samples.chunks(1024) {
             let n = demod.process_samples(chunk, &mut symbols);
-            for i in 0..n {
-                if hdlc.feed_bit(symbols[i].bit).is_some() {
+            for sym in &symbols[..n] {
+                if hdlc.feed_bit(sym.bit).is_some() {
                     frame_count += 1;
                 }
             }
@@ -4302,10 +4179,11 @@ fn run_export(wav_path: &str, output_dir: &str) {
         return;
     }
 
+    #[allow(clippy::type_complexity)]
     let paths: &[(&str, Box<dyn Fn(&[i16], u32) -> DecodeResult>)] = &[
-        ("fast", Box::new(|s, sr| decode_fast(s, sr))),
-        ("dm", Box::new(|s, sr| decode_dm(s, sr))),
-        ("dm_pll", Box::new(|s, sr| decode_dm_pll(s, sr))),
+        ("fast", Box::new(decode_fast)),
+        ("dm", Box::new(decode_dm)),
+        ("dm_pll", Box::new(decode_dm_pll)),
         ("multi", Box::new(|s, sr| {
             decode_multi(s, sr).0
         })),
@@ -4352,7 +4230,7 @@ fn run_export(wav_path: &str, output_dir: &str) {
 
     for &(name_a, ref set_a) in &sets {
         print!("  {:>8}", name_a);
-        for &(_, ref set_b) in &sets {
+        for (_, set_b) in &sets {
             let overlap = set_a.intersection(set_b).count();
             print!(" {:>8}", overlap);
         }
@@ -4364,8 +4242,8 @@ fn run_export(wav_path: &str, output_dir: &str) {
 fn parse_callsign(data: &[u8]) -> String {
     if data.len() < 7 { return "???".to_string(); }
     let mut call = String::with_capacity(9);
-    for i in 0..6 {
-        let c = (data[i] >> 1) & 0x7F;
+    for &b in &data[..6] {
+        let c = (b >> 1) & 0x7F;
         if c > 0x20 { call.push(c as char); }
     }
     let ssid = (data[6] >> 1) & 0x0F;
@@ -4423,14 +4301,14 @@ fn apply_frequency_offset(samples: &[i16], offset_hz: f64, sample_rate: u32) -> 
     const HALF_LEN: usize = 15;
     const HILBERT_LEN: usize = 2 * HALF_LEN + 1;
     let mut hilbert_coeffs = [0.0f64; HILBERT_LEN];
-    for i in 0..HILBERT_LEN {
+    for (i, coeff) in hilbert_coeffs.iter_mut().enumerate() {
         let n = i as isize - HALF_LEN as isize;
         if n == 0 {
-            hilbert_coeffs[i] = 0.0;
+            *coeff = 0.0;
         } else if n % 2 != 0 {
             // h[n] = 2/(π·n) for odd n, windowed with Hamming
             let hamming = 0.54 - 0.46 * f64::cos(TAU * i as f64 / (HILBERT_LEN - 1) as f64);
-            hilbert_coeffs[i] = (2.0 / (std::f64::consts::PI * n as f64)) * hamming;
+            *coeff = (2.0 / (std::f64::consts::PI * n as f64)) * hamming;
         }
     }
 
@@ -4449,9 +4327,9 @@ fn apply_frequency_offset(samples: &[i16], offset_hz: f64, sample_rate: u32) -> 
 
             // Compute Hilbert transform output
             let mut q = 0.0;
-            for k in 0..HILBERT_LEN {
+            for (k, &hc) in hilbert_coeffs.iter().enumerate() {
                 let idx = (write_idx + k) % HILBERT_LEN;
-                q += delay_line[idx] * hilbert_coeffs[k];
+                q += delay_line[idx] * hc;
             }
 
             // Delayed direct signal (aligned with Hilbert group delay)
@@ -4582,8 +4460,8 @@ fn parse_callsign_tnc2(data: &[u8], h_bit: bool) -> String {
         return "???".to_string();
     }
     let mut call = String::with_capacity(10);
-    for i in 0..6 {
-        let c = (data[i] >> 1) & 0x7F;
+    for &b in &data[..6] {
+        let c = (b >> 1) & 0x7F;
         if c > 0x20 {
             call.push(c as char);
         }
@@ -4681,11 +4559,7 @@ fn parse_dw_clean_log(path: &str) -> Result<Vec<(String, DwFrameInfo)>, String> 
                 if i < lines.len() {
                     let pkt_line = lines[i].trim();
                     // Strip "[0] " prefix
-                    let packet = if pkt_line.starts_with("[0] ") {
-                        &pkt_line[4..]
-                    } else {
-                        pkt_line
-                    };
+                    let packet = pkt_line.strip_prefix("[0] ").unwrap_or(pkt_line);
 
                     // Clean DW's <0x0d><0x0a> markers
                     let cleaned = packet
@@ -4861,7 +4735,7 @@ fn run_diff(wav_path: &str, reference: Option<&str>) {
     // DW-only frames with enrichment
     if !dw_only.is_empty() {
         println!("--- DW-only frames (we miss, multi-decoder) ---");
-        println!("  {:>3}  {:<10} {:>5} {:>5}  {}", "#", "Time", "Audio", "Mk/Sp", "Packet");
+        println!("  {:>3}  {:<10} {:>5} {:>5}  Packet", "#", "Time", "Audio", "Mk/Sp");
         let mut sorted_dw_only: Vec<(&String, Option<&DwFrameInfo>)> = dw_only.iter()
             .map(|p| (*p, dw_info.get(*p)))
             .collect();
@@ -5129,7 +5003,7 @@ fn read_wav_file(path: &str) -> Result<(u32, Vec<i16>), String> {
         }
 
         pos += 8 + chunk_size;
-        if chunk_size % 2 != 0 {
+        if !chunk_size.is_multiple_of(2) {
             pos += 1;
         }
     }
@@ -5235,8 +5109,8 @@ fn run_pll_300(path: &str) {
 
         for chunk in samples.chunks(1024) {
             let n = demod.process_samples(chunk, &mut symbols);
-            for i in 0..n {
-                if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+            for sym in &symbols[..n] {
+                if let Some(frame) = hdlc.feed_bit(sym.bit) {
                     frames.push(frame.to_vec());
                 }
             }
@@ -5260,8 +5134,8 @@ fn decode_fast_windowed(samples: &[i16], sample_rate: u32, window: GoertzelWindo
     let start = Instant::now();
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(frame) = hdlc.feed_bit(symbols[i].bit) {
+        for sym in &symbols[..n] {
+            if let Some(frame) = hdlc.feed_bit(sym.bit) {
                 frames.push(frame.to_vec());
             }
         }
@@ -5284,8 +5158,8 @@ fn decode_fast_windowed_soft(samples: &[i16], sample_rate: u32, window: Goertzel
     let start = Instant::now();
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
-        for i in 0..n {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
+        for sym in &symbols[..n] {
+            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                 let data = match &result {
                     FrameResult::Valid(d) => d,
                     FrameResult::Recovered { data, .. } => data,
@@ -5430,7 +5304,7 @@ fn decode_fusion_maxconf(samples: &[i16], sample_rate: u32) -> (DecodeResult, u3
         let c_n = corr.process_samples(&[sample], &mut c_sym);
 
         let llr = if g_n > 0 && c_n > 0 {
-            if (g_sym[0].llr as i8).unsigned_abs() >= (c_sym[0].llr as i8).unsigned_abs() {
+            if g_sym[0].llr.unsigned_abs() >= c_sym[0].llr.unsigned_abs() {
                 g_sym[0].llr
             } else {
                 c_sym[0].llr
@@ -5675,6 +5549,7 @@ fn run_9600_single(path: &str) {
 
     let config = Demod9600Config::with_sample_rate(sample_rate);
 
+    #[allow(clippy::type_complexity)]
     let algos: [(&str, fn(Demod9600Config) -> Single9600Decoder); 5] = [
         ("DireWolf-style", Single9600Decoder::direwolf),
         ("Gardner PLL",    Single9600Decoder::gardner),
@@ -5716,6 +5591,7 @@ fn run_9600_compare(path: &str) {
 
     let mut results: Vec<(&str, u32, Duration)> = Vec::new();
 
+    #[allow(clippy::type_complexity)]
     let algos: [(&str, fn(Demod9600Config) -> Single9600Decoder); 5] = [
         ("DireWolf-style", Single9600Decoder::direwolf),
         ("Gardner PLL",    Single9600Decoder::gardner),
@@ -5832,6 +5708,7 @@ fn run_9600_suite(dir: &str) {
     // Narrow: LPF(4800Hz) + DwPll(0.89/0.67) — tighter filter
     // Wide: LPF(7200Hz) + DwPll(0.89/0.67) — wider bandwidth
     // RRC: RRC matched filter + DwPll(0.89/0.67)
+    #[allow(clippy::type_complexity)]
     let algos: Vec<(&str, fn(Demod9600Config) -> Single9600Decoder)> = vec![
         ("DW-style", Single9600Decoder::direwolf),
         ("FastTrk",  Single9600Decoder::gardner),
@@ -5931,12 +5808,12 @@ fn run_9600_diag(path: &str) {
                 _ => 0,
             };
             total_syms += n;
-            for i in 0..n {
-                if sym_buf[i].bit { ones += 1; }
-                if sym_buf[i].llr > max_llr { max_llr = sym_buf[i].llr; }
-                if sym_buf[i].llr < min_llr { min_llr = sym_buf[i].llr; }
+            for sym in &sym_buf[..n] {
+                if sym.bit { ones += 1; }
+                if sym.llr > max_llr { max_llr = sym.llr; }
+                if sym.llr < min_llr { min_llr = sym.llr; }
                 // Check for HDLC flag pattern 01111110
-                if sym_buf[i].bit {
+                if sym.bit {
                     consec_ones += 1;
                     if consec_ones == 6 {
                         // Might be in a flag - next bit should be 0
@@ -5989,11 +5866,11 @@ fn run_9600_diag(path: &str) {
                 _ => 0,
             };
             total_syms += n;
-            for i in 0..n {
-                if sym_buf[i].bit { ones += 1; }
-                if sym_buf[i].llr > max_llr { max_llr = sym_buf[i].llr; }
-                if sym_buf[i].llr < min_llr { min_llr = sym_buf[i].llr; }
-                if sym_buf[i].bit {
+            for sym in &sym_buf[..n] {
+                if sym.bit { ones += 1; }
+                if sym.llr > max_llr { max_llr = sym.llr; }
+                if sym.llr < min_llr { min_llr = sym.llr; }
+                if sym.bit {
                     consec_ones += 1;
                 } else {
                     if consec_ones == 6 {
@@ -6001,7 +5878,7 @@ fn run_9600_diag(path: &str) {
                     }
                     consec_ones = 0;
                 }
-                if let Some(_) = hdlc.feed_bit(sym_buf[i].bit) {
+                if hdlc.feed_bit(sym.bit).is_some() {
                     hdlc_frames += 1;
                 }
             }
@@ -6112,8 +5989,8 @@ fn run_9600_tune(path: &str) {
 
                         for chunk in samples.chunks(1024) {
                             let n = demod.process_samples(chunk, &mut sym_buf);
-                            for i in 0..n {
-                                if let Some(FrameResult::Valid(data)) | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym_buf[i].llr) {
+                            for sym in &sym_buf[..n] {
+                                if let Some(FrameResult::Valid(data)) | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym.llr) {
                                     let mut h: u32 = 0x811c9dc5;
                                     for &b in data {
                                         h ^= b as u32;
@@ -6160,8 +6037,8 @@ fn run_9600_tune(path: &str) {
 
                         for chunk in samples.chunks(1024) {
                             let n = demod.process_samples(chunk, &mut sym_buf);
-                            for i in 0..n {
-                                if let Some(FrameResult::Valid(data)) | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym_buf[i].llr) {
+                            for sym in &sym_buf[..n] {
+                                if let Some(FrameResult::Valid(data)) | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym.llr) {
                                     let mut h: u32 = 0x811c9dc5;
                                     for &b in data {
                                         h ^= b as u32;
@@ -6305,8 +6182,8 @@ fn run_9600_attribution(path: &str) {
 
                 for chunk in samples.chunks(1024) {
                     let n = demod.process_samples(chunk, &mut sym_buf);
-                    for j in 0..n {
-                        if let Some(FrameResult::Valid(data)) | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym_buf[j].llr) {
+                    for sym in &sym_buf[..n] {
+                        if let Some(FrameResult::Valid(data)) | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym.llr) {
                             let mut h: u32 = 0x811c9dc5;
                             for &b in data { h ^= b as u32; h = h.wrapping_mul(0x01000193); }
                             if !hashes.contains(&h) { hashes.push(h); }
@@ -6334,8 +6211,8 @@ fn run_9600_attribution(path: &str) {
 
                 for chunk in samples.chunks(1024) {
                     let n = demod.process_samples(chunk, &mut sym_buf);
-                    for j in 0..n {
-                        if let Some(FrameResult::Valid(data)) | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym_buf[j].llr) {
+                    for sym in &sym_buf[..n] {
+                        if let Some(FrameResult::Valid(data)) | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym.llr) {
                             let mut h: u32 = 0x811c9dc5;
                             for &b in data { h ^= b as u32; h = h.wrapping_mul(0x01000193); }
                             if !hashes.contains(&h) { hashes.push(h); }

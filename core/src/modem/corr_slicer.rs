@@ -522,13 +522,12 @@ impl CorrSlicerDecoder {
                 let mark_delta = (mark_hz as i32 - mark_freq as i32).unsigned_abs();
                 let space_delta = (space_hz as i32 - space_freq as i32).unsigned_abs();
                 if mark_delta < 200 && space_delta < 200 && mark_hz > 0 && space_hz > 0 {
-                    for i in 0..num_channels {
-                        let offset = FREQ_OFFSETS[i];
+                    for (ch, &offset) in self.channels[..num_channels].iter_mut().zip(FREQ_OFFSETS.iter()) {
                         let ch_mark = (mark_hz as i32 + offset) as u32;
                         let ch_space = (space_hz as i32 + offset) as u32;
-                        self.channels[i].mark_phase_inc =
+                        ch.mark_phase_inc =
                             ((ch_mark as u64 * (1u64 << 24)) / sample_rate as u64) as u32;
-                        self.channels[i].space_phase_inc =
+                        ch.space_phase_inc =
                             ((ch_space as u64 * (1u64 << 24)) / sample_rate as u64) as u32;
                     }
                 }
@@ -769,8 +768,7 @@ fn is_dup(
 ) -> bool {
     const DEDUP_WINDOW: u32 = 4;
     let limit = recent_count.min(DEDUP_RING_SIZE);
-    for i in 0..limit {
-        let (h, gen) = recent_hashes[i];
+    for &(h, gen) in &recent_hashes[..limit] {
         if h == hash && generation.wrapping_sub(gen) <= DEDUP_WINDOW {
             return true;
         }

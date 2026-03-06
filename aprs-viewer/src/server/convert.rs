@@ -76,7 +76,7 @@ pub fn to_web_packet(pkt: &aprs::AprsPacket<'_>) -> WebAprsData {
         } => WebAprsData::Message {
             addressee: bytes_to_string(addressee),
             text: bytes_to_string(text),
-            message_no: message_no.map(|n| bytes_to_string(n)),
+            message_no: message_no.map(bytes_to_string),
         },
         aprs::AprsPacket::Weather { weather, comment, .. } => WebAprsData::Weather {
             weather: to_web_weather(weather),

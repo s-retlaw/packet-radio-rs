@@ -188,8 +188,8 @@ impl KissOutbox {
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
         let available = self.len();
         let n = buf.len().min(available);
-        for i in 0..n {
-            buf[i] = self.buf[self.head];
+        for b in &mut buf[..n] {
+            *b = self.buf[self.head];
             self.head = (self.head + 1) % KISS_OUTBOX_SIZE;
         }
         n
@@ -721,8 +721,8 @@ impl Demodulate for FastAdapter {
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
-            for i in 0..n {
-                if let Some(frame) = self.hdlc.feed_bit(symbols[i].bit) {
+            for sym in &symbols[..n] {
+                if let Some(frame) = self.hdlc.feed_bit(sym.bit) {
                     handler(frame);
                 }
             }
@@ -752,8 +752,8 @@ impl Demodulate for QualityAdapter {
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
-            for i in 0..n {
-                if let Some(result) = self.hdlc.feed_soft_bit(symbols[i].llr) {
+            for sym in &symbols[..n] {
+                if let Some(result) = self.hdlc.feed_soft_bit(sym.llr) {
                     let data = match &result {
                         FrameResult::Valid(d) => *d,
                         FrameResult::Recovered { data, .. } => *data,

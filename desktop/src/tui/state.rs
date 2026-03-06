@@ -169,7 +169,6 @@ pub struct WeatherInfo {
     pub temperature: Option<i16>,
     pub rain_last_hour: Option<u16>,
     pub rain_24h: Option<u16>,
-    pub rain_since_midnight: Option<u16>,
     pub humidity: Option<u8>,
     pub barometric_pressure: Option<u32>,
     pub luminosity: Option<u16>,
@@ -186,7 +185,6 @@ impl WeatherInfo {
             temperature: w.temperature,
             rain_last_hour: w.rain_last_hour,
             rain_24h: w.rain_24h,
-            rain_since_midnight: w.rain_since_midnight,
             humidity: w.humidity,
             barometric_pressure: w.barometric_pressure,
             luminosity: w.luminosity,
@@ -641,7 +639,7 @@ impl SettingsFormState {
 /// Async events from the audio thread to the TUI.
 #[derive(Debug, Clone)]
 pub enum AsyncEvent {
-    FrameDecoded(DecodedFrameInfo),
+    FrameDecoded(Box<DecodedFrameInfo>),
     #[allow(dead_code)]
     StatsUpdate(Stats),
     AudioDone,
@@ -959,7 +957,7 @@ mod tests {
 
     #[test]
     fn test_async_event_variants() {
-        let frame_evt = AsyncEvent::FrameDecoded(DecodedFrameInfo {
+        let frame_evt = AsyncEvent::FrameDecoded(Box::new(DecodedFrameInfo {
             frame_number: 1,
             timestamp: "00:00:00".to_string(),
             source: "TEST".to_string(),
@@ -969,7 +967,7 @@ mod tests {
             aprs_summary: None,
             aprs_data: None,
             raw_len: 0,
-        });
+        }));
         assert!(matches!(frame_evt, AsyncEvent::FrameDecoded(_)));
 
         let stats_evt = AsyncEvent::StatsUpdate(Stats::default());

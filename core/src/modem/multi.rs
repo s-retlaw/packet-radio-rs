@@ -22,6 +22,17 @@ use super::DemodConfig;
 #[cfg(not(feature = "std"))]
 use crate::ax25::frame::HdlcDecoder;
 
+/// PLL alpha for DM decoders at 1200 baud (primary, tighter bandwidth).
+const PLL_ALPHA_1200_PRIMARY: i16 = 936;
+/// PLL alpha for DM decoders at 1200 baud (secondary, wider bandwidth).
+const PLL_ALPHA_1200_SECONDARY: i16 = 400;
+/// PLL alpha for DM decoders at 300 baud (primary, aggressive tracking).
+const PLL_ALPHA_300_PRIMARY: i16 = 15000;
+/// PLL alpha for DM decoders at 300 baud (secondary).
+const PLL_ALPHA_300_SECONDARY: i16 = 8000;
+/// PLL beta for DM decoders (zero = no frequency correction, universally optimal).
+const PLL_BETA: i16 = 0;
+
 /// Maximum number of parallel fast decoders.
 /// 32 base (standard diversity) + up to 10 baud-rate diversity for 300 baud.
 #[cfg(feature = "std")]
@@ -192,11 +203,11 @@ impl MultiDecoder {
 
         // 9 base decoders: 3 BPF × 3 timing offsets (nominal frequencies)
         let mut idx = 0;
-        for f in 0..3 {
-            for o in 0..3 {
+        for &filter in &filters {
+            for &offset in &offsets {
                 if idx < MAX_DECODERS {
                     decoders[idx] =
-                        FastDemodulator::new(config).filter(filters[f]).phase_offset(offsets[o]);
+                        FastDemodulator::new(config).filter(filter).phase_offset(offset);
                     idx += 1;
                 }
             }
@@ -249,9 +260,9 @@ impl MultiDecoder {
 
         // AGC decoders: one per BPF variant, adapts to mark/space imbalance.
         // These replace 3 of the static gain decoders.
-        for f in 0..3 {
+        for &filter in &filters {
             if idx < MAX_DECODERS {
-                decoders[idx] = FastDemodulator::new(config).filter(filters[f]).with_agc();
+                decoders[idx] = FastDemodulator::new(config).filter(filter).with_agc();
                 idx += 1;
             }
         }
@@ -339,16 +350,16 @@ impl MultiDecoder {
         // Alpha=15000 matches DireWolf on 3% varspeed (1→31 frames).
         // 1200 baud: standard alpha (936/400) — PLL bandwidth must be tighter.
         let (dm_alpha_1, dm_alpha_2) = if config.baud_rate == 300 {
-            (15000i16, 8000i16)
+            (PLL_ALPHA_300_PRIMARY, PLL_ALPHA_300_SECONDARY)
         } else {
-            (936i16, 400i16)
+            (PLL_ALPHA_1200_PRIMARY, PLL_ALPHA_1200_SECONDARY)
         };
         if dm_idx < MAX_DM_DECODERS {
-            dm_decoders[dm_idx] = DmDemodulator::with_bpf_pll_custom(config, dm_alpha_1, 0);
+            dm_decoders[dm_idx] = DmDemodulator::with_bpf_pll_custom(config, dm_alpha_1, PLL_BETA);
             dm_idx += 1;
         }
         if dm_idx < MAX_DM_DECODERS {
-            dm_decoders[dm_idx] = DmDemodulator::with_bpf_pll_custom(config, dm_alpha_2, 0);
+            dm_decoders[dm_idx] = DmDemodulator::with_bpf_pll_custom(config, dm_alpha_2, PLL_BETA);
             dm_idx += 1;
         }
         // DM+Bresenham decoders with timing diversity (complementary to PLL)
@@ -393,9 +404,9 @@ impl MultiDecoder {
             // tracks intra-packet drift that fixed Bresenham cannot.
             // Higher alpha (8000) for 300 baud to track wider drift range.
             if idx < MAX_DECODERS {
-                let goertzel_pll_alpha = if config.baud_rate == 300 { 8000 } else { 600 };
+                let goertzel_pll_alpha: i16 = if config.baud_rate == 300 { PLL_ALPHA_300_SECONDARY } else { 600 };
                 let pll = ClockRecoveryPll::new_gardner(
-                    config.sample_rate, config.baud_rate, goertzel_pll_alpha, 0,
+                    config.sample_rate, config.baud_rate, goertzel_pll_alpha, PLL_BETA,
                 ).with_error_shift(8);
                 decoders[idx] = FastDemodulator::new(config)
                     .with_custom_pll(pll);
@@ -406,9 +417,9 @@ impl MultiDecoder {
         // On std: enable energy-based LLR on all Goertzel decoders for soft decode
         #[cfg(feature = "std")]
         {
-            for d in 0..idx {
-                decoders[d] = core::mem::replace(
-                    &mut decoders[d],
+            for decoder in decoders[..idx].iter_mut() {
+                *decoder = core::mem::replace(
+                    decoder,
                     FastDemodulator::new(config),
                 ).with_energy_llr();
             }
@@ -494,10 +505,10 @@ impl MultiDecoder {
         // Process fast (Goertzel) decoders
         for d in 0..self.num_active {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
-            for i in 0..n {
+            for sym in &symbols[..n] {
                 #[cfg(feature = "std")]
                 {
-                    if let Some(result) = self.hdlc[d].feed_soft_bit(symbols[i].llr) {
+                    if let Some(result) = self.hdlc[d].feed_soft_bit(sym.llr) {
                         let frame_bytes = match &result {
                             FrameResult::Valid(d) => *d,
                             FrameResult::Recovered { data, .. } => *data,
@@ -522,7 +533,7 @@ impl MultiDecoder {
                 }
                 #[cfg(not(feature = "std"))]
                 {
-                    if let Some(frame_bytes) = self.hdlc[d].feed_bit(symbols[i].bit) {
+                    if let Some(frame_bytes) = self.hdlc[d].feed_bit(sym.bit) {
                         self.total_decoded += 1;
                         let len = frame_bytes.len().min(330);
                         let mut frame_copy = [0u8; 330];
@@ -546,10 +557,10 @@ impl MultiDecoder {
         // Process DM (delay-multiply) decoders
         for d in 0..self.dm_active {
             let n = self.dm_decoders[d].process_samples(samples, &mut symbols);
-            for i in 0..n {
+            for sym in &symbols[..n] {
                 #[cfg(feature = "std")]
                 {
-                    if let Some(result) = self.dm_hdlc[d].feed_soft_bit(symbols[i].llr) {
+                    if let Some(result) = self.dm_hdlc[d].feed_soft_bit(sym.llr) {
                         let frame_bytes = match &result {
                             FrameResult::Valid(d) => *d,
                             FrameResult::Recovered { data, .. } => *data,
@@ -573,7 +584,7 @@ impl MultiDecoder {
                 }
                 #[cfg(not(feature = "std"))]
                 {
-                    if let Some(frame_bytes) = self.dm_hdlc[d].feed_bit(symbols[i].bit) {
+                    if let Some(frame_bytes) = self.dm_hdlc[d].feed_bit(sym.bit) {
                         self.total_decoded += 1;
                         let len = frame_bytes.len().min(330);
                         let mut frame_copy = [0u8; 330];
@@ -781,8 +792,8 @@ impl MiniDecoder {
 
         for d in 0..MINI_DECODERS {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
-            for i in 0..n {
-                if let Some(result) = self.hdlc[d].feed_soft_bit(symbols[i].llr) {
+            for sym in &symbols[..n] {
+                if let Some(result) = self.hdlc[d].feed_soft_bit(sym.llr) {
                     let frame_bytes = match &result {
                         FrameResult::Valid(d) => *d,
                         FrameResult::Recovered { data, .. } => *data,
@@ -1012,8 +1023,8 @@ impl TwistMiniDecoder {
 
         for d in 0..TWIST_DECODERS {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
-            for i in 0..n {
-                if let Some(result) = self.hdlc[d].feed_soft_bit(symbols[i].llr) {
+            for sym in &symbols[..n] {
+                if let Some(result) = self.hdlc[d].feed_soft_bit(sym.llr) {
                     let frame_bytes = match &result {
                         FrameResult::Valid(d) => *d,
                         FrameResult::Recovered { data, .. } => *data,
@@ -1161,7 +1172,7 @@ impl AttributionReport {
         }
         // Track which decoders found each unique frame
         for (hash, decoders) in &attributed.frame_decoders {
-            let entry = self.frame_map.entry(*hash).or_insert_with(alloc::vec::Vec::new);
+            let entry = self.frame_map.entry(*hash).or_default();
             for &d in decoders {
                 if !entry.contains(&d) {
                     entry.push(d);
@@ -1182,7 +1193,7 @@ impl AttributionReport {
         for s in &mut self.stats {
             s.exclusive = 0;
         }
-        for (_hash, decoders) in &self.frame_map {
+        for decoders in self.frame_map.values() {
             if decoders.len() == 1 {
                 let d = decoders[0];
                 if d < self.stats.len() {
@@ -1227,11 +1238,11 @@ impl AttributionReport {
             // Find decoder that adds the most uncovered frames
             let mut best_idx = 0;
             let mut best_new = 0;
-            for d in 0..n {
+            for (d, d_frames) in decoder_frames.iter().enumerate() {
                 if used.contains(&d) {
                     continue;
                 }
-                let new_count = decoder_frames[d].difference(&covered).count();
+                let new_count = d_frames.difference(&covered).count();
                 if new_count > best_new {
                     best_new = new_count;
                     best_idx = d;
@@ -1257,7 +1268,7 @@ impl AttributionReport {
             alloc::collections::BTreeMap::new();
         for (i, cfg) in self.configs.iter().enumerate() {
             for &tag in &cfg.tags {
-                tag_decoders.entry(tag).or_insert_with(alloc::vec::Vec::new).push(i);
+                tag_decoders.entry(tag).or_default().push(i);
             }
         }
 
@@ -1268,7 +1279,7 @@ impl AttributionReport {
             // Count frames found by any decoder with this tag
             let decoder_set: alloc::collections::BTreeSet<usize> = decoders.iter().copied().collect();
             let mut tag_frames = 0usize;
-            for (_hash, frame_decoders) in &self.frame_map {
+            for frame_decoders in self.frame_map.values() {
                 let any_in_tag = frame_decoders.iter().any(|d| decoder_set.contains(d));
                 if any_in_tag {
                     tag_frames += 1;
@@ -1307,14 +1318,14 @@ impl MultiDecoder {
         // 9 base decoders: 3 BPF × 3 timing
         let bpf_names = ["narrow", "std", "wide"];
         let timing_names = ["t0", "t1", "t2"];
-        for f in 0..3 {
-            for o in 0..3 {
+        for bpf_name in &bpf_names {
+            for timing_name in &timing_names {
                 if idx < self.num_active {
                     configs.push(DecoderConfig {
                         index: idx,
-                        label: format!("G:{}/{}",  bpf_names[f], timing_names[o]),
+                        label: format!("G:{}/{}",  bpf_name, timing_name),
                         algorithm: "goertzel",
-                        tags: vec!["goertzel", "base", bpf_names[f], timing_names[o]],
+                        tags: vec!["goertzel", "base", bpf_name, timing_name],
                     });
                     idx += 1;
                 }
@@ -1327,11 +1338,11 @@ impl MultiDecoder {
             let freq_offsets: [i32; 4] = [-50, 50, -100, 100];
             for &offset in &freq_offsets {
                 let timing_count = if offset.abs() <= 50 { 3 } else { 1 };
-                for t in 0..timing_count {
+                for timing_name in &timing_names[..timing_count] {
                     if idx < self.num_active {
                         configs.push(DecoderConfig {
                             index: idx,
-                            label: format!("G:freq{:+}/{}",  offset, timing_names[t]),
+                            label: format!("G:freq{:+}/{}",  offset, timing_name),
                             algorithm: "goertzel",
                             tags: vec!["goertzel", "freq-shift"],
                         });
@@ -1357,11 +1368,11 @@ impl MultiDecoder {
         }
 
         // AGC decoders
-        for f in 0..3 {
+        for bpf_name in &bpf_names {
             if idx < self.num_active {
                 configs.push(DecoderConfig {
                     index: idx,
-                    label: format!("G:{}/agc", bpf_names[f]),
+                    label: format!("G:{}/agc", bpf_name),
                     algorithm: "goertzel",
                     tags: vec!["goertzel", "agc"],
                 });
@@ -1471,11 +1482,11 @@ impl MultiDecoder {
         }
 
         // DM+Bresenham with timing diversity (d=8)
-        for t in 0..3 {
+        for timing_name in &timing_names {
             if dm_idx < self.dm_active {
                 configs.push(DecoderConfig {
                     index: dm_start + dm_idx,
-                    label: format!("DM:bres/d8/{}", timing_names[t]),
+                    label: format!("DM:bres/d8/{}", timing_name),
                     algorithm: "dm",
                     tags: vec!["dm", "bresenham"],
                 });
@@ -1513,8 +1524,8 @@ impl MultiDecoder {
         // Process fast (Goertzel) decoders (attribution implies std → SoftHdlcDecoder)
         for d in 0..self.num_active {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
-            for i in 0..n {
-                let frame_opt = self.hdlc[d].feed_soft_bit(symbols[i].llr).map(|r| match r {
+            for sym in &symbols[..n] {
+                let frame_opt = self.hdlc[d].feed_soft_bit(sym.llr).map(|r| match r {
                     FrameResult::Valid(d) => d as &[u8],
                     FrameResult::Recovered { data, .. } => data as &[u8],
                 });
@@ -1525,7 +1536,7 @@ impl MultiDecoder {
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                     let hash = frame_hash(&frame_copy[..len]);
                     raw_hits.push((d, hash));
-                    frame_decoder_map.entry(hash).or_insert_with(Vec::new).push(d);
+                    frame_decoder_map.entry(hash).or_default().push(d);
                     if !self.is_duplicate(hash) {
                         self.record_hash(hash);
                         self.total_unique += 1;
@@ -1544,8 +1555,8 @@ impl MultiDecoder {
         let dm_start = self.num_active;
         for d in 0..self.dm_active {
             let n = self.dm_decoders[d].process_samples(samples, &mut symbols);
-            for i in 0..n {
-                let frame_opt = self.dm_hdlc[d].feed_soft_bit(symbols[i].llr).map(|r| match r {
+            for sym in &symbols[..n] {
+                let frame_opt = self.dm_hdlc[d].feed_soft_bit(sym.llr).map(|r| match r {
                     FrameResult::Valid(d) => d as &[u8],
                     FrameResult::Recovered { data, .. } => data as &[u8],
                 });
@@ -1556,7 +1567,7 @@ impl MultiDecoder {
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                     let hash = frame_hash(&frame_copy[..len]);
                     raw_hits.push((dm_start + d, hash));
-                    frame_decoder_map.entry(hash).or_insert_with(Vec::new).push(dm_start + d);
+                    frame_decoder_map.entry(hash).or_default().push(dm_start + d);
                     if !self.is_duplicate(hash) {
                         self.record_hash(hash);
                         self.total_unique += 1;

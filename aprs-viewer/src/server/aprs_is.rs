@@ -3,7 +3,17 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::broadcast;
 
+use super::error::ServerError;
 use super::ingest::process_raw_frame;
+
+/// Configuration for the APRS-IS client connection.
+pub struct AprsIsClientConfig {
+    pub host: String,
+    pub port: u16,
+    pub callsign: String,
+    pub passcode: String,
+    pub filter: String,
+}
 
 /// Parsed TNC-2 format line.
 #[derive(Debug, Clone)]
@@ -113,7 +123,7 @@ pub async fn process_tnc2_line(
     pool: &SqlitePool,
     tx: &broadcast::Sender<String>,
     reference_db: Option<&reference::ReferenceDb>,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<bool, ServerError> {
     let pkt = match parse_tnc2_line(line) {
         Some(p) => p,
         None => return Ok(false),
@@ -125,29 +135,25 @@ pub async fn process_tnc2_line(
 
 /// Run the APRS-IS client — connects and processes TNC-2 lines.
 pub async fn run_aprs_is_client(
-    host: &str,
-    port: u16,
-    callsign: &str,
-    passcode: &str,
-    filter: &str,
+    config: &AprsIsClientConfig,
     pool: SqlitePool,
     tx: broadcast::Sender<String>,
     reference_db: Option<Arc<reference::ReferenceDb>>,
 ) {
     // Default to receive-only if callsign is empty
-    let callsign = if callsign.trim().is_empty() {
+    let callsign = if config.callsign.trim().is_empty() {
         "N0CALL"
     } else {
-        callsign
+        &config.callsign
     };
-    let passcode = if callsign == "N0CALL" { "-1" } else { passcode };
+    let passcode = if callsign == "N0CALL" { "-1" } else { &config.passcode };
 
     let mut backoff = std::time::Duration::from_secs(1);
     let max_backoff = std::time::Duration::from_secs(60);
 
     loop {
-        tracing::info!("Connecting to APRS-IS at {}:{}", host, port);
-        match tokio::net::TcpStream::connect((host, port)).await {
+        tracing::info!("Connecting to APRS-IS at {}:{}", config.host, config.port);
+        match tokio::net::TcpStream::connect((&*config.host, config.port)).await {
             Ok(stream) => {
                 tracing::info!("Connected to APRS-IS");
                 backoff = std::time::Duration::from_secs(1);
@@ -158,7 +164,7 @@ pub async fn run_aprs_is_client(
                 // Send login
                 let login = format!(
                     "user {} pass {} vers aprs-viewer 0.1 filter {}\r\n",
-                    callsign, passcode, filter
+                    callsign, passcode, config.filter
                 );
                 if let Err(e) = writer.write_all(login.as_bytes()).await {
                     tracing::error!("APRS-IS login write error: {}", e);

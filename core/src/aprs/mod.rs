@@ -955,9 +955,11 @@ pub fn parse_weather_from_comment(comment: &[u8]) -> Option<WeatherData> {
         let dir_ok = comment[..3].iter().all(|&b| b.is_ascii_digit() || b == b'.');
         let spd_ok = comment[4..7].iter().all(|&b| b.is_ascii_digit() || b == b'.');
         if dir_ok && spd_ok {
-            let mut wx = WeatherData::default();
-            wx.wind_direction = parse_wx_int(comment, 0, 3);
-            wx.wind_speed = parse_wx_int(comment, 4, 3);
+            let mut wx = WeatherData {
+                wind_direction: parse_wx_int(comment, 0, 3),
+                wind_speed: parse_wx_int(comment, 4, 3),
+                ..WeatherData::default()
+            };
             // Parse remaining standard weather fields starting at offset 7
             if comment.len() > 7 {
                 let (more_wx, _) = parse_weather_fields(&comment[7..]);

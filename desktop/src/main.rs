@@ -319,7 +319,7 @@ fn emit_tui_frame(
     kiss_frame_tx: &broadcast::Sender<Vec<u8>>,
 ) {
     let info = make_frame_info(count, data);
-    let _ = async_tx.try_send(tui::state::AsyncEvent::FrameDecoded(info));
+    let _ = async_tx.try_send(tui::state::AsyncEvent::FrameDecoded(Box::new(info)));
     let _ = kiss_frame_tx.send(data.to_vec());
 }
 
@@ -927,10 +927,11 @@ fn demod_config_for_rate(rate: u32, baud: u32) -> DemodConfig {
 
 /// Wraps all 1200/300 baud demodulator variants behind a single interface.
 /// Callers provide a frame callback; the decoder handles symbol->HDLC internally.
+#[allow(clippy::large_enum_variant)]
 enum UnifiedDecoder {
-    Multi(MultiDecoder),
-    Smart3(MiniDecoder),
-    CorrSlicer(CorrSlicerDecoder),
+    Multi(Box<MultiDecoder>),
+    Smart3(Box<MiniDecoder>),
+    CorrSlicer(Box<CorrSlicerDecoder>),
     /// Symbol-producing demodulators that feed through SoftHdlcDecoder.
     Soft {
         demod: SoftDemod,
@@ -969,10 +970,10 @@ impl UnifiedDecoder {
     fn new(mode: &cli::DemodMode, config: DemodConfig) -> Self {
         let zero_sym = DemodSymbol { bit: false, llr: 0 };
         match mode {
-            cli::DemodMode::Multi => UnifiedDecoder::Multi(MultiDecoder::new(config)),
-            cli::DemodMode::Smart3 => UnifiedDecoder::Smart3(MiniDecoder::new(config)),
+            cli::DemodMode::Multi => UnifiedDecoder::Multi(Box::new(MultiDecoder::new(config))),
+            cli::DemodMode::Smart3 => UnifiedDecoder::Smart3(Box::new(MiniDecoder::new(config))),
             cli::DemodMode::CorrSlicer => {
-                UnifiedDecoder::CorrSlicer(CorrSlicerDecoder::new(config).with_adaptive_gain())
+                UnifiedDecoder::CorrSlicer(Box::new(CorrSlicerDecoder::new(config).with_adaptive_gain()))
             }
             cli::DemodMode::Quality => UnifiedDecoder::Soft {
                 demod: SoftDemod::Quality(QualityDemodulator::new(config)),
@@ -1037,8 +1038,8 @@ impl UnifiedDecoder {
             }
             UnifiedDecoder::Soft { demod, hdlc, symbols } => {
                 let ns = demod.process_samples(samples, symbols);
-                for i in 0..ns {
-                    if let Some(result) = hdlc.feed_soft_bit(symbols[i].llr) {
+                for sym in &symbols[..ns] {
+                    if let Some(result) = hdlc.feed_soft_bit(sym.llr) {
                         let data = match &result {
                             FrameResult::Valid(d) => *d,
                             FrameResult::Recovered { data, .. } => *data,
@@ -1049,8 +1050,8 @@ impl UnifiedDecoder {
             }
             UnifiedDecoder::Fast { demod, hdlc, symbols } => {
                 let ns = demod.process_samples(samples, symbols);
-                for i in 0..ns {
-                    if let Some(f) = hdlc.feed_bit(symbols[i].bit) {
+                for sym in &symbols[..ns] {
+                    if let Some(f) = hdlc.feed_bit(sym.bit) {
                         emit(f);
                     }
                 }
@@ -1454,8 +1455,7 @@ fn fnv1a_hash(data: &[u8]) -> u64 {
 
 /// Check if a hash was seen recently (within 3 generations).
 fn is_recent_dup(hash: u64, gen: u32, ring: &[(u64, u32); 32], count: usize) -> bool {
-    for i in 0..count {
-        let (h, g) = ring[i];
+    for &(h, g) in &ring[..count] {
         if h == hash && gen.wrapping_sub(g) < 3 {
             return true;
         }

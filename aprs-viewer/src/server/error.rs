@@ -9,6 +9,8 @@ pub enum ServerError {
     Io(std::io::Error),
     /// HTTP client error (map downloads).
     Http(reqwest::Error),
+    /// JSON serialization/deserialization error.
+    Json(serde_json::Error),
     /// Validation or business logic error.
     InvalidInput(String),
 }
@@ -19,6 +21,7 @@ impl fmt::Display for ServerError {
             ServerError::Db(e) => write!(f, "database error: {e}"),
             ServerError::Io(e) => write!(f, "I/O error: {e}"),
             ServerError::Http(e) => write!(f, "HTTP error: {e}"),
+            ServerError::Json(e) => write!(f, "JSON error: {e}"),
             ServerError::InvalidInput(msg) => write!(f, "{msg}"),
         }
     }
@@ -30,6 +33,7 @@ impl std::error::Error for ServerError {
             ServerError::Db(e) => Some(e),
             ServerError::Io(e) => Some(e),
             ServerError::Http(e) => Some(e),
+            ServerError::Json(e) => Some(e),
             ServerError::InvalidInput(_) => None,
         }
     }
@@ -50,5 +54,11 @@ impl From<std::io::Error> for ServerError {
 impl From<reqwest::Error> for ServerError {
     fn from(e: reqwest::Error) -> Self {
         ServerError::Http(e)
+    }
+}
+
+impl From<serde_json::Error> for ServerError {
+    fn from(e: serde_json::Error) -> Self {
+        ServerError::Json(e)
     }
 }

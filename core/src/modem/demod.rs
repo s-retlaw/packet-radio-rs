@@ -49,6 +49,10 @@ const MAX_WINDOW_LEN: usize = 48;
 /// Unity gain in Q8 fixed-point (256 = 1.0, i.e. 0 dB).
 const UNITY_GAIN_Q8: u16 = 256;
 
+/// Sentinel value for `symbols_since_last_flag` indicating "not in preamble."
+/// Initialized to this value; reset to 0 when a flag is detected.
+const SYMBOLS_COUNTER_RESET: u8 = 255;
+
 /// Goertzel window type for ISI reduction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GoertzelWindow {
@@ -221,7 +225,7 @@ impl FastDemodulator {
             preamble_mark_count: 0,
             preamble_space_count: 0,
             preamble_flag_count: 0,
-            symbols_since_last_flag: 255,
+            symbols_since_last_flag: SYMBOLS_COUNTER_RESET,
             pll: None,
             timing_baud_rate,
         }
@@ -415,14 +419,14 @@ impl FastDemodulator {
         self.sym_sample_idx = 0;
         // Reset adaptive gain state
         if self.adaptive_gain_enabled {
-            self.space_gain_q8 = 256;
+            self.space_gain_q8 = UNITY_GAIN_Q8;
             self.demod_shift_reg = 0;
             self.preamble_mark_energy = 0;
             self.preamble_space_energy = 0;
             self.preamble_mark_count = 0;
             self.preamble_space_count = 0;
             self.preamble_flag_count = 0;
-            self.symbols_since_last_flag = 255;
+            self.symbols_since_last_flag = SYMBOLS_COUNTER_RESET;
         }
         // Reset adaptive state and restore original Goertzel coefficients
         if let Some(ref mut adaptive) = self.adaptive {
@@ -562,7 +566,7 @@ impl FastDemodulator {
                     // Cross-multiply: mark/mark_peak > space/space_peak
                     mark_s * s_peak > space_s * m_peak
                 } else {
-                    mark_energy * 256 > space_energy * (self.space_gain_q8 as i64)
+                    mark_energy * (UNITY_GAIN_Q8 as i64) > space_energy * (self.space_gain_q8 as i64)
                 };
 
                 // 5. NRZI decode
@@ -601,11 +605,11 @@ impl FastDemodulator {
                         let mark_avg = self.preamble_mark_energy / self.preamble_mark_count as i64;
                         let space_avg = self.preamble_space_energy / self.preamble_space_count as i64;
                         if space_avg > 0 {
-                            let measured = (mark_avg * 256) / space_avg;
+                            let measured = (mark_avg * UNITY_GAIN_Q8 as i64) / space_avg;
                             // Only increase gain (compensate de-emphasis), never decrease.
                             // Apply 25% of measured excess above unity.
-                            let excess = (measured - 256).max(0);
-                            let gain = 256 + (excess >> 2);
+                            let excess = (measured - UNITY_GAIN_Q8 as i64).max(0);
+                            let gain = UNITY_GAIN_Q8 as i64 + (excess >> 2);
                             self.space_gain_q8 = (gain as u16).min(512);
                         }
                         self.preamble_mark_energy = 0;
@@ -872,7 +876,7 @@ impl QualityDemodulator {
             freq_accum: 0,
             freq_count: 0,
             retuned: false,
-            space_gain_q8: 256,
+            space_gain_q8: UNITY_GAIN_Q8,
             adaptive_gain_enabled: false,
             demod_shift_reg: 0,
             preamble_mark_energy: 0,
@@ -880,7 +884,7 @@ impl QualityDemodulator {
             preamble_mark_count: 0,
             preamble_space_count: 0,
             preamble_flag_count: 0,
-            symbols_since_last_flag: 255,
+            symbols_since_last_flag: SYMBOLS_COUNTER_RESET,
         }
     }
 
@@ -914,14 +918,14 @@ impl QualityDemodulator {
         }
         // Reset adaptive gain state
         if self.adaptive_gain_enabled {
-            self.space_gain_q8 = 256;
+            self.space_gain_q8 = UNITY_GAIN_Q8;
             self.demod_shift_reg = 0;
             self.preamble_mark_energy = 0;
             self.preamble_space_energy = 0;
             self.preamble_mark_count = 0;
             self.preamble_space_count = 0;
             self.preamble_flag_count = 0;
-            self.symbols_since_last_flag = 255;
+            self.symbols_since_last_flag = SYMBOLS_COUNTER_RESET;
         }
     }
 
@@ -991,7 +995,7 @@ impl QualityDemodulator {
                     + self.space_s2 * self.space_s2
                     - ((self.space_coeff as i64 * self.space_s1 * self.space_s2) >> 14);
 
-                let raw_bit = mark_energy * 256 > space_energy * (self.space_gain_q8 as i64);
+                let raw_bit = mark_energy * (UNITY_GAIN_Q8 as i64) > space_energy * (self.space_gain_q8 as i64);
 
                 // 6. Hybrid LLR: combine energy-based and frequency-based confidence
                 // Energy confidence from Goertzel ratio
@@ -1047,11 +1051,11 @@ impl QualityDemodulator {
                         let mark_avg = self.preamble_mark_energy / self.preamble_mark_count as i64;
                         let space_avg = self.preamble_space_energy / self.preamble_space_count as i64;
                         if space_avg > 0 {
-                            let measured = (mark_avg * 256) / space_avg;
+                            let measured = (mark_avg * UNITY_GAIN_Q8 as i64) / space_avg;
                             // Only increase gain (compensate de-emphasis), never decrease.
                             // Apply 25% of measured excess above unity.
-                            let excess = (measured - 256).max(0);
-                            let gain = 256 + (excess >> 2);
+                            let excess = (measured - UNITY_GAIN_Q8 as i64).max(0);
+                            let gain = UNITY_GAIN_Q8 as i64 + (excess >> 2);
                             self.space_gain_q8 = (gain as u16).min(512);
                         }
                         self.preamble_mark_energy = 0;
@@ -1860,7 +1864,7 @@ impl CorrelationDemodulator {
             bit_phase: 0,
             prev_nrzi_bit: false,
             samples_processed: 0,
-            space_gain_q8: 256,
+            space_gain_q8: UNITY_GAIN_Q8,
             energy_llr: false,
             adaptive_gain_enabled: false,
             demod_shift_reg: 0,
@@ -1869,7 +1873,7 @@ impl CorrelationDemodulator {
             preamble_mark_count: 0,
             preamble_space_count: 0,
             preamble_flag_count: 0,
-            symbols_since_last_flag: 255,
+            symbols_since_last_flag: SYMBOLS_COUNTER_RESET,
             pll: None,
         }
     }
@@ -1964,14 +1968,14 @@ impl CorrelationDemodulator {
         self.prev_nrzi_bit = false;
         self.samples_processed = 0;
         if self.adaptive_gain_enabled {
-            self.space_gain_q8 = 256;
+            self.space_gain_q8 = UNITY_GAIN_Q8;
             self.demod_shift_reg = 0;
             self.preamble_mark_energy = 0;
             self.preamble_space_energy = 0;
             self.preamble_mark_count = 0;
             self.preamble_space_count = 0;
             self.preamble_flag_count = 0;
-            self.symbols_since_last_flag = 255;
+            self.symbols_since_last_flag = SYMBOLS_COUNTER_RESET;
         }
         if let Some(ref mut pll) = self.pll {
             pll.reset();
@@ -2077,7 +2081,7 @@ impl CorrelationDemodulator {
                     + (space_q as i64) * (space_q as i64);
 
                 // 6. Hard bit decision with space gain
-                let raw_bit = mark_energy * 256 > space_energy * (self.space_gain_q8 as i64);
+                let raw_bit = mark_energy * (UNITY_GAIN_Q8 as i64) > space_energy * (self.space_gain_q8 as i64);
 
                 // 7. NRZI decode
                 let decoded_bit = raw_bit == self.prev_nrzi_bit;
@@ -2112,9 +2116,9 @@ impl CorrelationDemodulator {
                         let mark_avg = self.preamble_mark_energy / self.preamble_mark_count as i64;
                         let space_avg = self.preamble_space_energy / self.preamble_space_count as i64;
                         if space_avg > 0 {
-                            let measured = (mark_avg * 256) / space_avg;
-                            let excess = (measured - 256).max(0);
-                            let gain = 256 + (excess >> 2);
+                            let measured = (mark_avg * UNITY_GAIN_Q8 as i64) / space_avg;
+                            let excess = (measured - UNITY_GAIN_Q8 as i64).max(0);
+                            let gain = UNITY_GAIN_Q8 as i64 + (excess >> 2);
                             self.space_gain_q8 = (gain as u16).min(512);
                         }
                         self.preamble_mark_energy = 0;

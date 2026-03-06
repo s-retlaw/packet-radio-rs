@@ -20,6 +20,12 @@ use super::{MAX_FRAME_BITS, MAX_FLIP_CANDIDATES, FLIP_CONFIDENCE_THRESHOLD, TRIP
 /// Maximum frame length in bytes for bit-flip recovery working buffer
 const MAX_FRAME_BYTES: usize = 400; // AX.25 max ≈ 330 + margin
 
+/// AX.25/HDLC CRC-16 good-frame residue (CRC over frame+FCS yields this).
+const CRC_RESIDUE: u16 = 0x0F47;
+
+/// CRC-16-CCITT reflected polynomial (x^16 + x^12 + x^5 + 1, bit-reversed).
+const CRC_POLY_REFLECTED: u16 = 0x8408;
+
 /// Result of a frame decode attempt.
 #[derive(Debug)]
 pub enum FrameResult<'a> {
@@ -314,8 +320,8 @@ impl SoftHdlcDecoder {
         }
         let frame_data = &self.frame_buf[..self.frame_len];
         let crc = crate::ax25::crc16_ccitt(frame_data);
-        // Valid AX.25 frame has CRC residue of 0x0F47
-        crc == 0x0F47
+        // Valid AX.25 frame has CRC residue of CRC_RESIDUE
+        crc == CRC_RESIDUE
     }
 
     /// CRC syndrome-based single-bit correction.
@@ -331,7 +337,7 @@ impl SoftHdlcDecoder {
         }
 
         let residue = crate::ax25::crc16_ccitt(&self.frame_buf[..self.frame_len]);
-        let syndrome = residue ^ 0x0F47;
+        let syndrome = residue ^ CRC_RESIDUE;
         if syndrome == 0 {
             return None; // Already correct (shouldn't reach here)
         }
@@ -340,7 +346,7 @@ impl SoftHdlcDecoder {
         // e(0) = syndrome for error at the very last bit processed (MSB of last byte).
         // e(k+1) = one zero-step of CRC from e(k), moving toward earlier bits.
         let total_bits = self.frame_len * 8;
-        let mut e: u16 = 0x8408; // Error polynomial for last bit
+        let mut e: u16 = CRC_POLY_REFLECTED; // Error polynomial for last bit
 
         for k in 0..total_bits {
             if e == syndrome {
@@ -354,7 +360,7 @@ impl SoftHdlcDecoder {
 
                 // Verify (paranoia check)
                 let check = crate::ax25::crc16_ccitt(&self.frame_buf[..self.frame_len]);
-                if check == 0x0F47 {
+                if check == CRC_RESIDUE {
                     // Validate AX.25 address to reject false positives
                     if !Self::is_valid_ax25_frame(&self.frame_buf[..self.frame_len]) {
                         self.frame_buf[byte_idx] ^= 1 << bit_in_byte; // flip back
@@ -373,7 +379,7 @@ impl SoftHdlcDecoder {
 
             // Step to next earlier bit position
             e = if e & 1 != 0 {
-                (e >> 1) ^ 0x8408
+                (e >> 1) ^ CRC_POLY_REFLECTED
             } else {
                 e >> 1
             };
@@ -384,6 +390,7 @@ impl SoftHdlcDecoder {
 
     /// Try bit-flip recovery. Returns `(data_len, flips)` on success, updating
     /// `frame_buf` and `frame_len` in place. Returns `None` on failure.
+    #[allow(clippy::needless_range_loop)] // Index-based loops clearer for candidate bit-flip DSP
     fn try_bit_flip_recovery_info(&mut self) -> Option<(usize, u8)> {
         // Phase 1: CRC syndrome-based single-bit correction (fastest, any position)
         if let Some(result) = self.try_syndrome_correction() {
@@ -664,7 +671,7 @@ impl SoftHdlcDecoder {
 
         // Check CRC (last 2 bytes are CRC)
         let crc = crate::ax25::crc16_ccitt(&frame[..frame_len]);
-        if crc == 0x0F47 {
+        if crc == CRC_RESIDUE {
             // Validate AX.25 address to reject false positives
             if !Self::is_valid_ax25_frame(&frame[..frame_len]) {
                 self.stats_false_positives += 1;
@@ -758,13 +765,13 @@ mod tests {
 
     #[test]
     fn test_syndrome_math() {
-        // Verify syndrome stepping: e(0) = 0x8408, each step shifts through poly
-        let mut e: u16 = 0x8408;
+        // Verify syndrome stepping: e(0) = CRC_POLY_REFLECTED, each step shifts through poly
+        let mut e: u16 = CRC_POLY_REFLECTED;
         // After one step
-        e = if e & 1 != 0 { (e >> 1) ^ 0x8408 } else { e >> 1 };
+        e = if e & 1 != 0 { (e >> 1) ^ CRC_POLY_REFLECTED } else { e >> 1 };
         assert_eq!(e, 0x4204); // 0x8408 >> 1 = 0x4204 (bit 0 was 0)
         // After another step
-        e = if e & 1 != 0 { (e >> 1) ^ 0x8408 } else { e >> 1 };
+        e = if e & 1 != 0 { (e >> 1) ^ CRC_POLY_REFLECTED } else { e >> 1 };
         assert_eq!(e, 0x2102); // 0x4204 >> 1 = 0x2102 (bit 0 was 0)
     }
 }

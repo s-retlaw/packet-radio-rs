@@ -2,6 +2,36 @@ use sqlx::{Row, SqlitePool};
 
 use crate::models::{CoverageStation, MessageRow, PacketRow, StationRow, TrackPoint, WebWeather, WeatherHistoryPoint};
 
+/// Parameters for inserting a decoded packet.
+pub struct PacketInsert<'a> {
+    pub source: &'a str,
+    pub source_ssid: u8,
+    pub dest: &'a str,
+    pub path: Option<&'a str>,
+    pub packet_type: Option<&'a str>,
+    pub raw_info: &'a str,
+    pub summary: Option<&'a str>,
+    pub source_type: &'a str,
+}
+
+/// Parameters for upserting a station.
+pub struct StationUpsert<'a> {
+    pub callsign: &'a str,
+    pub ssid: u8,
+    pub station_type: &'a str,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub speed: Option<f64>,
+    pub course: Option<f64>,
+    pub altitude: Option<f64>,
+    pub comment: Option<&'a str>,
+    pub symbol_table: Option<&'a str>,
+    pub symbol_code: Option<&'a str>,
+    pub weather_json: Option<&'a str>,
+    pub source_type: &'a str,
+    pub last_path: Option<&'a str>,
+}
+
 /// Run all database migrations in order. Idempotent — safe to call on every startup.
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // 001: initial schema
@@ -72,27 +102,20 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 /// Insert a decoded packet into the database.
 pub async fn insert_packet(
     pool: &SqlitePool,
-    source: &str,
-    source_ssid: u8,
-    dest: &str,
-    path: Option<&str>,
-    packet_type: Option<&str>,
-    raw_info: &str,
-    summary: Option<&str>,
-    source_type: &str,
+    pkt: &PacketInsert<'_>,
 ) -> Result<i64, sqlx::Error> {
     let result = sqlx::query(
         "INSERT INTO packets (source, source_ssid, dest, path, packet_type, raw_info, summary, source_type)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(source)
-    .bind(source_ssid as i64)
-    .bind(dest)
-    .bind(path)
-    .bind(packet_type)
-    .bind(raw_info)
-    .bind(summary)
-    .bind(source_type)
+    .bind(pkt.source)
+    .bind(pkt.source_ssid as i64)
+    .bind(pkt.dest)
+    .bind(pkt.path)
+    .bind(pkt.packet_type)
+    .bind(pkt.raw_info)
+    .bind(pkt.summary)
+    .bind(pkt.source_type)
     .execute(pool)
     .await?;
     Ok(result.last_insert_rowid())
@@ -103,20 +126,7 @@ pub async fn insert_packet(
 /// On update, appends to heard_via if not already present and updates last_source_type.
 pub async fn upsert_station(
     pool: &SqlitePool,
-    callsign: &str,
-    ssid: u8,
-    station_type: &str,
-    lat: Option<f64>,
-    lon: Option<f64>,
-    speed: Option<f64>,
-    course: Option<f64>,
-    altitude: Option<f64>,
-    comment: Option<&str>,
-    symbol_table: Option<&str>,
-    symbol_code: Option<&str>,
-    weather_json: Option<&str>,
-    source_type: &str,
-    last_path: Option<&str>,
+    s: &StationUpsert<'_>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO stations (callsign, ssid, station_type, lat, lon, speed, course, altitude, comment, symbol_table, symbol_code, weather_json, packet_count, last_heard, heard_via, last_source_type, last_path)
@@ -142,27 +152,28 @@ pub async fn upsert_station(
            last_source_type = excluded.last_source_type,
            last_path = COALESCE(excluded.last_path, stations.last_path)",
     )
-    .bind(callsign)
-    .bind(ssid as i64)
-    .bind(station_type)
-    .bind(lat)
-    .bind(lon)
-    .bind(speed)
-    .bind(course)
-    .bind(altitude)
-    .bind(comment)
-    .bind(symbol_table)
-    .bind(symbol_code)
-    .bind(weather_json)
-    .bind(source_type)
-    .bind(source_type)
-    .bind(last_path)
+    .bind(s.callsign)
+    .bind(s.ssid as i64)
+    .bind(s.station_type)
+    .bind(s.lat)
+    .bind(s.lon)
+    .bind(s.speed)
+    .bind(s.course)
+    .bind(s.altitude)
+    .bind(s.comment)
+    .bind(s.symbol_table)
+    .bind(s.symbol_code)
+    .bind(s.weather_json)
+    .bind(s.source_type)
+    .bind(s.source_type)
+    .bind(s.last_path)
     .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Insert a position history point.
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_position_history(
     pool: &SqlitePool,
     callsign: &str,
@@ -717,13 +728,23 @@ pub async fn test_db() -> SqlitePool {
 mod tests {
     use super::*;
 
+    /// Helper to build a PacketInsert with common defaults.
+    fn pkt<'a>(source: &'a str, source_ssid: u8, dest: &'a str, path: Option<&'a str>, packet_type: Option<&'a str>, raw_info: &'a str, summary: Option<&'a str>, source_type: &'a str) -> PacketInsert<'a> {
+        PacketInsert { source, source_ssid, dest, path, packet_type, raw_info, summary, source_type }
+    }
+
+    /// Helper to build a StationUpsert with common defaults.
+    fn sta<'a>(callsign: &'a str, ssid: u8, station_type: &'a str, lat: Option<f64>, lon: Option<f64>, speed: Option<f64>, course: Option<f64>, altitude: Option<f64>, comment: Option<&'a str>, symbol_table: Option<&'a str>, symbol_code: Option<&'a str>, weather_json: Option<&'a str>, source_type: &'a str, last_path: Option<&'a str>) -> StationUpsert<'a> {
+        StationUpsert { callsign, ssid, station_type, lat, lon, speed, course, altitude, comment, symbol_table, symbol_code, weather_json, source_type, last_path }
+    }
+
     #[tokio::test]
     async fn test_insert_and_get_packets() {
         let pool = test_db().await;
 
-        insert_packet(&pool, "N0CALL", 0, "APRS", Some("WIDE1-1"), Some("Position"), "!4903.50N/07201.75W-", Some("Pos"), "tnc").await.unwrap();
-        insert_packet(&pool, "W1AW", 9, "APRS", None, Some("MicE"), "`data", None, "aprs-is").await.unwrap();
-        insert_packet(&pool, "WX0STA", 0, "APRS", None, Some("Weather"), "_weather", None, "tnc").await.unwrap();
+        insert_packet(&pool, &pkt("N0CALL", 0, "APRS", Some("WIDE1-1"), Some("Position"), "!4903.50N/07201.75W-", Some("Pos"), "tnc")).await.unwrap();
+        insert_packet(&pool, &pkt("W1AW", 9, "APRS", None, Some("MicE"), "`data", None, "aprs-is")).await.unwrap();
+        insert_packet(&pool, &pkt("WX0STA", 0, "APRS", None, Some("Weather"), "_weather", None, "tnc")).await.unwrap();
 
         let packets = get_recent_packets(&pool, 2).await.unwrap();
         assert_eq!(packets.len(), 2);
@@ -736,7 +757,7 @@ mod tests {
     async fn test_upsert_station_insert() {
         let pool = test_db().await;
 
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.058), Some(-72.030), None, None, None, Some("Test"), Some("/"), Some(">"), None, "tnc", None).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Position", Some(49.058), Some(-72.030), None, None, None, Some("Test"), Some("/"), Some(">"), None, "tnc", None)).await.unwrap();
 
         let stations = get_stations(&pool).await.unwrap();
         assert_eq!(stations.len(), 1);
@@ -751,8 +772,8 @@ mod tests {
     async fn test_upsert_station_update() {
         let pool = test_db().await;
 
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, Some("First"), Some("/"), Some(">"), None, "tnc", None).await.unwrap();
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.1), Some(-72.1), Some(60.0), None, None, Some("Second"), None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, Some("First"), Some("/"), Some(">"), None, "tnc", None)).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Position", Some(49.1), Some(-72.1), Some(60.0), None, None, Some("Second"), None, None, None, "tnc", None)).await.unwrap();
 
         let stations = get_stations(&pool).await.unwrap();
         assert_eq!(stations.len(), 1);
@@ -767,8 +788,8 @@ mod tests {
     async fn test_upsert_coalesce_preserves_position() {
         let pool = test_db().await;
 
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
-        upsert_station(&pool, "N0CALL", 0, "Message", None, None, None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Message", None, None, None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
 
         let stations = get_stations(&pool).await.unwrap();
         assert_eq!(stations.len(), 1);
@@ -780,8 +801,8 @@ mod tests {
     async fn test_get_stations_with_position() {
         let pool = test_db().await;
 
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
-        upsert_station(&pool, "W1AW", 0, "Message", None, None, None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
+        upsert_station(&pool, &sta("W1AW", 0, "Message", None, None, None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
 
         let stations = get_stations_with_position(&pool).await.unwrap();
         assert_eq!(stations.len(), 1);
@@ -817,11 +838,11 @@ mod tests {
     async fn test_cleanup_stale_stations() {
         let pool = test_db().await;
 
-        upsert_station(&pool, "OLD", 0, "Position", Some(40.0), Some(-74.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, &sta("OLD", 0, "Position", Some(40.0), Some(-74.0), None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
         sqlx::query("UPDATE stations SET last_heard = datetime('now', '-49 hours') WHERE callsign = 'OLD'")
             .execute(&pool).await.unwrap();
 
-        upsert_station(&pool, "NEW", 0, "Position", Some(41.0), Some(-74.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, &sta("NEW", 0, "Position", Some(41.0), Some(-74.0), None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
 
         let deleted = cleanup_stale_stations(&pool, 48).await.unwrap();
         assert_eq!(deleted, 1);
@@ -854,7 +875,7 @@ mod tests {
     #[tokio::test]
     async fn test_insert_packet_source_type() {
         let pool = test_db().await;
-        insert_packet(&pool, "N0CALL", 0, "APRS", None, Some("Position"), "!4903.50N/07201.75W-", None, "tnc").await.unwrap();
+        insert_packet(&pool, &pkt("N0CALL", 0, "APRS", None, Some("Position"), "!4903.50N/07201.75W-", None, "tnc")).await.unwrap();
         let packets = get_recent_packets(&pool, 10).await.unwrap();
         assert_eq!(packets[0].source_type, "tnc");
     }
@@ -862,7 +883,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_station_heard_via_single() {
         let pool = test_db().await;
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
         let s = get_station_by_callsign(&pool, "N0CALL", 0).await.unwrap().unwrap();
         assert_eq!(s.heard_via, "tnc");
     }
@@ -870,8 +891,8 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_station_heard_via_both() {
         let pool = test_db().await;
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "aprs-is", None).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "aprs-is", None)).await.unwrap();
         let s = get_station_by_callsign(&pool, "N0CALL", 0).await.unwrap().unwrap();
         assert_eq!(s.heard_via, "tnc,aprs-is");
     }
@@ -879,8 +900,8 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_station_heard_via_no_duplicates() {
         let pool = test_db().await;
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
         let s = get_station_by_callsign(&pool, "N0CALL", 0).await.unwrap().unwrap();
         assert_eq!(s.heard_via, "tnc");
     }
@@ -888,10 +909,10 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_station_last_source_type() {
         let pool = test_db().await;
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
         let s = get_station_by_callsign(&pool, "N0CALL", 0).await.unwrap().unwrap();
         assert_eq!(s.last_source_type, "tnc");
-        upsert_station(&pool, "N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "aprs-is", None).await.unwrap();
+        upsert_station(&pool, &sta("N0CALL", 0, "Position", Some(49.0), Some(-72.0), None, None, None, None, None, None, None, "aprs-is", None)).await.unwrap();
         let s = get_station_by_callsign(&pool, "N0CALL", 0).await.unwrap().unwrap();
         assert_eq!(s.last_source_type, "aprs-is");
     }
@@ -979,9 +1000,9 @@ mod tests {
         let pool = test_db().await;
 
         // Create stations with positions
-        upsert_station(&pool, "IGATE", 0, "Position", Some(42.0), Some(-71.0), None, None, None, None, None, None, None, "aprs-is", None).await.unwrap();
-        upsert_station(&pool, "MOBILE", 0, "MicE", Some(42.1), Some(-71.1), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
-        upsert_station(&pool, "MOBILE2", 0, "MicE", Some(42.2), Some(-71.2), None, None, None, None, None, None, None, "tnc", None).await.unwrap();
+        upsert_station(&pool, &sta("IGATE", 0, "Position", Some(42.0), Some(-71.0), None, None, None, None, None, None, None, "aprs-is", None)).await.unwrap();
+        upsert_station(&pool, &sta("MOBILE", 0, "MicE", Some(42.1), Some(-71.1), None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
+        upsert_station(&pool, &sta("MOBILE2", 0, "MicE", Some(42.2), Some(-71.2), None, None, None, None, None, None, None, "tnc", None)).await.unwrap();
 
         // IGATE hears MOBILE and MOBILE2
         upsert_rf_link(&pool, "IGATE", 0, "MOBILE", 0, "igate").await.unwrap();
@@ -1014,9 +1035,9 @@ mod tests {
     #[tokio::test]
     async fn test_get_station_packets() {
         let pool = test_db().await;
-        insert_packet(&pool, "N0CALL", 0, "APRS", None, Some("Position"), "data1", None, "tnc").await.unwrap();
-        insert_packet(&pool, "W1AW", 0, "APRS", None, Some("Position"), "data2", None, "aprs-is").await.unwrap();
-        insert_packet(&pool, "N0CALL", 0, "APRS", None, Some("Position"), "data3", None, "aprs-is").await.unwrap();
+        insert_packet(&pool, &pkt("N0CALL", 0, "APRS", None, Some("Position"), "data1", None, "tnc")).await.unwrap();
+        insert_packet(&pool, &pkt("W1AW", 0, "APRS", None, Some("Position"), "data2", None, "aprs-is")).await.unwrap();
+        insert_packet(&pool, &pkt("N0CALL", 0, "APRS", None, Some("Position"), "data3", None, "aprs-is")).await.unwrap();
 
         let pkts = get_station_packets(&pool, "N0CALL", 0, 50).await.unwrap();
         assert_eq!(pkts.len(), 2);

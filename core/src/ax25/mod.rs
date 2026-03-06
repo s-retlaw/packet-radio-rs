@@ -52,8 +52,8 @@ impl Address {
 
     /// Encode this address into 7 AX.25 bytes.
     pub fn to_bytes(&self, buf: &mut [u8; 7], is_last: bool) {
-        for i in 0..6 {
-            buf[i] = self.callsign[i] << 1;
+        for (b, &ch) in buf[..6].iter_mut().zip(self.callsign.iter()) {
+            *b = ch << 1;
         }
         buf[6] = (self.ssid << 1) | if self.h_bit { 0x80 } else { 0 };
         if is_last {

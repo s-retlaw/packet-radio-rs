@@ -440,9 +440,7 @@ impl Multi9600Decoder {
                 _ => 0, // EarlyLate/MuellerMuller/Rrc not used in ensemble
             };
 
-            for sym_idx in 0..n_syms {
-                let sym = symbols[sym_idx];
-
+            for sym in &symbols[..n_syms] {
                 let mut frame_buf = [0u8; 330];
                 let mut frame_len = 0usize;
                 let mut got_frame = false;
@@ -676,8 +674,7 @@ impl Single9600Decoder {
             SingleAlgo::Rrc(d) => d.process_samples(samples, &mut symbols),
         };
 
-        for i in 0..n_syms {
-            let sym = symbols[i];
+        for sym in &symbols[..n_syms] {
             let frame_opt = {
                 #[cfg(feature = "std")]
                 { self.hdlc.feed_soft_bit(sym.llr) }
@@ -967,9 +964,7 @@ impl Mini9600Decoder {
                 _ => 0,
             };
 
-            for sym_idx in 0..n_syms {
-                let sym = symbols[sym_idx];
-
+            for sym in &symbols[..n_syms] {
                 let mut frame_buf = [0u8; 330];
                 let mut frame_len = 0usize;
                 let mut got_frame = false;
