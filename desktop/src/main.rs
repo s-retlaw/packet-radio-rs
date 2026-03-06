@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tokio::sync::broadcast;
 
-use decoder::{demod_config_for_rate, UnifiedDecoder};
+use decoder::{demod_config_for_rate, create_decoder};
 use frame_fmt::make_frame_info;
 use headless::run_headless;
 
@@ -216,7 +216,7 @@ fn run_audio_loop(
     let mut frame_count: u64 = 0;
     let mut audio_buf = [0i16; 1024];
     let demod_mode = cli::DemodMode::from_config_str(mode);
-    let mut decoder = UnifiedDecoder::new(&demod_mode, config);
+    let mut decoder = create_decoder(&demod_mode, config);
 
     loop {
         if stop.load(Ordering::Relaxed) { break; }
@@ -226,7 +226,7 @@ fn run_audio_loop(
             std::thread::sleep(std::time::Duration::from_millis(10));
             continue;
         }
-        decoder.process(&audio_buf[..n], &mut |data| {
+        decoder.process_audio(&audio_buf[..n], &mut |data: &[u8]| {
             frame_count += 1;
             emit_tui_frame(frame_count, data, async_tx, kiss_frame_tx);
         });

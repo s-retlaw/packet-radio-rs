@@ -41,8 +41,9 @@ use crate::kiss::{self, KissDecoder, Command};
 use crate::ax25::crc16_ccitt;
 use crate::modem::afsk::AfskModulator;
 use crate::modem::demod::{DemodSymbol, FastDemodulator};
-use crate::modem::soft_hdlc::{SoftHdlcDecoder, FrameResult};
-use crate::ax25::frame::HdlcDecoder;
+use crate::modem::demod::{CorrelationDemodulator, DmDemodulator};
+use crate::modem::hdlc_bank::AnyHdlc;
+use crate::modem::binary_xor::BinaryXorDemodulator;
 use crate::modem::{DemodConfig, ModConfig};
 #[cfg(feature = "9600-baud")]
 use crate::modem::scrambler::Scrambler;
@@ -50,7 +51,13 @@ use crate::modem::scrambler::Scrambler;
 use crate::modem::mod_9600::Mod9600Config;
 
 #[cfg(feature = "multi-decoder")]
-use crate::modem::multi::{MiniDecoder, MultiDecoder};
+use crate::modem::multi::{MiniDecoder, MultiDecoder, TwistMiniDecoder};
+#[cfg(feature = "multi-decoder")]
+use crate::modem::corr_slicer::CorrSlicerDecoder;
+
+// Re-export for use in tests (HdlcDecoder used directly in hdlc_encode_data roundtrip test)
+#[cfg(test)]
+use crate::ax25::frame::HdlcDecoder;
 
 // ── Traits ──────────────────────────────────────────────────────────────
 
@@ -362,6 +369,24 @@ impl<D: Demodulate, M: Modulate> TncEngine<D, M> {
         let kiss_out = &mut self.kiss_out;
         self.demod.process_audio(samples, &mut |frame: &[u8]| {
             kiss_out.write_kiss_frame(frame);
+        });
+    }
+
+    /// Feed audio samples with a raw frame callback.
+    ///
+    /// Like `poll_rx`, but also calls `handler` with each raw AX.25 frame
+    /// before KISS-encoding it. Use this when you need raw frame access
+    /// (e.g., for TUI display or APRS parsing) alongside the KISS outbox.
+    pub fn poll_rx_with_handler(
+        &mut self,
+        samples: &[i16],
+        _platform: &mut impl TncPlatform,
+        handler: &mut dyn FnMut(&[u8]),
+    ) {
+        let kiss_out = &mut self.kiss_out;
+        self.demod.process_audio(samples, &mut |frame: &[u8]| {
+            kiss_out.write_kiss_frame(frame);
+            handler(frame);
         });
     }
 
@@ -698,18 +723,18 @@ fn hdlc_encode_data(data: &[u8], bits: &mut [u8]) -> usize {
 /// At 11025 Hz / 1200 baud, 1024 audio samples → ~111 symbols.
 const ADAPTER_SYMBOL_BUF: usize = 256;
 
-/// Single Goertzel fast decoder adapter.
+/// Single Goertzel fast decoder adapter (hard or soft HDLC depending on `alloc`).
 pub struct FastAdapter {
     demod: FastDemodulator,
-    hdlc: HdlcDecoder,
+    hdlc: AnyHdlc,
 }
 
 impl FastAdapter {
-    /// Create a fast (hard-decision) demodulator adapter.
+    /// Create a fast demodulator adapter.
     pub fn new(config: DemodConfig) -> Self {
         Self {
             demod: FastDemodulator::new(config),
-            hdlc: HdlcDecoder::new(),
+            hdlc: AnyHdlc::new(),
         }
     }
 }
@@ -717,12 +742,11 @@ impl FastAdapter {
 impl Demodulate for FastAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
         let mut symbols = [DemodSymbol { bit: false, llr: 0 }; ADAPTER_SYMBOL_BUF];
-        // Process in chunks to avoid symbol buffer overflow (~8 samples per symbol)
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame) = self.hdlc.feed_bit(sym.bit) {
+                if let Some(frame) = self.hdlc.feed(sym.bit, sym.llr) {
                     handler(frame);
                 }
             }
@@ -730,10 +754,10 @@ impl Demodulate for FastAdapter {
     }
 }
 
-/// Single Goertzel + SoftHDLC quality decoder adapter.
+/// Single Goertzel + energy LLR quality decoder adapter.
 pub struct QualityAdapter {
     demod: FastDemodulator,
-    hdlc: SoftHdlcDecoder,
+    hdlc: AnyHdlc,
 }
 
 impl QualityAdapter {
@@ -741,7 +765,7 @@ impl QualityAdapter {
     pub fn new(config: DemodConfig) -> Self {
         Self {
             demod: FastDemodulator::new(config).with_energy_llr(),
-            hdlc: SoftHdlcDecoder::new(),
+            hdlc: AnyHdlc::new(),
         }
     }
 }
@@ -753,14 +777,189 @@ impl Demodulate for QualityAdapter {
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(result) = self.hdlc.feed_soft_bit(sym.llr) {
-                    let data = match &result {
-                        FrameResult::Valid(d) => *d,
-                        FrameResult::Recovered { data, .. } => *data,
-                    };
-                    handler(data);
+                if let Some(frame) = self.hdlc.feed(sym.bit, sym.llr) {
+                    handler(frame);
                 }
             }
+        }
+    }
+}
+
+/// Delay-multiply discriminator + PLL adapter.
+pub struct DmAdapter {
+    demod: DmDemodulator,
+    hdlc: AnyHdlc,
+}
+
+impl DmAdapter {
+    /// Create a DM+PLL demodulator adapter.
+    pub fn new(config: DemodConfig) -> Self {
+        Self {
+            demod: DmDemodulator::with_bpf_pll(config),
+            hdlc: AnyHdlc::new(),
+        }
+    }
+}
+
+impl Demodulate for DmAdapter {
+    fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; ADAPTER_SYMBOL_BUF];
+        let chunk_size = ADAPTER_SYMBOL_BUF * 8;
+        for chunk in samples.chunks(chunk_size) {
+            let n = self.demod.process_samples(chunk, &mut symbols);
+            for sym in &symbols[..n] {
+                if let Some(frame) = self.hdlc.feed(sym.bit, sym.llr) {
+                    handler(frame);
+                }
+            }
+        }
+    }
+}
+
+/// Correlation (mixer) demodulator adapter.
+pub struct CorrAdapter {
+    demod: CorrelationDemodulator,
+    hdlc: AnyHdlc,
+}
+
+impl CorrAdapter {
+    /// Create a correlation demodulator with adaptive gain and energy LLR.
+    pub fn new(config: DemodConfig) -> Self {
+        Self {
+            demod: CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr(),
+            hdlc: AnyHdlc::new(),
+        }
+    }
+}
+
+impl Demodulate for CorrAdapter {
+    fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; ADAPTER_SYMBOL_BUF];
+        let chunk_size = ADAPTER_SYMBOL_BUF * 8;
+        for chunk in samples.chunks(chunk_size) {
+            let n = self.demod.process_samples(chunk, &mut symbols);
+            for sym in &symbols[..n] {
+                if let Some(frame) = self.hdlc.feed(sym.bit, sym.llr) {
+                    handler(frame);
+                }
+            }
+        }
+    }
+}
+
+/// Correlation demodulator + PLL adapter.
+pub struct CorrPllAdapter {
+    demod: CorrelationDemodulator,
+    hdlc: AnyHdlc,
+}
+
+impl CorrPllAdapter {
+    /// Create a correlation demodulator with PLL clock recovery.
+    pub fn new(config: DemodConfig) -> Self {
+        Self {
+            demod: CorrelationDemodulator::new(config)
+                .with_adaptive_gain()
+                .with_energy_llr()
+                .with_pll(),
+            hdlc: AnyHdlc::new(),
+        }
+    }
+}
+
+impl Demodulate for CorrPllAdapter {
+    fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; ADAPTER_SYMBOL_BUF];
+        let chunk_size = ADAPTER_SYMBOL_BUF * 8;
+        for chunk in samples.chunks(chunk_size) {
+            let n = self.demod.process_samples(chunk, &mut symbols);
+            for sym in &symbols[..n] {
+                if let Some(frame) = self.hdlc.feed(sym.bit, sym.llr) {
+                    handler(frame);
+                }
+            }
+        }
+    }
+}
+
+/// Binary XOR correlator adapter.
+pub struct XorAdapter {
+    demod: BinaryXorDemodulator,
+    hdlc: AnyHdlc,
+}
+
+impl XorAdapter {
+    /// Create a binary XOR correlator adapter.
+    pub fn new(config: DemodConfig) -> Self {
+        Self {
+            demod: BinaryXorDemodulator::new(config),
+            hdlc: AnyHdlc::new(),
+        }
+    }
+}
+
+impl Demodulate for XorAdapter {
+    fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
+        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; ADAPTER_SYMBOL_BUF];
+        let chunk_size = ADAPTER_SYMBOL_BUF * 8;
+        for chunk in samples.chunks(chunk_size) {
+            let n = self.demod.process_samples(chunk, &mut symbols);
+            for sym in &symbols[..n] {
+                if let Some(frame) = self.hdlc.feed(sym.bit, sym.llr) {
+                    handler(frame);
+                }
+            }
+        }
+    }
+}
+
+/// CorrSlicer (multi-slicer correlation) adapter.
+#[cfg(feature = "multi-decoder")]
+pub struct CorrSlicerAdapter {
+    decoder: CorrSlicerDecoder,
+}
+
+#[cfg(feature = "multi-decoder")]
+impl CorrSlicerAdapter {
+    /// Create a CorrSlicer adapter with adaptive gain.
+    pub fn new(config: DemodConfig) -> Self {
+        Self {
+            decoder: CorrSlicerDecoder::new(config).with_adaptive_gain(),
+        }
+    }
+}
+
+#[cfg(feature = "multi-decoder")]
+impl Demodulate for CorrSlicerAdapter {
+    fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
+        let output = self.decoder.process_samples(samples);
+        for i in 0..output.len() {
+            handler(output.frame(i));
+        }
+    }
+}
+
+/// TwistMiniDecoder (6-decoder twist ensemble) adapter.
+#[cfg(feature = "multi-decoder")]
+pub struct TwistMiniAdapter {
+    decoder: TwistMiniDecoder,
+}
+
+#[cfg(feature = "multi-decoder")]
+impl TwistMiniAdapter {
+    /// Create a TwistMini adapter (Smart3 + 3 twist-compensated decoders).
+    pub fn new(config: DemodConfig) -> Self {
+        Self {
+            decoder: TwistMiniDecoder::new(config),
+        }
+    }
+}
+
+#[cfg(feature = "multi-decoder")]
+impl Demodulate for TwistMiniAdapter {
+    fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
+        let output = self.decoder.process_samples(samples);
+        for i in 0..output.len() {
+            handler(output.frame(i));
         }
     }
 }

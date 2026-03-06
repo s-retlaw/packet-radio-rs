@@ -10,7 +10,7 @@ use packet_radio_core::tnc::{AfskModulateAdapter, Fsk9600ModulateAdapter, NullDe
 use tokio::sync::broadcast;
 
 use crate::cli;
-use crate::decoder::{demod_config_for_rate, UnifiedDecoder};
+use crate::decoder::{demod_config_for_rate, create_decoder};
 use crate::frame_fmt::print_frame;
 use crate::tx::{TxEngine, TxOnlyPlatform, TxPipeline};
 
@@ -25,7 +25,7 @@ pub fn process_loop(
     mut tx_pipeline: Option<TxPipeline>,
 ) -> Option<TxPipeline> {
     let config = demod_config_for_rate(sample_rate, baud_rate);
-    let mut decoder = UnifiedDecoder::new(mode, config);
+    let mut decoder = create_decoder(mode, config);
     let mut audio_buf = [0i16; 1024];
     let mut frame_count: u64 = 0;
 
@@ -46,7 +46,7 @@ pub fn process_loop(
             pipeline.poll();
         }
 
-        decoder.process(&audio_buf[..n], &mut |data| {
+        decoder.process_audio(&audio_buf[..n], &mut |data: &[u8]| {
             frame_count += 1;
             let frame_data = data.to_vec();
             print_frame(frame_count, &frame_data);
@@ -83,7 +83,7 @@ pub fn process_loop_rx_pipe(
         }
     };
 
-    let mut decoder = UnifiedDecoder::new(mode, config);
+    let mut decoder = create_decoder(mode, config);
     tracing::info!("rx-pipe: {} demodulator", mode.as_str());
 
     loop {
@@ -93,7 +93,7 @@ pub fn process_loop_rx_pipe(
             std::thread::sleep(std::time::Duration::from_millis(10));
             continue;
         }
-        decoder.process(&audio_buf[..n], &mut |data| emit_frame(data));
+        decoder.process_audio(&audio_buf[..n], &mut |data: &[u8]| emit_frame(data));
     }
 
     tracing::info!("rx-pipe: done, output {frame_count} frames");
