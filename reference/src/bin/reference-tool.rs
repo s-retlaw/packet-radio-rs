@@ -178,7 +178,7 @@ async fn main() -> Result<(), CliError> {
                     lat,
                     lon
                 );
-                println!("{:<12} {:>10} {:>11} {}", "CALLSIGN", "LAT", "LON", "SOURCE");
+                println!("{:<12} {:>10} {:>11} SOURCE", "CALLSIGN", "LAT", "LON");
                 println!("{}", "-".repeat(50));
                 for pos in &positions {
                     println!(

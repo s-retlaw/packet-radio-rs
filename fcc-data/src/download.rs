@@ -34,7 +34,7 @@ impl Day {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "sun" | "sunday" => Some(Day::Sun),
             "mon" | "monday" => Some(Day::Mon),
@@ -202,8 +202,8 @@ mod tests {
 
     #[test]
     fn test_day_from_str() {
-        assert!(matches!(Day::from_str("mon"), Some(Day::Mon)));
-        assert!(matches!(Day::from_str("Monday"), Some(Day::Mon)));
-        assert!(Day::from_str("invalid").is_none());
+        assert!(matches!(Day::parse("mon"), Some(Day::Mon)));
+        assert!(matches!(Day::parse("Monday"), Some(Day::Mon)));
+        assert!(Day::parse("invalid").is_none());
     }
 }

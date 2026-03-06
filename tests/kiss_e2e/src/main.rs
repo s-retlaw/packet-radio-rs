@@ -134,13 +134,13 @@ fn validate_ax25(data: &[u8]) -> bool {
     }
     for &b in &data[0..6] {
         let ch = b >> 1;
-        if ch < 0x20 || ch > 0x7E {
+        if !(0x20..=0x7E).contains(&ch) {
             return false;
         }
     }
     for &b in &data[7..13] {
         let ch = b >> 1;
-        if ch < 0x20 || ch > 0x7E {
+        if !(0x20..=0x7E).contains(&ch) {
             return false;
         }
     }

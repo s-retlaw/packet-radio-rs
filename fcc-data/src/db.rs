@@ -247,7 +247,7 @@ impl FccDb {
              LIMIT ?7"
         );
 
-        let limit = query.limit.unwrap_or(100) as i64 * 2; // overfetch for haversine filter
+        let limit = query.limit.unwrap_or(100) * 2; // overfetch for haversine filter
 
         let records = sqlx::query_as::<_, LicenseRecord>(sql)
             .bind(query.lat - dlat)
@@ -514,6 +514,7 @@ impl FccDb {
     /// Apply a geocode result to ALL records matching an address (any status).
     /// The discovery query (addresses_needing_geocode) uses active-only to drive
     /// Census lookups, but once we have a result we apply it everywhere.
+    #[allow(clippy::too_many_arguments)]
     pub async fn geocode_by_address(
         &self,
         street: &str,

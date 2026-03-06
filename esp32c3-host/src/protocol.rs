@@ -1,7 +1,7 @@
-/// Binary protocol for ESP32-C3 test harness.
-///
-/// Simple length-prefixed messages over USB-CDC serial.
-/// Header: [msg_type: u8] [flags: u8] [payload_len: u16 LE]
+//! Binary protocol for ESP32-C3 test harness.
+//!
+//! Simple length-prefixed messages over USB-CDC serial.
+//! Header: [msg_type: u8] [flags: u8] [payload_len: u16 LE]
 
 /// Header size in bytes.
 pub const HEADER_SIZE: usize = 4;
@@ -184,7 +184,7 @@ impl FramePayload {
         Some(u16::from_le_bytes([buf[2], buf[3]]))
     }
 
-    pub fn parse_data<'a>(buf: &'a [u8]) -> Option<&'a [u8]> {
+    pub fn parse_data(buf: &[u8]) -> Option<&[u8]> {
         let len = Self::parse_len(buf)? as usize;
         if buf.len() < 4 + len {
             return None;

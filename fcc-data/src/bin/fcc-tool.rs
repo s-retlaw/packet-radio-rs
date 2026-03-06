@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Sync complete: {} records ingested", count);
             }
             SyncAction::Daily { day } => {
-                let day = Day::from_str(&day).ok_or_else(|| {
+                let day = Day::parse(&day).ok_or_else(|| {
                     format!("Invalid day: {}. Use: mon, tue, wed, thu, fri, sat, sun", day)
                 })?;
                 println!("Starting daily sync ({})...", day.suffix());
@@ -145,8 +145,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if history.is_empty() {
                     println!("No sync history found. Run 'fcc-tool sync full' first.");
                 } else {
-                    println!("{:<5} {:<12} {:<25} {:<10} {:>10} {}",
-                        "ID", "Type", "Started", "Status", "Records", "Error");
+                    println!("{:<5} {:<12} {:<25} {:<10} {:>10} Error",
+                        "ID", "Type", "Started", "Status", "Records");
                     println!("{}", "-".repeat(80));
                     for entry in &history {
                         println!("{:<5} {:<12} {:<25} {:<10} {:>10} {}",

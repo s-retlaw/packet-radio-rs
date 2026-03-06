@@ -128,8 +128,8 @@ pub struct SearchFormState {
     pub editing: bool,
 }
 
-impl SearchFormState {
-    pub fn new() -> Self {
+impl Default for SearchFormState {
+    fn default() -> Self {
         Self {
             call_sign: String::new(),
             name: String::new(),
@@ -142,6 +142,9 @@ impl SearchFormState {
             editing: false,
         }
     }
+}
+
+impl SearchFormState {
 
     pub fn next_field(&mut self) {
         let fields = SearchField::ALL;
@@ -239,7 +242,7 @@ impl App {
         Self {
             db,
             tab: Tab::Search,
-            search: SearchFormState::new(),
+            search: SearchFormState::default(),
             results: Vec::new(),
             result_table_state: TableState::default(),
             history: Vec::new(),

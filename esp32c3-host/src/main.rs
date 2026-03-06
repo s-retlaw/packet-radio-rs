@@ -237,7 +237,7 @@ fn do_stream(
 ) -> std::io::Result<()> {
     // Open WAV file
     let reader = hound::WavReader::open(wav_path)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("WAV open: {}", e)))?;
+        .map_err(|e| std::io::Error::other(format!("WAV open: {}", e)))?;
     let spec = reader.spec();
     println!(
         "WAV: {} Hz, {} ch, {} bits",
@@ -278,7 +278,7 @@ fn do_stream(
     println!("ESP32 ready (mode={})", mode);
 
     // Stream audio chunks
-    let total_chunks = (all_samples.len() + CHUNK_SAMPLES - 1) / CHUNK_SAMPLES;
+    let total_chunks = all_samples.len().div_ceil(CHUNK_SAMPLES);
     let stream_start = Instant::now();
 
     for (chunk_idx, chunk) in all_samples.chunks(CHUNK_SAMPLES).enumerate() {

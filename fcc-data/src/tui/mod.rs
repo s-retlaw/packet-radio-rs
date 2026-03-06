@@ -276,10 +276,8 @@ async fn handle_detail_keys(app: &mut App, key: event::KeyEvent) {
     if app.nearby_browsing {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => {
-                if !app.nearby.is_empty() {
-                    if app.nearby_cursor + 1 < app.nearby.len() {
-                        app.nearby_cursor += 1;
-                    }
+                if !app.nearby.is_empty() && app.nearby_cursor + 1 < app.nearby.len() {
+                    app.nearby_cursor += 1;
                 }
                 return;
             }
