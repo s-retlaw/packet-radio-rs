@@ -2,6 +2,19 @@ use sqlx::{Row, SqlitePool};
 
 use crate::models::{CoverageStation, MessageRow, PacketRow, StationRow, TrackPoint, WebWeather, WeatherHistoryPoint};
 
+/// Common SELECT clause for station queries (used by get_stations, get_stations_with_position,
+/// and get_station_by_callsign).  The trailing alias `s` on `FROM stations` is required for
+/// the correlated `has_moved` subquery.
+const STATION_SELECT: &str =
+    "SELECT callsign, ssid, station_type, lat, lon, speed, course, altitude,
+            comment, symbol_table, symbol_code, last_heard, packet_count, weather_json,
+            heard_via, last_source_type, last_path,
+            (SELECT (MAX(lat) - MIN(lat)) > 0.003 OR (MAX(lon) - MIN(lon)) > 0.003
+                FROM position_history
+                WHERE callsign = s.callsign AND ssid = s.ssid
+            ) AS has_moved
+     FROM stations s";
+
 /// Parameters for inserting a decoded packet.
 pub struct PacketInsert<'a> {
     pub source: &'a str,
@@ -259,19 +272,8 @@ pub async fn get_recent_packets(
 
 /// Get all stations.
 pub async fn get_stations(pool: &SqlitePool) -> Result<Vec<StationRow>, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT callsign, ssid, station_type, lat, lon, speed, course, altitude,
-                comment, symbol_table, symbol_code, last_heard, packet_count, weather_json,
-                heard_via, last_source_type, last_path,
-                (SELECT (MAX(lat) - MIN(lat)) > 0.003 OR (MAX(lon) - MIN(lon)) > 0.003
-                    FROM position_history
-                    WHERE callsign = s.callsign AND ssid = s.ssid
-                ) AS has_moved
-         FROM stations s ORDER BY last_heard DESC",
-    )
-    .fetch_all(pool)
-    .await?;
-
+    let sql = format!("{} ORDER BY last_heard DESC", STATION_SELECT);
+    let rows = sqlx::query(&sql).fetch_all(pool).await?;
     Ok(rows.iter().map(row_to_station).collect())
 }
 
@@ -279,20 +281,11 @@ pub async fn get_stations(pool: &SqlitePool) -> Result<Vec<StationRow>, sqlx::Er
 pub async fn get_stations_with_position(
     pool: &SqlitePool,
 ) -> Result<Vec<StationRow>, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT callsign, ssid, station_type, lat, lon, speed, course, altitude,
-                comment, symbol_table, symbol_code, last_heard, packet_count, weather_json,
-                heard_via, last_source_type, last_path,
-                (SELECT (MAX(lat) - MIN(lat)) > 0.003 OR (MAX(lon) - MIN(lon)) > 0.003
-                    FROM position_history
-                    WHERE callsign = s.callsign AND ssid = s.ssid
-                ) AS has_moved
-         FROM stations s WHERE lat IS NOT NULL AND lon IS NOT NULL
-         ORDER BY last_heard DESC",
-    )
-    .fetch_all(pool)
-    .await?;
-
+    let sql = format!(
+        "{} WHERE lat IS NOT NULL AND lon IS NOT NULL ORDER BY last_heard DESC",
+        STATION_SELECT,
+    );
+    let rows = sqlx::query(&sql).fetch_all(pool).await?;
     Ok(rows.iter().map(row_to_station).collect())
 }
 
@@ -387,21 +380,12 @@ pub async fn get_station_by_callsign(
     callsign: &str,
     ssid: u8,
 ) -> Result<Option<StationRow>, sqlx::Error> {
-    let row = sqlx::query(
-        "SELECT callsign, ssid, station_type, lat, lon, speed, course, altitude,
-                comment, symbol_table, symbol_code, last_heard, packet_count, weather_json,
-                heard_via, last_source_type, last_path,
-                (SELECT (MAX(lat) - MIN(lat)) > 0.003 OR (MAX(lon) - MIN(lon)) > 0.003
-                    FROM position_history
-                    WHERE callsign = s.callsign AND ssid = s.ssid
-                ) AS has_moved
-         FROM stations s WHERE callsign = ? AND ssid = ?",
-    )
-    .bind(callsign)
-    .bind(ssid as i64)
-    .fetch_optional(pool)
-    .await?;
-
+    let sql = format!("{} WHERE callsign = ? AND ssid = ?", STATION_SELECT);
+    let row = sqlx::query(&sql)
+        .bind(callsign)
+        .bind(ssid as i64)
+        .fetch_optional(pool)
+        .await?;
     Ok(row.map(|r| row_to_station(&r)))
 }
 
@@ -544,6 +528,18 @@ pub async fn upsert_rf_link(
     Ok(())
 }
 
+/// Helper: map a sqlx Row to a CoverageStation.
+fn row_to_coverage(r: &sqlx::sqlite::SqliteRow) -> CoverageStation {
+    CoverageStation {
+        callsign: r.get("callsign"),
+        ssid: r.get::<i64, _>("ssid") as u8,
+        lat: r.get("lat"),
+        lon: r.get("lon"),
+        packet_count: r.get("packet_count"),
+        link_type: r.get("link_type"),
+    }
+}
+
 /// Get stations that this station hears (its RX coverage).
 /// Returns heard stations with their positions (joined from stations table).
 pub async fn get_station_heard(
@@ -565,17 +561,7 @@ pub async fn get_station_heard(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows
-        .iter()
-        .map(|r| CoverageStation {
-            callsign: r.get("callsign"),
-            ssid: r.get::<i64, _>("ssid") as u8,
-            lat: r.get("lat"),
-            lon: r.get("lon"),
-            packet_count: r.get("packet_count"),
-            link_type: r.get("link_type"),
-        })
-        .collect())
+    Ok(rows.iter().map(row_to_coverage).collect())
 }
 
 /// Get stations that hear this station (who picks up its TX).
@@ -599,17 +585,7 @@ pub async fn get_station_hearers(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows
-        .iter()
-        .map(|r| CoverageStation {
-            callsign: r.get("callsign"),
-            ssid: r.get::<i64, _>("ssid") as u8,
-            lat: r.get("lat"),
-            lon: r.get("lon"),
-            packet_count: r.get("packet_count"),
-            link_type: r.get("link_type"),
-        })
-        .collect())
+    Ok(rows.iter().map(row_to_coverage).collect())
 }
 
 /// Prune old RF link entries.
@@ -644,83 +620,7 @@ pub async fn cleanup_position_history(
 #[cfg(test)]
 pub async fn test_db() -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    // Run migrations sequentially — SQLite doesn't support multiple statements in one query
-    // for ALTER TABLE, so we split 002 into individual statements.
-    sqlx::query(include_str!("../../migrations/001_initial.sql"))
-        .execute(&pool)
-        .await
-        .unwrap();
-    // 002: weather_history table + index
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS weather_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            callsign TEXT NOT NULL,
-            ssid INTEGER NOT NULL DEFAULT 0,
-            temperature INTEGER,
-            wind_speed INTEGER,
-            wind_direction INTEGER,
-            wind_gust INTEGER,
-            humidity INTEGER,
-            barometric_pressure INTEGER,
-            rain_last_hour INTEGER,
-            rain_24h INTEGER,
-            luminosity INTEGER,
-            recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_weather_history_call
-         ON weather_history(callsign, ssid, recorded_at)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    // 002: source_type on packets
-    sqlx::query("ALTER TABLE packets ADD COLUMN source_type TEXT NOT NULL DEFAULT 'unknown'")
-        .execute(&pool)
-        .await
-        .unwrap();
-    // 002: heard_via and last_source_type on stations
-    sqlx::query("ALTER TABLE stations ADD COLUMN heard_via TEXT NOT NULL DEFAULT ''")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("ALTER TABLE stations ADD COLUMN last_source_type TEXT NOT NULL DEFAULT 'unknown'")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("ALTER TABLE stations ADD COLUMN last_path TEXT")
-        .execute(&pool)
-        .await
-        .unwrap();
-    // rf_links table
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS rf_links (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hearer TEXT NOT NULL,
-            hearer_ssid INTEGER NOT NULL DEFAULT 0,
-            heard TEXT NOT NULL,
-            heard_ssid INTEGER NOT NULL DEFAULT 0,
-            link_type TEXT NOT NULL,
-            packet_count INTEGER NOT NULL DEFAULT 1,
-            last_seen TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(hearer, hearer_ssid, heard, heard_ssid, link_type)
-        )",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_rf_links_hearer ON rf_links(hearer, hearer_ssid)")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_rf_links_heard ON rf_links(heard, heard_ssid)")
-        .execute(&pool)
-        .await
-        .unwrap();
+    run_migrations(&pool).await.unwrap();
     pool
 }
 

@@ -574,10 +574,6 @@ fn mime_for_path(path: &str) -> &'static str {
 
 /// Parse "N0CALL-9" into ("N0CALL", 9) or "N0CALL" into ("N0CALL", 0).
 fn parse_callsign_ssid(call: &str) -> (String, u8) {
-    if let Some((cs, ssid_str)) = call.rsplit_once('-') {
-        if let Ok(ssid) = ssid_str.parse::<u8>() {
-            return (cs.to_string(), ssid);
-        }
-    }
-    (call.to_string(), 0)
+    let (cs, ssid) = aprs_viewer::server::ingest::parse_call_ssid(call);
+    (cs.to_string(), ssid)
 }

@@ -454,20 +454,7 @@ impl App {
                 if let Some(field) = self.settings.fields.get(self.settings.selected_field) {
                     match field.kind {
                         FieldKind::Dropdown { .. } => {
-                            let field_idx = self.settings.selected_field;
-                            self.settings.cycle_dropdown();
-                            if field_idx == 1 {
-                                if let Some(msg) = self.settings.on_device_changed(&self.devices) {
-                                    self.error_message = Some(msg);
-                                    self.show_error_dialog = true;
-                                }
-                            }
-                            if field_idx == 3 {
-                                if let Some(msg) = self.settings.on_baud_changed(&self.devices) {
-                                    self.error_message = Some(msg);
-                                    self.show_error_dialog = true;
-                                }
-                            }
+                            self.cycle_settings_dropdown();
                         }
                         FieldKind::Text { .. } => {
                             self.settings.editing = true;
@@ -477,20 +464,7 @@ impl App {
                 true
             }
             KeyCode::Char(' ') => {
-                let field_idx = self.settings.selected_field;
-                self.settings.cycle_dropdown();
-                if field_idx == 1 {
-                    if let Some(msg) = self.settings.on_device_changed(&self.devices) {
-                        self.error_message = Some(msg);
-                        self.show_error_dialog = true;
-                    }
-                }
-                if field_idx == 3 {
-                    if let Some(msg) = self.settings.on_baud_changed(&self.devices) {
-                        self.error_message = Some(msg);
-                        self.show_error_dialog = true;
-                    }
-                }
+                self.cycle_settings_dropdown();
                 true
             }
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -511,6 +485,25 @@ impl App {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Cycle the current settings dropdown and handle any side-effects
+    /// (e.g. device/baud rate changes that update other fields).
+    fn cycle_settings_dropdown(&mut self) {
+        let field_idx = self.settings.selected_field;
+        self.settings.cycle_dropdown();
+        if field_idx == 1 {
+            if let Some(msg) = self.settings.on_device_changed(&self.devices) {
+                self.error_message = Some(msg);
+                self.show_error_dialog = true;
+            }
+        }
+        if field_idx == 3 {
+            if let Some(msg) = self.settings.on_baud_changed(&self.devices) {
+                self.error_message = Some(msg);
+                self.show_error_dialog = true;
+            }
         }
     }
 

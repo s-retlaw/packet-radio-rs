@@ -250,3 +250,90 @@ pub static SIN_TABLE_Q15: [i16; 256] = [
    -12539,-11793,-11039,-10278, -9512, -8739, -7962, -7179,
     -6393, -5602, -4808, -4011, -3212, -2410, -1608,  -804,
 ];
+
+// ─── Shared utilities for multi-decoder modules ────────────────────────
+
+/// FNV-1a 32-bit hash for frame deduplication.
+///
+/// Used by `MultiDecoder`, `MiniDecoder`, `CorrSlicerDecoder`, and
+/// `Multi9600Decoder` to detect duplicate frames across parallel decoders.
+pub fn frame_hash(data: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for &b in data {
+        hash ^= b as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+/// Time-windowed dedup ring buffer for multi-decoder frame deduplication.
+///
+/// Tracks (hash, generation) pairs in a fixed-size ring. Hashes expire
+/// after `DEDUP_WINDOW` generations to allow re-decoding of repeated
+/// transmissions.
+pub struct DedupRing<const N: usize> {
+    entries: [(u32, u32); N],
+    write_idx: usize,
+    count: usize,
+    generation: u32,
+}
+
+impl<const N: usize> Default for DedupRing<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> DedupRing<N> {
+    /// Number of generations a hash is considered "recent".
+    const DEDUP_WINDOW: u32 = 4;
+
+    /// Create a new empty dedup ring.
+    pub fn new() -> Self {
+        Self {
+            entries: [(0u32, 0u32); N],
+            write_idx: 0,
+            count: 0,
+            generation: 0,
+        }
+    }
+
+    /// Advance to the next generation (call once per process_samples batch).
+    pub fn advance_generation(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Current generation counter.
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// Check if a hash was seen recently (within the dedup window).
+    pub fn is_duplicate(&self, hash: u32) -> bool {
+        let limit = self.count.min(N);
+        for i in 0..limit {
+            let (h, gen) = self.entries[i];
+            if h == hash && self.generation.wrapping_sub(gen) <= Self::DEDUP_WINDOW {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Record a hash at the current generation.
+    pub fn record(&mut self, hash: u32) {
+        self.entries[self.write_idx] = (hash, self.generation);
+        self.write_idx = (self.write_idx + 1) % N;
+        if self.count < N {
+            self.count += 1;
+        }
+    }
+
+    /// Reset all state.
+    pub fn reset(&mut self) {
+        self.entries = [(0u32, 0u32); N];
+        self.write_idx = 0;
+        self.count = 0;
+        self.generation = 0;
+    }
+}

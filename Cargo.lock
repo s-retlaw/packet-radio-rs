@@ -1098,7 +1098,6 @@ dependencies = [
  "hound",
  "packet-radio-core",
  "serialport",
- "time",
 ]
 
 [[package]]

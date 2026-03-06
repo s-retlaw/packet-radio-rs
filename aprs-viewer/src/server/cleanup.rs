@@ -14,13 +14,3 @@ pub async fn run_cleanup_once(pool: SqlitePool, station_max_hours: u32, track_ma
         _ => {}
     }
 }
-
-/// Run periodic cleanup of stale stations and old position history.
-pub async fn run_cleanup(pool: SqlitePool, station_max_hours: u32, track_max_hours: u32) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-
-    loop {
-        interval.tick().await;
-        run_cleanup_once(pool.clone(), station_max_hours, track_max_hours).await;
-    }
-}

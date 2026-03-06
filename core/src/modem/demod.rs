@@ -166,25 +166,7 @@ pub struct FastDemodulator {
 impl FastDemodulator {
     /// Select the appropriate BPF for a given config (baud rate + sample rate).
     fn select_bpf(config: &DemodConfig) -> BiquadFilter {
-        if config.baud_rate == 300 {
-            match config.sample_rate {
-                8000 => super::filter::afsk_300_bandpass_8000(),
-                22050 => super::filter::afsk_300_bandpass_22050(),
-                44100 => super::filter::afsk_300_bandpass_44100(),
-                48000 => super::filter::afsk_300_bandpass_48000(),
-                _ => super::filter::afsk_300_bandpass_11025(),
-            }
-        } else {
-            match config.sample_rate {
-                12000 => super::filter::afsk_bandpass_12000(),
-                13200 => super::filter::afsk_bandpass_13200(),
-                22050 => super::filter::afsk_bandpass_22050(),
-                26400 => super::filter::afsk_bandpass_26400(),
-                44100 => super::filter::afsk_bandpass_44100(),
-                48000 => super::filter::afsk_bandpass_48000(),
-                _ => super::filter::afsk_bandpass_11025(),
-            }
-        }
+        super::filter::select_std_bpf(config.baud_rate, config.sample_rate)
     }
 
     /// Common internal constructor. All public constructors delegate here.
@@ -842,15 +824,7 @@ pub struct QualityDemodulator {
 impl QualityDemodulator {
     /// Create a new quality-path demodulator.
     pub fn new(config: DemodConfig) -> Self {
-        let bpf = match config.sample_rate {
-            12000 => super::filter::afsk_bandpass_12000(),
-            13200 => super::filter::afsk_bandpass_13200(),
-            22050 => super::filter::afsk_bandpass_22050(),
-            26400 => super::filter::afsk_bandpass_26400(),
-            44100 => super::filter::afsk_bandpass_44100(),
-            48000 => super::filter::afsk_bandpass_48000(),
-            _ => super::filter::afsk_bandpass_11025(),
-        };
+        let bpf = super::filter::select_std_bpf(config.baud_rate, config.sample_rate);
         let hilbert = hilbert_31();
         let inst_freq = InstFreqDetector::new(config.sample_rate);
         let tracker = AdaptiveTracker::new(config.sample_rate);
@@ -1800,25 +1774,7 @@ impl CorrelationDemodulator {
 
     /// Select the appropriate BPF for a given config (baud rate + sample rate).
     fn select_bpf(config: &DemodConfig) -> BiquadFilter {
-        if config.baud_rate == 300 {
-            match config.sample_rate {
-                8000 => super::filter::afsk_300_bandpass_8000(),
-                22050 => super::filter::afsk_300_bandpass_22050(),
-                44100 => super::filter::afsk_300_bandpass_44100(),
-                48000 => super::filter::afsk_300_bandpass_48000(),
-                _ => super::filter::afsk_300_bandpass_11025(),
-            }
-        } else {
-            match config.sample_rate {
-                12000 => super::filter::afsk_bandpass_12000(),
-                13200 => super::filter::afsk_bandpass_13200(),
-                22050 => super::filter::afsk_bandpass_22050(),
-                26400 => super::filter::afsk_bandpass_26400(),
-                44100 => super::filter::afsk_bandpass_44100(),
-                48000 => super::filter::afsk_bandpass_48000(),
-                _ => super::filter::afsk_bandpass_11025(),
-            }
-        }
+        super::filter::select_std_bpf(config.baud_rate, config.sample_rate)
     }
 
     /// Create a new correlation demodulator.

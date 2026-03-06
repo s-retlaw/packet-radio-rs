@@ -328,35 +328,9 @@ fn make_frame_info(count: u64, data: &[u8]) -> tui::state::DecodedFrameInfo {
     let timestamp = chrono_lite_timestamp();
 
     if let Some(frame) = Frame::parse(data) {
-        let src = core::str::from_utf8(frame.src.callsign_str()).unwrap_or("?");
-        let src_ssid = if frame.src.ssid > 0 {
-            format!("{src}-{}", frame.src.ssid)
-        } else {
-            src.to_string()
-        };
-
-        let dest = core::str::from_utf8(frame.dest.callsign_str()).unwrap_or("?");
-        let dest_ssid = if frame.dest.ssid > 0 {
-            format!("{dest}-{}", frame.dest.ssid)
-        } else {
-            dest.to_string()
-        };
-
-        let mut via = String::new();
-        for i in 0..frame.num_digipeaters as usize {
-            if !via.is_empty() { via.push(','); }
-            let digi = &frame.digipeaters[i];
-            if let Ok(call) = core::str::from_utf8(digi.callsign_str()) {
-                via.push_str(call);
-            }
-            if digi.ssid > 0 {
-                via.push('-');
-                via.push_str(&digi.ssid.to_string());
-            }
-            if digi.h_bit {
-                via.push('*');
-            }
-        }
+        let src_ssid = format_address(&frame.src);
+        let dest_ssid = format_address(&frame.dest);
+        let via = format_via_path(&frame);
 
         let info_str = core::str::from_utf8(frame.info).unwrap_or("<binary>").to_string();
 
@@ -921,6 +895,38 @@ fn demod_config_for_rate(rate: u32, baud: u32) -> DemodConfig {
     }
 }
 
+
+/// Format an AX.25 address as "CALL" or "CALL-SSID".
+fn format_address(addr: &packet_radio_core::ax25::Address) -> String {
+    let call = core::str::from_utf8(addr.callsign_str()).unwrap_or("?");
+    if addr.ssid > 0 {
+        format!("{call}-{}", addr.ssid)
+    } else {
+        call.to_string()
+    }
+}
+
+/// Build a comma-separated digipeater path string from a parsed frame.
+/// Each digipeater is formatted as "CALL[-SSID][*]".
+fn format_via_path(frame: &Frame) -> String {
+    let mut via = String::new();
+    for i in 0..frame.num_digipeaters as usize {
+        if !via.is_empty() { via.push(','); }
+        let digi = &frame.digipeaters[i];
+        if let Ok(call) = core::str::from_utf8(digi.callsign_str()) {
+            via.push_str(call);
+        }
+        if digi.ssid > 0 {
+            via.push('-');
+            via.push_str(&digi.ssid.to_string());
+        }
+        if digi.h_bit {
+            via.push('*');
+        }
+    }
+    via
+}
+
 // ── Process Loops ───────────────────────────────────────────────────────
 
 // ── Unified Decoder ─────────────────────────────────────────────────────
@@ -1470,43 +1476,14 @@ fn print_frame(count: u64, data: &[u8]) {
     let now = chrono_lite_timestamp();
 
     if let Some(frame) = Frame::parse(data) {
-        let src = core::str::from_utf8(frame.src.callsign_str()).unwrap_or("?");
-        let dest = core::str::from_utf8(frame.dest.callsign_str()).unwrap_or("?");
-
-        // Build via path
-        let mut via = String::new();
-        for i in 0..frame.num_digipeaters as usize {
-            via.push(',');
-            let digi = &frame.digipeaters[i];
-            if let Ok(call) = core::str::from_utf8(digi.callsign_str()) {
-                via.push_str(call);
-            }
-            if digi.ssid > 0 {
-                via.push('-');
-                via.push_str(&digi.ssid.to_string());
-            }
-            if digi.h_bit {
-                via.push('*');
-            }
-        }
-
-        // Format source SSID
-        let src_ssid = if frame.src.ssid > 0 {
-            format!("{src}-{}", frame.src.ssid)
-        } else {
-            src.to_string()
-        };
-
-        // Format dest SSID
-        let dest_ssid = if frame.dest.ssid > 0 {
-            format!("{dest}-{}", frame.dest.ssid)
-        } else {
-            dest.to_string()
-        };
+        let src_ssid = format_address(&frame.src);
+        let dest_ssid = format_address(&frame.dest);
+        let via = format_via_path(&frame);
+        let via_prefix = if via.is_empty() { String::new() } else { format!(",{via}") };
 
         let info = core::str::from_utf8(frame.info).unwrap_or("<binary>");
 
-        println!("[{now}] #{count} {src_ssid}>{dest_ssid}{via}: {info}");
+        println!("[{now}] #{count} {src_ssid}>{dest_ssid}{via_prefix}: {info}");
 
         // Try APRS parse for extra detail at debug level
         if let Some(pkt) = aprs::parse_packet(frame.info, frame.dest.callsign_str()) {

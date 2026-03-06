@@ -294,23 +294,7 @@ pub struct CorrSlicerDecoder {
 impl CorrSlicerDecoder {
     /// Create a new multi-slicer correlation decoder with default gains and frequency offsets.
     pub fn new(config: DemodConfig) -> Self {
-        let bpf = if config.baud_rate == 300 {
-            match config.sample_rate {
-                8000 => super::filter::afsk_300_bandpass_8000(),
-                22050 => super::filter::afsk_300_bandpass_22050(),
-                44100 => super::filter::afsk_300_bandpass_44100(),
-                48000 => super::filter::afsk_300_bandpass_48000(),
-                _ => super::filter::afsk_300_bandpass_11025(),
-            }
-        } else {
-            match config.sample_rate {
-                13200 => super::filter::afsk_bandpass_13200(),
-                22050 => super::filter::afsk_bandpass_22050(),
-                26400 => super::filter::afsk_bandpass_26400(),
-                44100 => super::filter::afsk_bandpass_44100(),
-                _ => super::filter::afsk_bandpass_11025(),
-            }
-        };
+        let bpf = super::filter::select_std_bpf(config.baud_rate, config.sample_rate);
 
         // For 300 baud at high sample rates, decimate mixer outputs so the LPF
         // runs at ~11025 Hz where Q15 coefficients have adequate precision.
@@ -717,7 +701,7 @@ impl CorrSlicerDecoder {
                             let mut frame_copy = [0u8; 330];
                             frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                             *total_decoded += 1;
-                            let hash = frame_hash(&frame_copy[..len]);
+                            let hash = super::frame_hash(&frame_copy[..len]);
                             if !is_dup(recent_hashes, *recent_count, generation, hash) {
                                 record(recent_hashes, recent_write, recent_count, generation, hash);
                                 *total_unique += 1;
@@ -737,7 +721,7 @@ impl CorrSlicerDecoder {
                             let len = frame_bytes.len().min(330);
                             let mut frame_copy = [0u8; 330];
                             frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
-                            let hash = frame_hash(&frame_copy[..len]);
+                            let hash = super::frame_hash(&frame_copy[..len]);
                             if !is_dup(recent_hashes, *recent_count, generation, hash) {
                                 record(recent_hashes, recent_write, recent_count, generation, hash);
                                 *total_unique += 1;
@@ -791,15 +775,7 @@ fn record(
     }
 }
 
-/// FNV-1a 32-bit hash for frame deduplication.
-fn frame_hash(data: &[u8]) -> u32 {
-    let mut hash: u32 = 0x811c_9dc5;
-    for &b in data {
-        hash ^= b as u32;
-        hash = hash.wrapping_mul(0x0100_0193);
-    }
-    hash
-}
+// frame_hash is now centralized in super::frame_hash
 
 #[cfg(test)]
 mod tests {

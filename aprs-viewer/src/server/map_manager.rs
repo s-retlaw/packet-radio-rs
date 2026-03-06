@@ -27,6 +27,17 @@ fn is_allowed_url(url: &str) -> bool {
     }
 }
 
+/// Validate a map pack filename: must be a `.pmtiles` file with no path traversal.
+fn validate_filename(filename: &str) -> Result<(), ServerError> {
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err(ServerError::InvalidInput("Invalid filename".into()));
+    }
+    if !filename.ends_with(".pmtiles") {
+        return Err(ServerError::InvalidInput("Filename must end with .pmtiles".into()));
+    }
+    Ok(())
+}
+
 /// List installed PMTiles packs in the maps directory.
 pub async fn list_installed_packs(
     maps_dir: &str,
@@ -74,14 +85,7 @@ pub async fn delete_pack(
     maps_dir: &str,
     filename: &str,
 ) -> Result<(), ServerError> {
-    // Safety: reject traversal
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return Err(ServerError::InvalidInput("Invalid filename".into()));
-    }
-
-    if !filename.ends_with(".pmtiles") {
-        return Err(ServerError::InvalidInput("Can only delete .pmtiles files".into()));
-    }
+    validate_filename(filename)?;
 
     let path = Path::new(maps_dir).join(filename);
     if !path.exists() {
@@ -100,14 +104,7 @@ pub async fn download_pack(
     filename: &str,
     maps_dir: &str,
 ) -> Result<(), ServerError> {
-    // Safety: reject traversal
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return Err(ServerError::InvalidInput("Invalid filename".into()));
-    }
-
-    if !filename.ends_with(".pmtiles") {
-        return Err(ServerError::InvalidInput("Filename must end with .pmtiles".into()));
-    }
+    validate_filename(filename)?;
 
     // SSRF protection: only allow known tile server domains
     if !is_allowed_url(url) {

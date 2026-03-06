@@ -258,7 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         entry.started_at,
                         entry.sync_type,
                         entry.status,
-                        entry.records_processed.map(|n| n.to_string()).unwrap_or("?".to_string()),
+                        entry.records_processed.map_or_else(|| "?".to_string(), |n| n.to_string()),
                     );
                 }
             }
@@ -273,14 +273,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
         let end = max.saturating_sub(3);
         let boundary = s
             .char_indices()
             .map(|(i, _)| i)
-            .take_while(|&i| i <= end)
+            .take(end)
             .last()
             .unwrap_or(0);
         format!("{}...", &s[..boundary])

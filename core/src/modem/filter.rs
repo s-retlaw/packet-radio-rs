@@ -867,3 +867,81 @@ mod tests {
             "Bandpass should reject DC, got {}", last_output);
     }
 }
+
+// ─── Centralized BPF selection for AFSK (1200/300 baud) ──────────────────
+// These functions eliminate duplicated match-on-sample-rate patterns across
+// demod.rs, multi.rs, corr_slicer.rs, and binary_xor.rs.
+
+/// Select the standard-bandwidth AFSK bandpass filter for a given config.
+///
+/// For 1200 baud: center=1700 Hz, BW=1600 Hz.
+/// For 300 baud: center=1700 Hz, BW=400 Hz.
+pub fn select_std_bpf(baud_rate: u32, sample_rate: u32) -> BiquadFilter {
+    if baud_rate == 300 {
+        match sample_rate {
+            8000 => afsk_300_bandpass_8000(),
+            22050 => afsk_300_bandpass_22050(),
+            44100 => afsk_300_bandpass_44100(),
+            48000 => afsk_300_bandpass_48000(),
+            _ => afsk_300_bandpass_11025(),
+        }
+    } else {
+        match sample_rate {
+            12000 => afsk_bandpass_12000(),
+            13200 => afsk_bandpass_13200(),
+            22050 => afsk_bandpass_22050(),
+            26400 => afsk_bandpass_26400(),
+            44100 => afsk_bandpass_44100(),
+            48000 => afsk_bandpass_48000(),
+            _ => afsk_bandpass_11025(),
+        }
+    }
+}
+
+/// Select the narrow AFSK bandpass filter for a given config.
+///
+/// For 1200 baud: center=1700 Hz, BW=1200 Hz.
+/// For 300 baud: center=1700 Hz, BW=300 Hz.
+pub fn select_narrow_bpf(baud_rate: u32, sample_rate: u32) -> BiquadFilter {
+    if baud_rate == 300 {
+        match sample_rate {
+            8000 => afsk_300_bandpass_narrow_8000(),
+            22050 => afsk_300_bandpass_narrow_22050(),
+            44100 => afsk_300_bandpass_narrow_44100(),
+            48000 => afsk_300_bandpass_narrow_48000(),
+            _ => afsk_300_bandpass_narrow_11025(),
+        }
+    } else {
+        match sample_rate {
+            12000 => afsk_bandpass_narrow_12000(),
+            13200 => afsk_bandpass_narrow_13200(),
+            26400 => afsk_bandpass_narrow_26400(),
+            48000 => afsk_bandpass_narrow_48000(),
+            _ => afsk_bandpass_narrow_11025(),
+        }
+    }
+}
+
+/// Select the wide AFSK bandpass filter for a given config.
+///
+/// For 1200 baud: center=1700 Hz, BW=2000 Hz.
+/// For 300 baud: center=1700 Hz, BW=500 Hz.
+pub fn select_wide_bpf(baud_rate: u32, sample_rate: u32) -> BiquadFilter {
+    if baud_rate == 300 {
+        match sample_rate {
+            8000 => afsk_300_bandpass_wide_8000(),
+            22050 => afsk_300_bandpass_wide_22050(),
+            44100 => afsk_300_bandpass_wide_44100(),
+            48000 => afsk_300_bandpass_wide_48000(),
+            _ => afsk_300_bandpass_wide_11025(),
+        }
+    } else {
+        match sample_rate {
+            12000 => afsk_bandpass_wide_12000(),
+            13200 => afsk_bandpass_wide_13200(),
+            26400 => afsk_bandpass_wide_26400(),
+            48000 => afsk_bandpass_wide_48000(),
+            _ => afsk_bandpass_wide_11025(),
+        }
+    }
+}

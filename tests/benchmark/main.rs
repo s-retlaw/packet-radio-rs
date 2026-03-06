@@ -382,45 +382,53 @@ struct DecodeResult {
     elapsed: Duration,
 }
 
-/// Decode audio samples using the fast demodulator + hard HDLC.
-fn decode_fast(samples: &[i16], sample_rate: u32) -> DecodeResult {
-    let config = config_for_rate(sample_rate, get_baud());
+// ─── Decode Helpers ─────────────────────────────────────────────────────
+//
+// These helpers eliminate repeated decode-loop boilerplate. Each decode
+// function only needs to construct its demodulator, then delegate to one
+// of these three runners.
 
-    let mut demod = FastDemodulator::new(config).with_adaptive_gain();
+/// Chunk size for all decode loops.
+const DECODE_CHUNK: usize = 1024;
+
+/// Run a symbol-producing demodulator through hard HDLC.
+///
+/// `process` is called once per chunk; it must return the number of
+/// symbols written into the provided buffer.
+fn run_hard_decode(
+    samples: &[i16],
+    mut process: impl FnMut(&[i16], &mut [DemodSymbol]) -> usize,
+) -> DecodeResult {
     let mut hdlc = HdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; DECODE_CHUNK];
 
     let start = Instant::now();
-
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
+    for chunk in samples.chunks(DECODE_CHUNK) {
+        let n = process(chunk, &mut symbols);
         for sym in &symbols[..n] {
             if let Some(frame) = hdlc.feed_bit(sym.bit) {
                 frames.push(frame.to_vec());
             }
         }
     }
-
-    DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }
+    DecodeResult { frames, elapsed: start.elapsed() }
 }
 
-/// Decode audio samples using the quality demodulator + soft HDLC.
-fn decode_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
-    let config = config_for_rate(sample_rate, get_baud());
-
-    let mut demod = QualityDemodulator::new(config).with_adaptive_gain();
+/// Run a symbol-producing demodulator through soft HDLC (LLR bit-flip recovery).
+///
+/// Returns the decode result and the number of soft-recovered frames.
+fn run_soft_decode(
+    samples: &[i16],
+    mut process: impl FnMut(&[i16], &mut [DemodSymbol]) -> usize,
+) -> (DecodeResult, u32) {
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; DECODE_CHUNK];
 
     let start = Instant::now();
-
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
+    for chunk in samples.chunks(DECODE_CHUNK) {
+        let n = process(chunk, &mut symbols);
         for sym in &symbols[..n] {
             if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
                 let data = match &result {
@@ -431,15 +439,45 @@ fn decode_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
             }
         }
     }
-
     let soft_recovered = soft_hdlc.stats_total_soft_recovered();
-    (
-        DecodeResult {
-            frames,
-            elapsed: start.elapsed(),
-        },
-        soft_recovered,
-    )
+    (DecodeResult { frames, elapsed: start.elapsed() }, soft_recovered)
+}
+
+/// Merge multiple lists of hashed+positioned frames, deduplicating by
+/// content hash within a time window of `window_samples`.
+fn dedup_merge(
+    phase_frames: &[Vec<(u64, usize, Vec<u8>)>],
+    window_samples: usize,
+) -> Vec<Vec<u8>> {
+    let mut all_frames: Vec<Vec<u8>> = Vec::new();
+    let mut seen: Vec<(u64, usize)> = Vec::new();
+    for phase in phase_frames {
+        for (hash, pos, data) in phase {
+            let is_dup = seen.iter().any(|(h, p)| {
+                *h == *hash && (*pos as i64 - *p as i64).unsigned_abs() < window_samples as u64
+            });
+            if !is_dup {
+                seen.push((*hash, *pos));
+                all_frames.push(data.clone());
+            }
+        }
+    }
+    all_frames
+}
+
+
+/// Decode audio samples using the fast demodulator + hard HDLC.
+fn decode_fast(samples: &[i16], sample_rate: u32) -> DecodeResult {
+    let config = config_for_rate(sample_rate, get_baud());
+    let mut demod = FastDemodulator::new(config).with_adaptive_gain();
+    run_hard_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
+}
+
+/// Decode audio samples using the quality demodulator + soft HDLC.
+fn decode_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
+    let config = config_for_rate(sample_rate, get_baud());
+    let mut demod = QualityDemodulator::new(config).with_adaptive_gain();
+    run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 /// Decode audio samples using the multi-decoder (9 parallel fast decoders).
@@ -513,61 +551,15 @@ fn decode_twist_mini(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
 /// Decode using the fast demodulator with adaptive Goertzel re-tuning.
 fn decode_fast_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let config = config_for_rate(sample_rate, get_baud());
-
     let mut demod = FastDemodulator::new(config).with_adaptive_retune().with_energy_llr();
-    let mut soft_hdlc = SoftHdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
-                let data = match &result {
-                    FrameResult::Valid(d) => d,
-                    FrameResult::Recovered { data, .. } => data,
-                };
-                frames.push(data.to_vec());
-            }
-        }
-    }
-
-    DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }
+    run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms)).0
 }
 
 /// Decode using the quality demodulator (with retune + hybrid LLR) + soft HDLC.
 fn decode_quality_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let config = config_for_rate(sample_rate, get_baud());
-
     let mut demod = QualityDemodulator::new(config);
-    let mut soft_hdlc = SoftHdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
-                let data = match &result {
-                    FrameResult::Valid(d) => d,
-                    FrameResult::Recovered { data, .. } => data,
-                };
-                frames.push(data.to_vec());
-            }
-        }
-    }
-
-    DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }
+    run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms)).0
 }
 
 /// Decode using the best single-decoder config from attribution analysis:
@@ -589,28 +581,7 @@ fn decode_best_single(samples: &[i16], sample_rate: u32) -> DecodeResult {
 
     let mut demod = FastDemodulator::new(config).filter(bpf).phase_offset(phase_offset)
         .frequencies(mark, space).with_adaptive_retune().with_energy_llr();
-    let mut soft_hdlc = SoftHdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
-                let data = match &result {
-                    FrameResult::Valid(d) => d,
-                    FrameResult::Recovered { data, .. } => data,
-                };
-                frames.push(data.to_vec());
-            }
-        }
-    }
-
-    DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }
+    run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms)).0
 }
 
 /// Decode with a custom single Goertzel decoder: shifted frequency + timing offset.
@@ -645,24 +616,7 @@ fn decode_custom_goertzel(
 
     let mut demod = FastDemodulator::new(config).filter(bpf).phase_offset(phase_offset)
         .frequencies(mark, space);
-    let mut hdlc = HdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(frame) = hdlc.feed_bit(sym.bit) {
-                frames.push(frame.to_vec());
-            }
-        }
-    }
-
-    DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }
+    run_hard_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 /// Resample audio to a target sample rate using linear interpolation.
@@ -694,89 +648,24 @@ fn resample_to(samples: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
 /// Uses BPF + LPF for real-world signals. Optionally upsamples to 22050 Hz.
 fn decode_dm(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let config = config_for_rate(sample_rate, get_baud());
-
     let mut demod = DmDemodulator::with_bpf(config);
-    let mut hdlc = HdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(frame) = hdlc.feed_bit(sym.bit) {
-                frames.push(frame.to_vec());
-            }
-        }
-    }
-
-    DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }
+    run_hard_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 /// Decode audio samples using the correlation (mixer) demodulator + hard HDLC.
 fn decode_corr(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let config = config_for_rate(sample_rate, get_baud());
-
     let mut demod = CorrelationDemodulator::new(config).with_adaptive_gain();
-    let mut hdlc = HdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(frame) = hdlc.feed_bit(sym.bit) {
-                frames.push(frame.to_vec());
-            }
-        }
-    }
-
-    DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }
+    run_hard_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 /// Decode using correlation demod + energy LLR + soft HDLC.
 fn decode_corr_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
     let config = config_for_rate(sample_rate, get_baud());
-
     let mut demod = CorrelationDemodulator::new(config)
         .with_adaptive_gain()
         .with_energy_llr();
-    let mut soft_hdlc = SoftHdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
-                let data = match &result {
-                    FrameResult::Valid(d) => d,
-                    FrameResult::Recovered { data, .. } => data,
-                };
-                frames.push(data.to_vec());
-            }
-        }
-    }
-
-    let soft_recovered = soft_hdlc.stats_total_soft_recovered();
-    (
-        DecodeResult {
-            frames,
-            elapsed: start.elapsed(),
-        },
-        soft_recovered,
-    )
+    run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 /// Decode using correlation demod with 3 timing phases (mini multi-decoder).
@@ -816,23 +705,8 @@ fn decode_corr_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
         phase_frames.push(frames);
     }
 
-    // Phase 2: merge — phase[0] is primary, add unique frames from other phases
-    // A frame is "duplicate" if same hash appears within ±2000 samples (~180ms)
-    let mut all_frames: Vec<Vec<u8>> = Vec::new();
-    let mut seen: Vec<(u64, usize)> = Vec::new(); // (hash, sample_pos)
-    let dedup_window = sample_rate as usize * 2; // ±2 seconds (generous window)
-
-    for phase in &phase_frames {
-        for (hash, pos, data) in phase {
-            let is_dup = seen.iter().any(|(h, p)| {
-                *h == *hash && (*pos as i64 - *p as i64).unsigned_abs() < dedup_window as u64
-            });
-            if !is_dup {
-                seen.push((*hash, *pos));
-                all_frames.push(data.clone());
-            }
-        }
-    }
+    let dedup_window = sample_rate as usize * 2; // +/- 2 seconds (generous window)
+    let all_frames = dedup_merge(&phase_frames, dedup_window);
 
     DecodeResult {
         frames: all_frames,
@@ -882,22 +756,8 @@ fn decode_corr_3phase_quality(samples: &[i16], sample_rate: u32) -> (DecodeResul
         phase_frames.push(frames);
     }
 
-    // Phase 2: merge with time-windowed dedup
-    let mut all_frames: Vec<Vec<u8>> = Vec::new();
-    let mut seen: Vec<(u64, usize)> = Vec::new();
     let dedup_window = sample_rate as usize * 2;
-
-    for phase in &phase_frames {
-        for (hash, pos, data) in phase {
-            let is_dup = seen.iter().any(|(h, p)| {
-                *h == *hash && (*pos as i64 - *p as i64).unsigned_abs() < dedup_window as u64
-            });
-            if !is_dup {
-                seen.push((*hash, *pos));
-                all_frames.push(data.clone());
-            }
-        }
-    }
+    let all_frames = dedup_merge(&phase_frames, dedup_window);
 
     (DecodeResult {
         frames: all_frames,
@@ -1363,22 +1223,8 @@ fn decode_corr_slicer_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult 
         phase_frames.push(frames);
     }
 
-    // Merge with time-windowed dedup
-    let mut all_frames: Vec<Vec<u8>> = Vec::new();
-    let mut seen: Vec<(u64, usize)> = Vec::new();
     let dedup_window = sample_rate as usize * 2;
-
-    for phase in &phase_frames {
-        for (hash, pos, data) in phase {
-            let is_dup = seen.iter().any(|(h, p)| {
-                *h == *hash && (*pos as i64 - *p as i64).unsigned_abs() < dedup_window as u64
-            });
-            if !is_dup {
-                seen.push((*hash, *pos));
-                all_frames.push(data.clone());
-            }
-        }
-    }
+    let all_frames = dedup_merge(&phase_frames, dedup_window);
 
     DecodeResult {
         frames: all_frames,
@@ -1427,18 +1273,8 @@ fn decode_combined(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
 
     // Merge with time-windowed dedup: Multi first (primary), then add unique CorrSlicer frames
     let dedup_window = sample_rate as usize * 2;
-    let mut seen: Vec<(u64, usize)> = Vec::new();
-    let mut all_frames: Vec<Vec<u8>> = Vec::new();
-
-    for (hash, pos, data) in multi_frames.iter().chain(corr_frames.iter()) {
-        let is_dup = seen.iter().any(|(h, p)| {
-            *h == *hash && (*pos as i64 - *p as i64).unsigned_abs() < dedup_window as u64
-        });
-        if !is_dup {
-            seen.push((*hash, *pos));
-            all_frames.push(data.clone());
-        }
-    }
+    let combined_phases = vec![multi_frames, corr_frames];
+    let all_frames = dedup_merge(&combined_phases, dedup_window);
 
     (DecodeResult {
         frames: all_frames,
@@ -1662,53 +1498,20 @@ fn run_corr_lpf_sweep(path: &str) {
 /// Decode using correlation demod + Gardner PLL timing recovery.
 fn decode_corr_pll(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let config = config_for_rate(sample_rate, get_baud());
-
     let mut demod = CorrelationDemodulator::new(config)
         .with_adaptive_gain()
         .with_pll();
-    let mut hdlc = HdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(frame) = hdlc.feed_bit(sym.bit) {
-                frames.push(frame.to_vec());
-            }
-        }
-    }
-    DecodeResult { frames, elapsed: start.elapsed() }
+    run_hard_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 /// Decode using correlation demod + Gardner PLL + energy LLR + soft HDLC.
 fn decode_corr_pll_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
     let config = config_for_rate(sample_rate, get_baud());
-
     let mut demod = CorrelationDemodulator::new(config)
         .with_adaptive_gain()
         .with_energy_llr()
         .with_pll();
-    let mut soft_hdlc = SoftHdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
-                let data = match &result {
-                    FrameResult::Valid(d) => d,
-                    FrameResult::Recovered { data, .. } => data,
-                };
-                frames.push(data.to_vec());
-            }
-        }
-    }
-    let soft_recovered = soft_hdlc.stats_total_soft_recovered();
-    (DecodeResult { frames, elapsed: start.elapsed() }, soft_recovered)
+    run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 /// Decode using correlation demod + PLL with custom alpha and error_shift.
@@ -1716,26 +1519,12 @@ fn decode_corr_pll_custom(samples: &[i16], sample_rate: u32, alpha: i16, error_s
     use packet_radio_core::modem::pll::ClockRecoveryPll;
 
     let config = config_for_rate(sample_rate, get_baud());
-
     let pll = ClockRecoveryPll::new_gardner(sample_rate, 1200, alpha, 0)
         .with_error_shift(error_shift);
     let mut demod = CorrelationDemodulator::new(config)
         .with_adaptive_gain()
         .with_custom_pll(pll);
-    let mut hdlc = HdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(frame) = hdlc.feed_bit(sym.bit) {
-                frames.push(frame.to_vec());
-            }
-        }
-    }
-    DecodeResult { frames, elapsed: start.elapsed() }
+    run_hard_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 /// Decode using 2-phase correlation demod (two timing phases, dedup).
@@ -1768,21 +1557,8 @@ fn decode_corr_2phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
         phase_frames.push(frames);
     }
 
-    let mut all_frames: Vec<Vec<u8>> = Vec::new();
-    let mut seen: Vec<(u64, usize)> = Vec::new();
     let dedup_window = sample_rate as usize * 2;
-
-    for phase in &phase_frames {
-        for (hash, pos, data) in phase {
-            let is_dup = seen.iter().any(|(h, p)| {
-                *h == *hash && (*pos as i64 - *p as i64).unsigned_abs() < dedup_window as u64
-            });
-            if !is_dup {
-                seen.push((*hash, *pos));
-                all_frames.push(data.clone());
-            }
-        }
-    }
+    let all_frames = dedup_merge(&phase_frames, dedup_window);
 
     DecodeResult { frames: all_frames, elapsed: start.elapsed() }
 }
@@ -1819,21 +1595,8 @@ fn decode_corr_2phase_pll(samples: &[i16], sample_rate: u32) -> DecodeResult {
         phase_frames.push(frames);
     }
 
-    let mut all_frames: Vec<Vec<u8>> = Vec::new();
-    let mut seen: Vec<(u64, usize)> = Vec::new();
     let dedup_window = sample_rate as usize * 2;
-
-    for phase in &phase_frames {
-        for (hash, pos, data) in phase {
-            let is_dup = seen.iter().any(|(h, p)| {
-                *h == *hash && (*pos as i64 - *p as i64).unsigned_abs() < dedup_window as u64
-            });
-            if !is_dup {
-                seen.push((*hash, *pos));
-                all_frames.push(data.clone());
-            }
-        }
-    }
+    let all_frames = dedup_merge(&phase_frames, dedup_window);
 
     DecodeResult { frames: all_frames, elapsed: start.elapsed() }
 }
@@ -2807,61 +2570,15 @@ fn run_smart3_sweep(path: &str) {
 /// Decode using Binary XOR correlator + hard HDLC.
 fn decode_xor(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let config = config_for_rate(sample_rate, get_baud());
-
     let mut demod = BinaryXorDemodulator::new(config);
-    let mut hdlc = HdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(frame) = hdlc.feed_bit(sym.bit) {
-                frames.push(frame.to_vec());
-            }
-        }
-    }
-
-    DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }
+    run_hard_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 /// Decode using Binary XOR correlator + energy LLR + soft HDLC.
 fn decode_xor_quality(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
     let config = config_for_rate(sample_rate, get_baud());
-
     let mut demod = BinaryXorDemodulator::new(config).with_energy_llr();
-    let mut soft_hdlc = SoftHdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-    let mut soft_saves: u32 = 0;
-
-    let start = Instant::now();
-
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
-                let data = match &result {
-                    FrameResult::Valid(d) => d,
-                    FrameResult::Recovered { data, .. } => {
-                        soft_saves += 1;
-                        data
-                    }
-                };
-                frames.push(data.to_vec());
-            }
-        }
-    }
-
-    (DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }, soft_saves)
+    run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 fn run_xor(path: &str) {
@@ -3605,21 +3322,7 @@ fn decode_dm_pll_opts(
         demod = demod.with_preemph(preemph);
     }
 
-    let mut hdlc = HdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(frame) = hdlc.feed_bit(sym.bit) {
-                frames.push(frame.to_vec());
-            }
-        }
-    }
-
-    DecodeResult { frames, elapsed: start.elapsed() }
+    run_hard_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 /// Decode using DM+PLL with SoftHdlcDecoder for bit-flip recovery.
@@ -3645,26 +3348,7 @@ fn decode_dm_pll_soft(
         demod = demod.with_preemph(preemph);
     }
 
-    let mut soft_hdlc = SoftHdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
-                let data = match &result {
-                    FrameResult::Valid(d) => d,
-                    FrameResult::Recovered { data, .. } => data,
-                };
-                frames.push(data.to_vec());
-            }
-        }
-    }
-
-    let soft_recovered = soft_hdlc.stats_total_soft_recovered();
-    (DecodeResult { frames, elapsed: start.elapsed() }, soft_recovered)
+    run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 /// Simple DM+PLL decode with default gains.
@@ -4197,8 +3881,8 @@ fn run_export(wav_path: &str, output_dir: &str) {
             content.push_str(&frame_to_hex(frame));
             // Try to parse AX.25 callsigns
             if frame.len() >= 14 {
-                let dst = parse_callsign(&frame[0..7]);
-                let src = parse_callsign(&frame[7..14]);
+                let dst = parse_callsign_tnc2(&frame[0..7], false);
+                let src = parse_callsign_tnc2(&frame[7..14], false);
                 content.push_str(&format!(" {}>{}",  src, dst));
             }
             content.push('\n');
@@ -4238,20 +3922,6 @@ fn run_export(wav_path: &str, output_dir: &str) {
     }
 }
 
-/// Parse AX.25 callsign from 7 bytes (6 chars + SSID byte).
-fn parse_callsign(data: &[u8]) -> String {
-    if data.len() < 7 { return "???".to_string(); }
-    let mut call = String::with_capacity(9);
-    for &b in &data[..6] {
-        let c = (b >> 1) & 0x7F;
-        if c > 0x20 { call.push(c as char); }
-    }
-    let ssid = (data[6] >> 1) & 0x0F;
-    if ssid > 0 {
-        call.push_str(&format!("-{}", ssid));
-    }
-    call
-}
 
 // ─── Signal Impairment Utilities ─────────────────────────────────────────
 
@@ -5127,56 +4797,14 @@ fn run_pll_300(path: &str) {
 fn decode_fast_windowed(samples: &[i16], sample_rate: u32, window: GoertzelWindow) -> DecodeResult {
     let config = config_for_rate(sample_rate, get_baud());
     let mut demod = FastDemodulator::new(config).with_adaptive_gain().with_window(window);
-    let mut hdlc = HdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(frame) = hdlc.feed_bit(sym.bit) {
-                frames.push(frame.to_vec());
-            }
-        }
-    }
-
-    DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }
+    run_hard_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 /// Decode using FastDemodulator with window + energy LLR + soft HDLC.
 fn decode_fast_windowed_soft(samples: &[i16], sample_rate: u32, window: GoertzelWindow) -> (DecodeResult, u32) {
     let config = config_for_rate(sample_rate, get_baud());
     let mut demod = FastDemodulator::new(config).with_adaptive_gain().with_energy_llr().with_window(window);
-    let mut soft_hdlc = SoftHdlcDecoder::new();
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-
-    let start = Instant::now();
-    for chunk in samples.chunks(1024) {
-        let n = demod.process_samples(chunk, &mut symbols);
-        for sym in &symbols[..n] {
-            if let Some(result) = soft_hdlc.feed_soft_bit(sym.llr) {
-                let data = match &result {
-                    FrameResult::Valid(d) => d,
-                    FrameResult::Recovered { data, .. } => data,
-                };
-                frames.push(data.to_vec());
-            }
-        }
-    }
-
-    let soft_recovered = soft_hdlc.stats_total_soft_recovered();
-    (
-        DecodeResult {
-            frames,
-            elapsed: start.elapsed(),
-        },
-        soft_recovered,
-    )
+    run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
 
 fn run_window_sweep(path: &str) {

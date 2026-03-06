@@ -98,29 +98,25 @@ impl FccDb {
     }
 
     async fn migrate(&self) -> Result<()> {
-        let sql = include_str!("migrations/001_initial.sql");
+        self.run_sql(include_str!("migrations/001_initial.sql"), false).await?;
+        // Migration 002: ignore "duplicate column" errors for idempotency
+        self.run_sql(include_str!("migrations/002_add_fields.sql"), true).await?;
+        self.run_sql(include_str!("migrations/003_add_indexes.sql"), false).await?;
+        Ok(())
+    }
+
+    /// Execute semicolon-delimited SQL statements. If `ignore_errors` is true,
+    /// individual statement failures are silently skipped (useful for idempotent
+    /// ALTER TABLE migrations).
+    async fn run_sql(&self, sql: &str, ignore_errors: bool) -> Result<()> {
         for statement in sql.split(';') {
             let trimmed = statement.trim();
-            if !trimmed.is_empty() {
-                sqlx::query(trimmed).execute(&self.pool).await?;
+            if trimmed.is_empty() {
+                continue;
             }
-        }
-
-        // Migration 002: add fields (uses ALTER TABLE, ignore errors if columns already exist)
-        let sql_002 = include_str!("migrations/002_add_fields.sql");
-        for statement in sql_002.split(';') {
-            let trimmed = statement.trim();
-            if !trimmed.is_empty() {
-                // Ignore "duplicate column" errors for idempotency
+            if ignore_errors {
                 let _ = sqlx::query(trimmed).execute(&self.pool).await;
-            }
-        }
-
-        // Migration 003: add indexes for common query patterns
-        let sql_003 = include_str!("migrations/003_add_indexes.sql");
-        for statement in sql_003.split(';') {
-            let trimmed = statement.trim();
-            if !trimmed.is_empty() {
+            } else {
                 sqlx::query(trimmed).execute(&self.pool).await?;
             }
         }
@@ -177,7 +173,7 @@ impl FccDb {
         }
         if let Some(ref name) = query.name {
             let pattern = format!("%{}%", name.to_uppercase());
-            bind_values.push(pattern.clone());
+            bind_values.push(pattern);
             conditions.push(format!(
                 "(UPPER(e.last_name) LIKE ?{n} OR UPPER(e.first_name) LIKE ?{n} OR UPPER(e.entity_name) LIKE ?{n})",
                 n = bind_values.len()

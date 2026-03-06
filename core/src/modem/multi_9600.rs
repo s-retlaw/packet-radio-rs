@@ -470,7 +470,7 @@ impl Multi9600Decoder {
 
                 if got_frame {
                     self.total_decoded += 1;
-                    let hash = fnv1a_hash(&frame_buf[..frame_len]);
+                    let hash = super::frame_hash(&frame_buf[..frame_len]);
                     let is_dup = self.is_duplicate(hash);
 
                     #[cfg(feature = "attribution")]
@@ -546,15 +546,7 @@ impl Multi9600Decoder {
     }
 }
 
-/// FNV-1a hash for frame deduplication.
-fn fnv1a_hash(data: &[u8]) -> u32 {
-    let mut hash: u32 = 0x811c9dc5;
-    for &byte in data {
-        hash ^= byte as u32;
-        hash = hash.wrapping_mul(0x01000193);
-    }
-    hash
-}
+// fnv1a_hash is now centralized as super::frame_hash
 
 /// Output buffer for Single9600Decoder — holds up to 4 frames per process call.
 pub struct Single9600Output {
@@ -994,7 +986,7 @@ impl Mini9600Decoder {
 
                 if got_frame {
                     self.total_decoded += 1;
-                    let hash = fnv1a_hash(&frame_buf[..frame_len]);
+                    let hash = super::frame_hash(&frame_buf[..frame_len]);
                     if !self.is_duplicate(hash) {
                         self.add_hash(hash);
                         self.total_unique += 1;
@@ -1080,13 +1072,13 @@ mod tests {
     }
 
     #[test]
-    fn test_fnv1a_hash() {
+    fn test_frame_hash() {
         let data1 = b"hello world";
         let data2 = b"hello world";
         let data3 = b"different data";
 
-        assert_eq!(fnv1a_hash(data1), fnv1a_hash(data2));
-        assert_ne!(fnv1a_hash(data1), fnv1a_hash(data3));
+        assert_eq!(crate::modem::frame_hash(data1), crate::modem::frame_hash(data2));
+        assert_ne!(crate::modem::frame_hash(data1), crate::modem::frame_hash(data3));
     }
 
     #[test]

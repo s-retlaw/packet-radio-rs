@@ -97,12 +97,7 @@ async fn handle_search_keys(app: &mut App, key: event::KeyEvent) {
         KeyCode::Up => app.search.prev_field(),
         KeyCode::Down => app.search.next_field(),
         KeyCode::Tab => {
-            if app.search.editing {
-                app.search.editing = false;
-                app.search.next_field();
-            } else {
-                app.search.next_field();
-            }
+            app.search.next_field();
         }
         KeyCode::Enter => {
             if app.search.active_field == state::SearchField::Submit {

@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
+use packet_radio_core::kiss::{Command as KissCommand, KissDecoder};
+
 const WAV_PATH: &str = "tests/wav/03_100-mic-e-bursts-flat.wav";
 const KISS_PORT_RX: u16 = 18901;
 const KISS_PORT_TX: u16 = 18902;
@@ -59,7 +61,7 @@ async fn main() {
     }
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────
+// -- Helpers ------------------------------------------------------------------
 
 fn tnc_binary() -> std::path::PathBuf {
     Path::new("target/release/packet-radio-desktop").to_path_buf()
@@ -127,17 +129,21 @@ async fn wait_for_ready(
     }
 }
 
-/// Validate basic AX.25 frame structure.
+/// Validate basic AX.25 frame structure: check destination callsign (bytes 0..6)
+/// and source callsign (bytes 7..13) contain printable ASCII when right-shifted.
+/// Bytes 6 and 13 are SSID bytes and are not checked.
 fn validate_ax25(data: &[u8]) -> bool {
     if data.len() < 15 {
         return false;
     }
+    // Destination callsign (6 bytes)
     for &b in &data[0..6] {
         let ch = b >> 1;
         if !(0x20..=0x7E).contains(&ch) {
             return false;
         }
     }
+    // Source callsign (6 bytes)
     for &b in &data[7..13] {
         let ch = b >> 1;
         if !(0x20..=0x7E).contains(&ch) {
@@ -147,16 +153,7 @@ fn validate_ax25(data: &[u8]) -> bool {
     true
 }
 
-fn fnv1a(data: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for &b in data {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
-}
-
-// ── Test A: RX via KISS TCP ─────────────────────────────────────────────
+// -- Test A: RX via KISS TCP --------------------------------------------------
 
 async fn test_rx_tcp() -> bool {
     println!();
@@ -215,7 +212,7 @@ async fn test_rx_tcp() -> bool {
     }
 
     let _ = tnc.wait().await;
-    let distinct: HashSet<u64> = frames.iter().map(|f| fnv1a(f)).collect();
+    let distinct: HashSet<&[u8]> = frames.iter().map(|f| f.as_slice()).collect();
 
     println!("Frames received: {} (distinct: {}), malformed: {malformed}", frames.len(), distinct.len());
 
@@ -228,11 +225,12 @@ async fn test_rx_tcp() -> bool {
     pass
 }
 
-// ── Test B: TX via KISS TCP ─────────────────────────────────────────────
+// -- Test B: TX via KISS TCP --------------------------------------------------
 
 async fn test_tx_tcp() -> bool {
     println!();
     println!("=== Test B: TX via KISS TCP + tx-wav ===");
+    build_tnc();
 
     let tx_wav = "/tmp/kiss_e2e_tx.wav";
 
@@ -345,7 +343,7 @@ async fn test_tx_tcp() -> bool {
     }
 }
 
-// ── Test C: Pipe Loopback ───────────────────────────────────────────────
+// -- Test C: Pipe Loopback ----------------------------------------------------
 
 async fn test_pipe_loopback() -> bool {
     println!();
@@ -356,7 +354,7 @@ async fn test_pipe_loopback() -> bool {
     let kiss_data = kiss_encode(&test_frame);
     println!("Test frame: {} AX.25 bytes, {} KISS bytes", test_frame.len(), kiss_data.len());
 
-    // Step 1: tx-pipe — feed KISS → get raw PCM
+    // Step 1: tx-pipe -- feed KISS -> get raw PCM
     println!("Running tx-pipe...");
     let mut tx_proc = Command::new(tnc_binary())
         .args(["--tx-pipe"])
@@ -395,7 +393,7 @@ async fn test_pipe_loopback() -> bool {
         return false;
     }
 
-    // Step 2: rx-pipe — feed raw PCM → get KISS frames
+    // Step 2: rx-pipe -- feed raw PCM -> get KISS frames
     println!("Running rx-pipe...");
     let mut rx_proc = Command::new(tnc_binary())
         .args(["--rx-pipe", "--smart3"])
@@ -420,7 +418,7 @@ async fn test_pipe_loopback() -> bool {
     let kiss_output = &rx_output.stdout;
     println!("rx-pipe produced {} KISS bytes", kiss_output.len());
 
-    // Parse KISS frames from output
+    // Parse KISS frames from output using core KissDecoder
     let decoded = parse_kiss_frames(kiss_output);
     println!("Decoded {} frames from rx-pipe output", decoded.len());
 
@@ -446,46 +444,16 @@ async fn test_pipe_loopback() -> bool {
     }
 }
 
-/// Parse KISS frames from raw bytes (FEND-delimited).
+/// Parse KISS frames from raw bytes using the core KissDecoder.
 fn parse_kiss_frames(data: &[u8]) -> Vec<Vec<u8>> {
-    const FEND: u8 = 0xC0;
-    const FESC: u8 = 0xDB;
-    const TFEND: u8 = 0xDC;
-    const TFESC: u8 = 0xDD;
-
+    let mut decoder = KissDecoder::new();
     let mut frames = Vec::new();
-    let mut in_frame = false;
-    let mut frame_buf = Vec::new();
-    let mut escaped = false;
 
     for &b in data {
-        if b == FEND {
-            if in_frame && !frame_buf.is_empty() {
-                // Strip command byte (first byte)
-                if frame_buf.len() > 1 {
-                    frames.push(frame_buf[1..].to_vec());
-                }
-                frame_buf.clear();
+        if let Some((_port, cmd, payload)) = decoder.feed_byte(b) {
+            if matches!(cmd, KissCommand::DataFrame) {
+                frames.push(payload.to_vec());
             }
-            in_frame = true;
-            continue;
-        }
-
-        if !in_frame {
-            continue;
-        }
-
-        if escaped {
-            match b {
-                TFEND => frame_buf.push(FEND),
-                TFESC => frame_buf.push(FESC),
-                _ => frame_buf.push(b), // Malformed, but accept
-            }
-            escaped = false;
-        } else if b == FESC {
-            escaped = true;
-        } else {
-            frame_buf.push(b);
         }
     }
 

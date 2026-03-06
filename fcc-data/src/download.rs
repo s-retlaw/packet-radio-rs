@@ -86,40 +86,8 @@ pub async fn download_daily(day: Day) -> Result<ExtractedData> {
     download_and_extract(&day.daily_url()).await
 }
 
-/// Download a ZIP from a URL and return a local path, or download to a temp file.
-pub async fn download_zip_to_file(url: &str, dest: &Path) -> Result<()> {
-    info!("Downloading {} to {}", url, dest.display());
-
-    let client = reqwest::Client::new();
-    let resp = client.get(url).send().await?;
-
-    if !resp.status().is_success() {
-        return Err(FccError::Download(format!(
-            "HTTP {} from {}",
-            resp.status(),
-            url
-        )));
-    }
-
-    let total_size = resp.content_length().unwrap_or(0);
-    let pb = ProgressBar::new(total_size);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{msg} [{bar:40}] {bytes}/{total_bytes} ({eta})")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    pb.set_message("Downloading");
-
-    let bytes = resp.bytes().await?;
-    pb.set_position(bytes.len() as u64);
-    pb.finish_with_message("Download complete");
-
-    tokio::fs::write(dest, &bytes).await?;
-    Ok(())
-}
-
-async fn download_and_extract(url: &str) -> Result<ExtractedData> {
+/// Download a URL with a progress bar, returning the raw bytes.
+async fn download_bytes(url: &str) -> Result<Vec<u8>> {
     info!("Downloading {}", url);
 
     let client = reqwest::Client::new();
@@ -147,6 +115,19 @@ async fn download_and_extract(url: &str) -> Result<ExtractedData> {
     pb.set_position(bytes.len() as u64);
     pb.finish_with_message("Download complete");
 
+    Ok(bytes.to_vec())
+}
+
+/// Download a ZIP from a URL and write it to a local file.
+pub async fn download_zip_to_file(url: &str, dest: &Path) -> Result<()> {
+    let bytes = download_bytes(url).await?;
+    info!("Writing {} bytes to {}", bytes.len(), dest.display());
+    tokio::fs::write(dest, &bytes).await?;
+    Ok(())
+}
+
+async fn download_and_extract(url: &str) -> Result<ExtractedData> {
+    let bytes = download_bytes(url).await?;
     info!("Downloaded {} bytes, extracting ZIP", bytes.len());
     extract_zip(&bytes)
 }

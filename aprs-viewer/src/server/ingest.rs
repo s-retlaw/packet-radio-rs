@@ -322,7 +322,7 @@ pub async fn run_kiss_ingest(
 }
 
 /// Parse a callsign string like "N0CALL-9" into ("N0CALL", 9).
-fn parse_call_ssid(call: &str) -> (&str, u8) {
+pub fn parse_call_ssid(call: &str) -> (&str, u8) {
     if let Some((cs, ssid_str)) = call.rsplit_once('-') {
         if let Ok(ssid) = ssid_str.parse::<u8>() {
             return (cs, ssid);

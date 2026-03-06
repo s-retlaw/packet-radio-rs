@@ -4,9 +4,11 @@
 //! collects decoded frames and cycle counts, optionally compares with
 //! local MiniDecoder output.
 
+// Some protocol items are only used firmware-side but compiled here for completeness.
 #[allow(dead_code)]
 mod protocol;
 
+use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
@@ -69,8 +71,6 @@ struct Cli {
 
 /// Collected frame from ESP32.
 struct EspFrame {
-    #[allow(dead_code)]
-    seq: u16,
     data: Vec<u8>,
 }
 
@@ -163,11 +163,8 @@ fn read_until(
         let (msg_type, payload) = read_msg(port)?;
         match msg_type {
             MSG_FRAME => {
-                if let (Some(seq), Some(data)) =
-                    (FramePayload::parse_seq(&payload), FramePayload::parse_data(&payload))
-                {
+                if let Some(data) = FramePayload::parse_data(&payload) {
                     frames.push(EspFrame {
-                        seq,
                         data: data.to_vec(),
                     });
                 }
@@ -284,7 +281,7 @@ fn do_stream(
     for (chunk_idx, chunk) in all_samples.chunks(CHUNK_SAMPLES).enumerate() {
         let seq = chunk_idx as u16;
 
-        // Build AUDIO_CHUNK payload: seq:u16 + samples:N×i16
+        // Build AUDIO_CHUNK payload: seq:u16 + samples:N*i16
         let payload_len = 2 + chunk.len() * 2;
         let mut payload = vec![0u8; payload_len];
         payload[0..2].copy_from_slice(&seq.to_le_bytes());
@@ -366,15 +363,15 @@ fn do_stream(
     );
 
     // Deduplicate ESP32 frames by hash
-    let mut esp_hashes: Vec<u32> = Vec::new();
-    let mut unique_esp_frames: Vec<Vec<u8>> = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut unique_esp_frames: Vec<&[u8]> = Vec::new();
     for f in &esp_frames {
         let h = frame_hash(&f.data);
-        if !esp_hashes.contains(&h) {
-            esp_hashes.push(h);
-            unique_esp_frames.push(f.data.clone());
+        if seen.insert(h) {
+            unique_esp_frames.push(&f.data);
         }
     }
+    let esp_hashes = &seen;
     println!("  Unique frames (by hash): {}", unique_esp_frames.len());
 
     // Local comparison
@@ -398,33 +395,22 @@ fn do_stream(
         println!("  Local MiniDecoder: {} frames", local_frames.len());
 
         // Compare frame sets by hash
-        let local_hashes: Vec<u32> = local_frames.iter().map(|f| frame_hash(f)).collect();
+        let local_hashes: HashSet<u32> = local_frames.iter().map(|f| frame_hash(f)).collect();
 
-        let esp_only: Vec<u32> = esp_hashes
-            .iter()
-            .filter(|h| !local_hashes.contains(h))
-            .copied()
-            .collect();
-        let local_only: Vec<u32> = local_hashes
-            .iter()
-            .filter(|h| !esp_hashes.contains(h))
-            .copied()
-            .collect();
-        let common = esp_hashes
-            .iter()
-            .filter(|h| local_hashes.contains(h))
-            .count();
+        let esp_only = esp_hashes.difference(&local_hashes).count();
+        let local_only = local_hashes.difference(esp_hashes).count();
+        let common = esp_hashes.intersection(&local_hashes).count();
 
         println!("  Common frames: {}", common);
-        println!("  ESP32-only: {} frames", esp_only.len());
-        println!("  Local-only: {} frames", local_only.len());
+        println!("  ESP32-only: {} frames", esp_only);
+        println!("  Local-only: {} frames", local_only);
 
-        if esp_only.is_empty() && local_only.is_empty() {
+        if esp_only == 0 && local_only == 0 {
             println!("  MATCH: ESP32 and local produce identical frame sets");
         } else {
             println!(
                 "  DIFF: {} frame(s) differ (see BPF coefficient note in docs)",
-                esp_only.len() + local_only.len()
+                esp_only + local_only
             );
         }
     }
@@ -433,7 +419,7 @@ fn do_stream(
 }
 
 /// Reset the ESP32 via DTR/RTS serial control lines.
-/// On DevKitC-1: RTS→EN (inverted), DTR→BOOT (inverted).
+/// On DevKitC-1: RTS->EN (inverted), DTR->BOOT (inverted).
 /// To normal-boot: hold DTR low (BOOT high), pulse RTS to reset.
 fn reset_board(port: &mut Box<dyn SerialPort>) {
     let _ = port.write_data_terminal_ready(false); // BOOT = high (normal boot)

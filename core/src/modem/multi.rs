@@ -129,59 +129,9 @@ impl MultiDecoder {
     /// tolerance, plus gain-diverse decoders (Dire Wolf multi-slicer approach)
     /// for de-emphasis and varying audio paths.
     pub fn new(config: DemodConfig) -> Self {
-        let std_bpf = if config.baud_rate == 300 {
-            match config.sample_rate {
-                8000 => super::filter::afsk_300_bandpass_8000(),
-                22050 => super::filter::afsk_300_bandpass_22050(),
-                44100 => super::filter::afsk_300_bandpass_44100(),
-                48000 => super::filter::afsk_300_bandpass_48000(),
-                _ => super::filter::afsk_300_bandpass_11025(),
-            }
-        } else {
-            match config.sample_rate {
-                12000 => super::filter::afsk_bandpass_12000(),
-                13200 => super::filter::afsk_bandpass_13200(),
-                22050 => super::filter::afsk_bandpass_22050(),
-                26400 => super::filter::afsk_bandpass_26400(),
-                44100 => super::filter::afsk_bandpass_44100(),
-                48000 => super::filter::afsk_bandpass_48000(),
-                _ => super::filter::afsk_bandpass_11025(),
-            }
-        };
-        let narrow_bpf = if config.baud_rate == 300 {
-            match config.sample_rate {
-                8000 => super::filter::afsk_300_bandpass_narrow_8000(),
-                22050 => super::filter::afsk_300_bandpass_narrow_22050(),
-                44100 => super::filter::afsk_300_bandpass_narrow_44100(),
-                48000 => super::filter::afsk_300_bandpass_narrow_48000(),
-                _ => super::filter::afsk_300_bandpass_narrow_11025(),
-            }
-        } else {
-            match config.sample_rate {
-                12000 => super::filter::afsk_bandpass_narrow_12000(),
-                13200 => super::filter::afsk_bandpass_narrow_13200(),
-                26400 => super::filter::afsk_bandpass_narrow_26400(),
-                48000 => super::filter::afsk_bandpass_narrow_48000(),
-                _ => super::filter::afsk_bandpass_narrow_11025(),
-            }
-        };
-        let wide_bpf = if config.baud_rate == 300 {
-            match config.sample_rate {
-                8000 => super::filter::afsk_300_bandpass_wide_8000(),
-                22050 => super::filter::afsk_300_bandpass_wide_22050(),
-                44100 => super::filter::afsk_300_bandpass_wide_44100(),
-                48000 => super::filter::afsk_300_bandpass_wide_48000(),
-                _ => super::filter::afsk_300_bandpass_wide_11025(),
-            }
-        } else {
-            match config.sample_rate {
-                12000 => super::filter::afsk_bandpass_wide_12000(),
-                13200 => super::filter::afsk_bandpass_wide_13200(),
-                26400 => super::filter::afsk_bandpass_wide_26400(),
-                48000 => super::filter::afsk_bandpass_wide_48000(),
-                _ => super::filter::afsk_bandpass_wide_11025(),
-            }
-        };
+        let std_bpf = super::filter::select_std_bpf(config.baud_rate, config.sample_rate);
+        let narrow_bpf = super::filter::select_narrow_bpf(config.baud_rate, config.sample_rate);
+        let wide_bpf = super::filter::select_wide_bpf(config.baud_rate, config.sample_rate);
         let filters = [
             narrow_bpf,
             std_bpf,
@@ -518,7 +468,7 @@ impl MultiDecoder {
                         frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                         // NLL: result/frame_bytes borrow ends here
                         self.total_decoded += 1;
-                        let hash = frame_hash(&frame_copy[..len]);
+                        let hash = super::frame_hash(&frame_copy[..len]);
                         if !self.is_duplicate(hash) {
                             self.record_hash(hash);
                             self.total_unique += 1;
@@ -538,7 +488,7 @@ impl MultiDecoder {
                         let len = frame_bytes.len().min(330);
                         let mut frame_copy = [0u8; 330];
                         frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
-                        let hash = frame_hash(&frame_copy[..len]);
+                        let hash = super::frame_hash(&frame_copy[..len]);
                         if !self.is_duplicate(hash) {
                             self.record_hash(hash);
                             self.total_unique += 1;
@@ -569,7 +519,7 @@ impl MultiDecoder {
                         let mut frame_copy = [0u8; 330];
                         frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                         self.total_decoded += 1;
-                        let hash = frame_hash(&frame_copy[..len]);
+                        let hash = super::frame_hash(&frame_copy[..len]);
                         if !self.is_duplicate(hash) {
                             self.record_hash(hash);
                             self.total_unique += 1;
@@ -589,7 +539,7 @@ impl MultiDecoder {
                         let len = frame_bytes.len().min(330);
                         let mut frame_copy = [0u8; 330];
                         frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
-                        let hash = frame_hash(&frame_copy[..len]);
+                        let hash = super::frame_hash(&frame_copy[..len]);
                         if !self.is_duplicate(hash) {
                             self.record_hash(hash);
                             self.total_unique += 1;
@@ -712,32 +662,12 @@ impl MiniDecoder {
     /// Create a MiniDecoder with the 3 attribution-optimal configurations.
     pub fn new(config: DemodConfig) -> Self {
         let offsets = [0u32, config.sample_rate / 3, 2 * config.sample_rate / 3];
-        let narrow_bpf = if config.baud_rate == 300 {
-            match config.sample_rate {
-                8000 => super::filter::afsk_300_bandpass_narrow_8000(),
-                22050 => super::filter::afsk_300_bandpass_narrow_22050(),
-                44100 => super::filter::afsk_300_bandpass_narrow_44100(),
-                48000 => super::filter::afsk_300_bandpass_narrow_48000(),
-                _ => super::filter::afsk_300_bandpass_narrow_11025(),
-            }
-        } else {
-            match config.sample_rate {
-                13200 => super::filter::afsk_bandpass_narrow_13200(),
-                26400 => super::filter::afsk_bandpass_narrow_26400(),
-                _ => super::filter::afsk_bandpass_narrow_11025(),
-            }
-        };
+        let narrow_bpf = super::filter::select_narrow_bpf(config.baud_rate, config.sample_rate);
 
         // 300 baud: attribution-optimal = G:std/t1, G:narrow/t0, G:narrow/t2
         // 1200 baud: attribution-optimal = G:freq-50/t2, G:narrow/t0, G:narrow/t1
         let decoders = if config.baud_rate == 300 {
-            let std_bpf = match config.sample_rate {
-                8000 => super::filter::afsk_300_bandpass_8000(),
-                22050 => super::filter::afsk_300_bandpass_22050(),
-                44100 => super::filter::afsk_300_bandpass_44100(),
-                48000 => super::filter::afsk_300_bandpass_48000(),
-                _ => super::filter::afsk_300_bandpass_11025(),
-            };
+            let std_bpf = super::filter::select_std_bpf(config.baud_rate, config.sample_rate);
             [
                 FastDemodulator::new(config).filter(std_bpf).phase_offset(offsets[1])
                     .with_energy_llr(),
@@ -802,7 +732,7 @@ impl MiniDecoder {
                     let mut frame_copy = [0u8; 330];
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                     self.total_decoded += 1;
-                    let hash = frame_hash(&frame_copy[..len]);
+                    let hash = super::frame_hash(&frame_copy[..len]);
                     if !self.is_duplicate(hash) {
                         self.record_hash(hash);
                         self.total_unique += 1;
@@ -913,11 +843,7 @@ impl TwistMiniDecoder {
     /// Create a TwistMiniDecoder with Smart3 + 3 twist-compensated decoders.
     pub fn new(config: DemodConfig) -> Self {
         let offsets = [0u32, config.sample_rate / 3, 2 * config.sample_rate / 3];
-        let narrow_bpf = match config.sample_rate {
-            13200 => super::filter::afsk_bandpass_narrow_13200(),
-            26400 => super::filter::afsk_bandpass_narrow_26400(),
-            _ => super::filter::afsk_bandpass_narrow_11025(),
-        };
+        let narrow_bpf = super::filter::select_narrow_bpf(config.baud_rate, config.sample_rate);
 
         // Smart3 decoder 1: G:freq-50/t2
         let mark_shifted = (config.mark_freq as i32 - 50) as u32;
@@ -944,12 +870,7 @@ impl TwistMiniDecoder {
         let is_12k = config.sample_rate == 12000;
 
         // Twist decoder 4 BPF: +0Hz (standard)
-        let std_bpf = match config.sample_rate {
-            12000 => super::filter::afsk_bandpass_12000(),
-            13200 => super::filter::afsk_bandpass_13200(),
-            26400 => super::filter::afsk_bandpass_26400(),
-            _ => super::filter::afsk_bandpass_11025(),
-        };
+        let std_bpf = super::filter::select_std_bpf(config.baud_rate, config.sample_rate);
 
         // Twist decoder 5 BPF: +200Hz at most rates, +300Hz at 12000
         #[cfg(feature = "std")]
@@ -1033,7 +954,7 @@ impl TwistMiniDecoder {
                     let mut frame_copy = [0u8; 330];
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                     self.total_decoded += 1;
-                    let hash = frame_hash(&frame_copy[..len]);
+                    let hash = super::frame_hash(&frame_copy[..len]);
                     if !self.is_duplicate(hash) {
                         self.record_hash(hash);
                         self.total_unique += 1;
@@ -1090,15 +1011,7 @@ impl TwistMiniDecoder {
     }
 }
 
-/// Simple hash for frame deduplication (FNV-1a 32-bit).
-fn frame_hash(data: &[u8]) -> u32 {
-    let mut hash: u32 = 0x811c_9dc5;
-    for &b in data {
-        hash ^= b as u32;
-        hash = hash.wrapping_mul(0x0100_0193);
-    }
-    hash
-}
+// frame_hash is now centralized in super::frame_hash
 
 // ─── Attribution tracking (per-decoder frame provenance) ──────────────────
 
@@ -1534,7 +1447,7 @@ impl MultiDecoder {
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
-                    let hash = frame_hash(&frame_copy[..len]);
+                    let hash = super::frame_hash(&frame_copy[..len]);
                     raw_hits.push((d, hash));
                     frame_decoder_map.entry(hash).or_default().push(d);
                     if !self.is_duplicate(hash) {
@@ -1565,7 +1478,7 @@ impl MultiDecoder {
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
-                    let hash = frame_hash(&frame_copy[..len]);
+                    let hash = super::frame_hash(&frame_copy[..len]);
                     raw_hits.push((dm_start + d, hash));
                     frame_decoder_map.entry(hash).or_default().push(dm_start + d);
                     if !self.is_duplicate(hash) {
@@ -1663,8 +1576,8 @@ mod tests {
         let data2 = b"Hello, World!";
         let data3 = b"Hello, World?";
 
-        assert_eq!(frame_hash(data1), frame_hash(data2));
-        assert_ne!(frame_hash(data1), frame_hash(data3));
+        assert_eq!(crate::modem::frame_hash(data1), crate::modem::frame_hash(data2));
+        assert_ne!(crate::modem::frame_hash(data1), crate::modem::frame_hash(data3));
     }
 
     #[test]

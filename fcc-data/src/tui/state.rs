@@ -179,6 +179,20 @@ impl SearchFormState {
         }
     }
 
+    /// Get the current value of a field (read-only).
+    pub fn value_of(&self, field: SearchField) -> Option<&str> {
+        match field {
+            SearchField::CallSign => Some(&self.call_sign),
+            SearchField::Name => Some(&self.name),
+            SearchField::City => Some(&self.city),
+            SearchField::State => Some(&self.state),
+            SearchField::ZipCode => Some(&self.zip_code),
+            SearchField::OperatorClass => Some(&self.operator_class),
+            SearchField::Status => Some(&self.status),
+            SearchField::Submit => None,
+        }
+    }
+
     pub fn insert_char(&mut self, c: char) {
         if let Some(val) = self.active_value_mut() {
             val.push(c);

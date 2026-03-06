@@ -78,22 +78,13 @@ fn render_search(f: &mut Frame, app: &App, area: Rect) {
                 .alignment(Alignment::Center);
             f.render_widget(btn, chunks[i]);
         } else {
-            let value = match field {
-                SearchField::CallSign => &app.search.call_sign,
-                SearchField::Name => &app.search.name,
-                SearchField::City => &app.search.city,
-                SearchField::State => &app.search.state,
-                SearchField::ZipCode => &app.search.zip_code,
-                SearchField::OperatorClass => &app.search.operator_class,
-                SearchField::Status => &app.search.status,
-                SearchField::Submit => unreachable!(),
-            };
+            let value = app.search.value_of(*field).expect("non-Submit field");
 
             let is_editing = is_active && app.search.editing;
             let display = if is_editing {
                 format!("{}_", value)
             } else {
-                value.clone()
+                value.to_string()
             };
 
             let border_style = if is_editing {
