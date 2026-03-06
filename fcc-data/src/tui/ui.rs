@@ -158,7 +158,7 @@ fn render_results(f: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|r| {
             let class_display = OperatorClass::from_code(&r.operator_class).to_string();
-            let name = format_name(r);
+            let name = r.display_name();
             let status_style = status_color(&r.license_status);
             Row::new(vec![
                 Cell::from(r.call_sign.as_str()),
@@ -679,19 +679,6 @@ fn detail_line(label_style: Style, label: &str, value: &str) -> Line<'static> {
         ),
         Span::raw(value.to_string()),
     ])
-}
-
-fn format_name(r: &crate::models::LicenseRecord) -> String {
-    if r.entity_name.is_empty() {
-        format!("{} {}", r.first_name, r.last_name).trim().to_string()
-    } else if r.first_name.is_empty() && r.last_name.is_empty() {
-        r.entity_name.clone()
-    } else {
-        format!(
-            "{} ({} {})",
-            r.entity_name, r.first_name, r.last_name
-        )
-    }
 }
 
 fn describe_radio_service(code: &str) -> &str {

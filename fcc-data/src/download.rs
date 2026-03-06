@@ -167,15 +167,15 @@ fn extract_zip(data: &[u8]) -> Result<ExtractedData> {
         let mut file = archive.by_index(i)?;
         let name = file.name().to_uppercase();
 
-        let target = if name.ends_with("HD.DAT") || name == "HD.DAT" {
+        let target = if name.ends_with("HD.DAT") {
             &mut extracted.hd_data
-        } else if name.ends_with("EN.DAT") || name == "EN.DAT" {
+        } else if name.ends_with("EN.DAT") {
             &mut extracted.en_data
-        } else if name.ends_with("AM.DAT") || name == "AM.DAT" {
+        } else if name.ends_with("AM.DAT") {
             &mut extracted.am_data
-        } else if name.ends_with("HS.DAT") || name == "HS.DAT" {
+        } else if name.ends_with("HS.DAT") {
             &mut extracted.hs_data
-        } else if name.ends_with("CO.DAT") || name == "CO.DAT" {
+        } else if name.ends_with("CO.DAT") {
             &mut extracted.co_data
         } else {
             continue;

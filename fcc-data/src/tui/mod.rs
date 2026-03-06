@@ -176,60 +176,59 @@ async fn load_detail(app: &mut App) {
 }
 
 /// Load detail data for a specific license record.
+/// Runs all independent queries concurrently.
 async fn load_detail_for(app: &mut App, license: &LicenseRecord) {
-    // History
-    match app.db.get_history(license.usi).await {
-        Ok(history) => app.history = history,
-        Err(e) => {
-            error!("History error: {}", e);
-            app.history = Vec::new();
-        }
-    }
+    let usi = license.usi;
+    let call_sign = license.call_sign.clone();
+    let lat_lon = license.lat.zip(license.lon);
 
-    // Comments
-    match app.db.get_comments(license.usi).await {
-        Ok(comments) => app.comments = comments,
-        Err(e) => {
-            error!("Comments error: {}", e);
-            app.comments = Vec::new();
+    let nearby_query = async {
+        if let Some((lat, lon)) = lat_lon {
+            app.db
+                .stations_near(&GeoQuery {
+                    lat,
+                    lon,
+                    radius_km: 25.0,
+                    limit: Some(20),
+                })
+                .await
+        } else {
+            Ok(Vec::new())
         }
-    }
+    };
 
-    // Related records (same licensee)
-    match app.db.related_by_licensee(license.usi).await {
-        Ok(related) => app.related = related,
-        Err(e) => {
-            error!("Related records error: {}", e);
-            app.related = Vec::new();
-        }
-    }
+    let (history_r, comments_r, related_r, chain_r, nearby_r) = tokio::join!(
+        app.db.get_history(usi),
+        app.db.get_comments(usi),
+        app.db.related_by_licensee(usi),
+        app.db.callsign_history_chain(&call_sign),
+        nearby_query,
+    );
 
-    // Callsign chain (who got this call next, if anyone)
-    match app.db.callsign_history_chain(&license.call_sign).await {
-        Ok(chain) => app.callsign_chain = chain,
-        Err(e) => {
-            error!("Callsign chain error: {}", e);
-            app.callsign_chain = Vec::new();
-        }
-    }
+    app.history = history_r.unwrap_or_else(|e| {
+        error!("History error: {}", e);
+        Vec::new()
+    });
+    app.comments = comments_r.unwrap_or_else(|e| {
+        error!("Comments error: {}", e);
+        Vec::new()
+    });
+    app.related = related_r.unwrap_or_else(|e| {
+        error!("Related records error: {}", e);
+        Vec::new()
+    });
+    app.callsign_chain = chain_r.unwrap_or_else(|e| {
+        error!("Callsign chain error: {}", e);
+        Vec::new()
+    });
 
-    // Nearby stations (within 25 km)
-    if let (Some(lat), Some(lon)) = (license.lat, license.lon) {
-        match app
-            .db
-            .stations_near(&GeoQuery {
-                lat,
-                lon,
-                radius_km: 25.0,
-                limit: Some(20),
-            })
-            .await
-        {
-            Ok(stations) => {
+    match nearby_r {
+        Ok(stations) => {
+            if let Some((lat, lon)) = lat_lon {
                 let total_before_filter = stations.len();
                 app.nearby = stations
                     .into_iter()
-                    .filter(|s| s.usi != license.usi)
+                    .filter(|s| s.usi != usi)
                     .map(|s| {
                         let d = haversine_km(lat, lon, s.lat.unwrap_or(0.0), s.lon.unwrap_or(0.0));
                         (s, d)
@@ -239,18 +238,18 @@ async fn load_detail_for(app: &mut App, license: &LicenseRecord) {
                     .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
                 tracing::debug!(
                     "Nearby query for {} ({:.4}, {:.4}): {} from DB, {} after self-filter",
-                    license.call_sign, lat, lon, total_before_filter, app.nearby.len()
+                    call_sign, lat, lon, total_before_filter, app.nearby.len()
                 );
-            }
-            Err(e) => {
-                error!("Nearby error: {}", e);
+            } else {
                 app.nearby = Vec::new();
             }
         }
-    } else {
-        tracing::debug!("Nearby skipped for {} — no geocode", license.call_sign);
-        app.nearby = Vec::new();
+        Err(e) => {
+            error!("Nearby error: {}", e);
+            app.nearby = Vec::new();
+        }
     }
+
     app.nearby_browsing = false;
     app.nearby_cursor = 0;
     app.nearby_section_line = None;

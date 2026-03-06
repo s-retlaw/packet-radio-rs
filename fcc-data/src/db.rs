@@ -41,8 +41,10 @@ fn row_to_license(row: &sqlx::sqlite::SqliteRow) -> LicenseRecord {
     }
 }
 
-const LICENSE_SELECT: &str =
-    "SELECT h.usi, h.call_sign, h.license_status, COALESCE(a.operator_class, ''),
+/// Column list shared by all license queries. Must match `row_to_license` field order.
+macro_rules! license_columns {
+    () => {
+        "h.usi, h.call_sign, h.license_status, COALESCE(a.operator_class, ''),
             COALESCE(e.first_name, ''), COALESCE(e.last_name, ''),
             COALESCE(e.entity_name, ''), COALESCE(e.street_address, ''),
             COALESCE(e.city, ''), COALESCE(e.state, ''), COALESCE(e.zip_code, ''),
@@ -53,11 +55,17 @@ const LICENSE_SELECT: &str =
             COALESCE(a.previous_operator_class, ''),
             h.cancellation_date, h.last_action_date,
             h.radio_service_code, COALESCE(a.region_code, ''),
-            COALESCE(e.entity_type, ''), g.geo_quality
-     FROM hd h
+            COALESCE(e.entity_type, ''), g.geo_quality"
+    };
+}
+
+const LICENSE_SELECT: &str = concat!(
+    "SELECT ", license_columns!(),
+    " FROM hd h
      LEFT JOIN en e ON e.usi = h.usi
      LEFT JOIN am a ON a.usi = h.usi
-     LEFT JOIN geocodes g ON g.usi = h.usi";
+     LEFT JOIN geocodes g ON g.usi = h.usi"
+);
 
 /// The FCC license database.
 pub struct FccDb {
@@ -130,6 +138,15 @@ impl FccDb {
             if !trimmed.is_empty() {
                 // Ignore "duplicate column" errors for idempotency
                 let _ = sqlx::query(trimmed).execute(&self.pool).await;
+            }
+        }
+
+        // Migration 003: add indexes for common query patterns
+        let sql_003 = include_str!("migrations/003_add_indexes.sql");
+        for statement in sql_003.split(';') {
+            let trimmed = statement.trim();
+            if !trimmed.is_empty() {
+                sqlx::query(trimmed).execute(&self.pool).await?;
             }
         }
         Ok(())
@@ -219,12 +236,13 @@ impl FccDb {
         };
 
         let limit = query.limit.unwrap_or(100);
+        bind_values.push(limit.to_string());
 
         let sql = format!(
             "{LICENSE_SELECT}
              WHERE {where_clause}
              ORDER BY h.call_sign
-             LIMIT {limit}"
+             LIMIT ?{}", bind_values.len()
         );
 
         let mut q = sqlx::query(&sql);
@@ -243,26 +261,16 @@ impl FccDb {
 
         // Order by approximate squared distance so the SQL LIMIT returns the
         // closest rows rather than arbitrary ones from the bounding box.
-        let sql =
-            "SELECT h.usi, h.call_sign, h.license_status, COALESCE(a.operator_class, ''),
-                    COALESCE(e.first_name, ''), COALESCE(e.last_name, ''),
-                    COALESCE(e.entity_name, ''), COALESCE(e.street_address, ''),
-                    COALESCE(e.city, ''), COALESCE(e.state, ''), COALESCE(e.zip_code, ''),
-                    h.grant_date, h.expired_date, COALESCE(a.previous_call_sign, ''),
-                    g.lat, g.lon, g.geo_source,
-                    COALESCE(e.frn, ''), COALESCE(e.licensee_id, ''),
-                    COALESCE(e.mi, ''), COALESCE(e.suffix, ''),
-                    COALESCE(a.previous_operator_class, ''),
-                    h.cancellation_date, h.last_action_date,
-                    h.radio_service_code, COALESCE(a.region_code, ''),
-                    COALESCE(e.entity_type, ''), g.geo_quality
-             FROM hd h
+        let sql = concat!(
+            "SELECT ", license_columns!(),
+            " FROM hd h
              JOIN geocodes g ON g.usi = h.usi
              LEFT JOIN en e ON e.usi = h.usi
              LEFT JOIN am a ON a.usi = h.usi
              WHERE g.lat BETWEEN ?1 AND ?2 AND g.lon BETWEEN ?3 AND ?4
              ORDER BY (g.lat - ?5) * (g.lat - ?5) + (g.lon - ?6) * (g.lon - ?6)
-             LIMIT ?7";
+             LIMIT ?7"
+        );
 
         let limit = query.limit.unwrap_or(100) as i64 * 2; // overfetch for haversine filter
 
@@ -393,17 +401,29 @@ impl FccDb {
 
     // ── Statistics ───────────────────────────────────────────────────
 
-    /// Count rows in each main table.
+    /// Count rows in each main table (single query).
     pub async fn table_counts(&self) -> Result<Vec<(String, i64)>> {
-        let mut counts = Vec::new();
-        for table in &["hd", "en", "am", "hs", "co", "geocodes", "zip_centroids"] {
-            let sql = format!("SELECT COUNT(*) FROM {table}");
-            let (count,) = sqlx::query_as::<_, (i64,)>(&sql)
-                .fetch_one(&self.pool)
-                .await?;
-            counts.push((table.to_string(), count));
-        }
-        Ok(counts)
+        let row = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64, i64)>(
+            "SELECT
+                (SELECT COUNT(*) FROM hd),
+                (SELECT COUNT(*) FROM en),
+                (SELECT COUNT(*) FROM am),
+                (SELECT COUNT(*) FROM hs),
+                (SELECT COUNT(*) FROM co),
+                (SELECT COUNT(*) FROM geocodes),
+                (SELECT COUNT(*) FROM zip_centroids)"
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(vec![
+            ("hd".to_string(), row.0),
+            ("en".to_string(), row.1),
+            ("am".to_string(), row.2),
+            ("hs".to_string(), row.3),
+            ("co".to_string(), row.4),
+            ("geocodes".to_string(), row.5),
+            ("zip_centroids".to_string(), row.6),
+        ])
     }
 
     /// Count active licenses by operator class.
@@ -419,27 +439,17 @@ impl FccDb {
         Ok(rows)
     }
 
-    /// Count geocoded vs non-geocoded active licenses.
+    /// Count geocoded vs non-geocoded active licenses (single query).
     pub async fn geocode_stats(&self) -> Result<(i64, i64, i64)> {
-        let (total,) = sqlx::query_as::<_, (i64,)>(
-            "SELECT COUNT(*) FROM hd WHERE license_status = 'A'"
+        let row = sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT
+                (SELECT COUNT(*) FROM hd WHERE license_status = 'A'),
+                (SELECT COUNT(*) FROM hd h JOIN geocodes g ON g.usi = h.usi WHERE h.license_status = 'A'),
+                (SELECT COUNT(*) FROM geocodes WHERE geo_stale = 1)"
         )
         .fetch_one(&self.pool)
         .await?;
-
-        let (geocoded,) = sqlx::query_as::<_, (i64,)>(
-            "SELECT COUNT(*) FROM hd h JOIN geocodes g ON g.usi = h.usi WHERE h.license_status = 'A'"
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        let (stale,) = sqlx::query_as::<_, (i64,)>(
-            "SELECT COUNT(*) FROM geocodes WHERE geo_stale = 1"
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok((total, geocoded, stale))
+        Ok(row)
     }
 
     // ── Sync log ─────────────────────────────────────────────────────
@@ -647,7 +657,7 @@ impl FccDb {
     }
 
     /// Mark address-change records as stale for re-geocoding.
-    pub async fn mark_stale_geocodes(&self) -> Result<u64> {
+    pub async fn mark_all_geocodes_stale(&self) -> Result<u64> {
         // Mark geocodes stale where EN address has changed
         // (This is called after an EN upsert batch)
         let result = sqlx::query(

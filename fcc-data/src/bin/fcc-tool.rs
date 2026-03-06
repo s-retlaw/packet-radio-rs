@@ -199,15 +199,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "CALL", "NAME", "CLASS", "CITY", "ST", "STATUS");
                 println!("{}", "-".repeat(75));
                 for r in &results {
-                    let name = if r.entity_name.is_empty() {
-                        format!("{} {}", r.first_name, r.last_name)
-                    } else {
-                        r.entity_name.clone()
-                    };
                     let class = OperatorClass::from_code(&r.operator_class).to_string();
                     println!("{:<10} {:<25} {:<12} {:<15} {:<3} {:<7}",
                         r.call_sign,
-                        truncate(&name, 24),
+                        truncate(&r.display_name(), 24),
                         class,
                         truncate(&r.city, 14),
                         r.state,
@@ -281,6 +276,13 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max.saturating_sub(3)])
+        let end = max.saturating_sub(3);
+        let boundary = s
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= end)
+            .last()
+            .unwrap_or(0);
+        format!("{}...", &s[..boundary])
     }
 }

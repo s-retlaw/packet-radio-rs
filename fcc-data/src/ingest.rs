@@ -268,7 +268,6 @@ async fn ingest_en(db: &FccDb, text: &str) -> Result<i64> {
     let lines: Vec<&str> = text.lines().collect();
     let pb = make_progress_bar(lines.len() as u64, "EN records");
     let mut count: i64 = 0;
-    let mut upserted_usis = Vec::new();
 
     for chunk in lines.chunks(BATCH_SIZE) {
         let mut tx = db.pool().begin().await?;
@@ -313,7 +312,6 @@ async fn ingest_en(db: &FccDb, text: &str) -> Result<i64> {
             }
         }
 
-        upserted_usis.extend(batch_usis);
         pb.inc(chunk.len() as u64);
     }
 

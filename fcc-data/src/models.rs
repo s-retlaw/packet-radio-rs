@@ -173,6 +173,24 @@ pub struct LicenseRecord {
     pub geo_quality: Option<String>,
 }
 
+impl LicenseRecord {
+    /// Format the licensee name for display.
+    pub fn display_name(&self) -> String {
+        if self.entity_name.is_empty() {
+            format!("{} {}", self.first_name, self.last_name)
+                .trim()
+                .to_string()
+        } else if self.first_name.is_empty() && self.last_name.is_empty() {
+            self.entity_name.clone()
+        } else {
+            format!(
+                "{} ({} {})",
+                self.entity_name, self.first_name, self.last_name
+            )
+        }
+    }
+}
+
 /// Search query parameters.
 #[derive(Debug, Default, Clone)]
 pub struct SearchQuery {
