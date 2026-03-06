@@ -46,6 +46,8 @@ pub mod soft_hdlc;
 pub mod multi;
 pub mod corr_slicer;
 pub mod binary_xor;
+pub mod frame_output;
+pub mod hdlc_bank;
 
 // 9600 baud G3RUH modules
 #[cfg(feature = "9600-baud")]
@@ -84,7 +86,7 @@ pub const MAX_DELAY: usize = 48;
 
 /// Maximum number of bits in a single frame (for soft bit buffer)
 /// AX.25 max frame = 330 bytes × 8 bits + flags + stuffing ≈ 3000 bits
-pub const MAX_FRAME_BITS: usize = 4096;
+pub const MAX_FRAME_BITS: usize = 3200;
 
 /// Number of candidate bits to consider for bit-flip recovery.
 /// Top-12 used for single/pair flips, top-8 for triple flips.
@@ -166,7 +168,7 @@ impl DemodConfig {
 
     /// Number of audio samples per symbol period.
     pub fn samples_per_symbol(&self) -> u32 {
-        self.sample_rate / self.baud_rate
+        self.sample_rate / self.baud_rate.max(1)
     }
 }
 
@@ -210,7 +212,7 @@ impl ModConfig {
 
     /// Number of audio samples per symbol period.
     pub fn samples_per_symbol(&self) -> u32 {
-        self.sample_rate / self.baud_rate
+        self.sample_rate / self.baud_rate.max(1)
     }
 }
 

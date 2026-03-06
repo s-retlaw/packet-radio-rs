@@ -15,12 +15,12 @@
 
 use super::demod::{DemodSymbol, DmDemodulator, FastDemodulator};
 use super::filter::BiquadFilter;
+use super::frame_output::FrameOutputBuffer;
+use super::hdlc_bank::HdlcBank;
+use super::DedupRing;
 #[cfg(feature = "std")]
 use super::pll::ClockRecoveryPll;
-use super::soft_hdlc::{FrameResult, SoftHdlcDecoder};
 use super::DemodConfig;
-#[cfg(not(feature = "std"))]
-use crate::ax25::frame::HdlcDecoder;
 
 /// PLL alpha for DM decoders at 1200 baud (primary, tighter bandwidth).
 const PLL_ALPHA_1200_PRIMARY: i16 = 936;
@@ -49,44 +49,8 @@ const DEDUP_RING_SIZE: usize = 64;
 /// Maximum number of output frames per `process_samples` call.
 const MAX_OUTPUT_FRAMES: usize = 16;
 
-/// A decoded frame with its content.
-pub struct DecodedFrame {
-    pub data: [u8; 330],
-    pub len: usize,
-}
-
 /// Multi-decoder output buffer.
-pub struct MultiOutput {
-    frames: [DecodedFrame; MAX_OUTPUT_FRAMES],
-    count: usize,
-}
-
-impl MultiOutput {
-    fn new() -> Self {
-        Self {
-            frames: core::array::from_fn(|_| DecodedFrame {
-                data: [0u8; 330],
-                len: 0,
-            }),
-            count: 0,
-        }
-    }
-
-    /// Number of unique frames decoded in this batch.
-    pub fn len(&self) -> usize {
-        self.count
-    }
-
-    /// Whether no frames were decoded.
-    pub fn is_empty(&self) -> bool {
-        self.count == 0
-    }
-
-    /// Get a decoded frame by index.
-    pub fn frame(&self, index: usize) -> &[u8] {
-        &self.frames[index].data[..self.frames[index].len]
-    }
-}
+pub type MultiOutput = FrameOutputBuffer<MAX_OUTPUT_FRAMES>;
 
 /// Multi-decoder: runs N parallel demodulators with diversity.
 ///
@@ -94,24 +58,14 @@ impl MultiOutput {
 /// for maximum decode performance across different signal conditions.
 pub struct MultiDecoder {
     decoders: [FastDemodulator; MAX_DECODERS],
-    #[cfg(feature = "std")]
-    hdlc: [SoftHdlcDecoder; MAX_DECODERS],
-    #[cfg(not(feature = "std"))]
-    hdlc: [HdlcDecoder; MAX_DECODERS],
+    hdlc: HdlcBank<MAX_DECODERS>,
     num_active: usize,
     /// DM decoders (BPF+LPF, long delay) for complementary coverage.
     dm_decoders: [DmDemodulator; MAX_DM_DECODERS],
-    #[cfg(feature = "std")]
-    dm_hdlc: [SoftHdlcDecoder; MAX_DM_DECODERS],
-    #[cfg(not(feature = "std"))]
-    dm_hdlc: [HdlcDecoder; MAX_DM_DECODERS],
+    dm_hdlc: HdlcBank<MAX_DM_DECODERS>,
     dm_active: usize,
-    /// Ring buffer of (hash, generation) for time-windowed deduplication.
-    recent_hashes: [(u32, u32); DEDUP_RING_SIZE],
-    recent_write: usize,
-    recent_count: usize,
-    /// Generation counter — incremented each process_samples call.
-    generation: u32,
+    /// Time-windowed deduplication ring.
+    dedup: DedupRing<DEDUP_RING_SIZE>,
     /// Total frames decoded (including duplicates caught).
     pub total_decoded: u64,
     /// Total unique frames output.
@@ -144,12 +98,7 @@ impl MultiDecoder {
 
         let mut decoders: [FastDemodulator; MAX_DECODERS] =
             core::array::from_fn(|_| FastDemodulator::new(config));
-        #[cfg(feature = "std")]
-        let hdlc: [SoftHdlcDecoder; MAX_DECODERS] =
-            core::array::from_fn(|_| SoftHdlcDecoder::new());
-        #[cfg(not(feature = "std"))]
-        let hdlc: [HdlcDecoder; MAX_DECODERS] =
-            core::array::from_fn(|_| HdlcDecoder::new());
+        let hdlc: HdlcBank<MAX_DECODERS> = HdlcBank::new();
 
         // 9 base decoders: 3 BPF × 3 timing offsets (nominal frequencies)
         let mut idx = 0;
@@ -284,12 +233,7 @@ impl MultiDecoder {
         // PLL decoders adapt to clock drift; Bresenham decoders use fixed timing.
         let mut dm_decoders: [DmDemodulator; MAX_DM_DECODERS] =
             core::array::from_fn(|_| DmDemodulator::with_bpf(config));
-        #[cfg(feature = "std")]
-        let dm_hdlc: [SoftHdlcDecoder; MAX_DM_DECODERS] =
-            core::array::from_fn(|_| SoftHdlcDecoder::new());
-        #[cfg(not(feature = "std"))]
-        let dm_hdlc: [HdlcDecoder; MAX_DM_DECODERS] =
-            core::array::from_fn(|_| HdlcDecoder::new());
+        let dm_hdlc: HdlcBank<MAX_DM_DECODERS> = HdlcBank::new();
 
         let mut dm_idx = 0;
         // DM+PLL decoders (Gardner TED with phase + frequency correction).
@@ -382,10 +326,7 @@ impl MultiDecoder {
             dm_decoders,
             dm_hdlc,
             dm_active: dm_idx,
-            recent_hashes: [(0u32, 0u32); DEDUP_RING_SIZE],
-            recent_write: 0,
-            recent_count: 0,
-            generation: 0,
+            dedup: DedupRing::new(),
             total_decoded: 0,
             total_unique: 0,
             baud_rate: config.baud_rate,
@@ -400,20 +341,10 @@ impl MultiDecoder {
     ) -> Self {
         let mut decoders: [FastDemodulator; MAX_DECODERS] =
             core::array::from_fn(|_| FastDemodulator::new(config));
-        #[cfg(feature = "std")]
-        let hdlc: [SoftHdlcDecoder; MAX_DECODERS] =
-            core::array::from_fn(|_| SoftHdlcDecoder::new());
-        #[cfg(not(feature = "std"))]
-        let hdlc: [HdlcDecoder; MAX_DECODERS] =
-            core::array::from_fn(|_| HdlcDecoder::new());
+        let hdlc: HdlcBank<MAX_DECODERS> = HdlcBank::new();
         let dm_decoders: [DmDemodulator; MAX_DM_DECODERS] =
             core::array::from_fn(|_| DmDemodulator::with_bpf(config));
-        #[cfg(feature = "std")]
-        let dm_hdlc: [SoftHdlcDecoder; MAX_DM_DECODERS] =
-            core::array::from_fn(|_| SoftHdlcDecoder::new());
-        #[cfg(not(feature = "std"))]
-        let dm_hdlc: [HdlcDecoder; MAX_DM_DECODERS] =
-            core::array::from_fn(|_| HdlcDecoder::new());
+        let dm_hdlc: HdlcBank<MAX_DM_DECODERS> = HdlcBank::new();
 
         let mut idx = 0;
         for f in filters {
@@ -432,10 +363,7 @@ impl MultiDecoder {
             dm_decoders,
             dm_hdlc,
             dm_active: 0, // no DM decoders in custom diversity mode
-            recent_hashes: [(0u32, 0u32); DEDUP_RING_SIZE],
-            recent_write: 0,
-            recent_count: 0,
-            generation: 0,
+            dedup: DedupRing::new(),
             total_decoded: 0,
             total_unique: 0,
             baud_rate: config.baud_rate,
@@ -448,7 +376,7 @@ impl MultiDecoder {
     /// Deduplication uses a time-windowed approach: only frames decoded
     /// within the last ~4 chunks are considered duplicates.
     pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
-        self.generation = self.generation.wrapping_add(1);
+        self.dedup.advance_generation();
         let mut output = MultiOutput::new();
         let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
 
@@ -456,49 +384,16 @@ impl MultiDecoder {
         for d in 0..self.num_active {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
             for sym in &symbols[..n] {
-                #[cfg(feature = "std")]
-                {
-                    if let Some(result) = self.hdlc[d].feed_soft_bit(sym.llr) {
-                        let frame_bytes = match &result {
-                            FrameResult::Valid(d) => *d,
-                            FrameResult::Recovered { data, .. } => *data,
-                        };
-                        let len = frame_bytes.len().min(330);
-                        let mut frame_copy = [0u8; 330];
-                        frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
-                        // NLL: result/frame_bytes borrow ends here
-                        self.total_decoded += 1;
-                        let hash = super::frame_hash(&frame_copy[..len]);
-                        if !self.is_duplicate(hash) {
-                            self.record_hash(hash);
-                            self.total_unique += 1;
-                            if output.count < MAX_OUTPUT_FRAMES {
-                                output.frames[output.count].data[..len]
-                                    .copy_from_slice(&frame_copy[..len]);
-                                output.frames[output.count].len = len;
-                                output.count += 1;
-                            }
-                        }
-                    }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    if let Some(frame_bytes) = self.hdlc[d].feed_bit(sym.bit) {
-                        self.total_decoded += 1;
-                        let len = frame_bytes.len().min(330);
-                        let mut frame_copy = [0u8; 330];
-                        frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
-                        let hash = super::frame_hash(&frame_copy[..len]);
-                        if !self.is_duplicate(hash) {
-                            self.record_hash(hash);
-                            self.total_unique += 1;
-                            if output.count < MAX_OUTPUT_FRAMES {
-                                output.frames[output.count].data[..len]
-                                    .copy_from_slice(&frame_copy[..len]);
-                                output.frames[output.count].len = len;
-                                output.count += 1;
-                            }
-                        }
+                if let Some(frame_bytes) = self.hdlc.feed(d, sym.bit, sym.llr) {
+                    let len = frame_bytes.len().min(330);
+                    let mut frame_copy = [0u8; 330];
+                    frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
+                    self.total_decoded += 1;
+                    let hash = super::frame_hash(&frame_copy[..len]);
+                    if !self.dedup.is_duplicate(hash) {
+                        self.dedup.record(hash);
+                        self.total_unique += 1;
+                        output.push(&frame_copy[..len]);
                     }
                 }
             }
@@ -508,48 +403,16 @@ impl MultiDecoder {
         for d in 0..self.dm_active {
             let n = self.dm_decoders[d].process_samples(samples, &mut symbols);
             for sym in &symbols[..n] {
-                #[cfg(feature = "std")]
-                {
-                    if let Some(result) = self.dm_hdlc[d].feed_soft_bit(sym.llr) {
-                        let frame_bytes = match &result {
-                            FrameResult::Valid(d) => *d,
-                            FrameResult::Recovered { data, .. } => *data,
-                        };
-                        let len = frame_bytes.len().min(330);
-                        let mut frame_copy = [0u8; 330];
-                        frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
-                        self.total_decoded += 1;
-                        let hash = super::frame_hash(&frame_copy[..len]);
-                        if !self.is_duplicate(hash) {
-                            self.record_hash(hash);
-                            self.total_unique += 1;
-                            if output.count < MAX_OUTPUT_FRAMES {
-                                output.frames[output.count].data[..len]
-                                    .copy_from_slice(&frame_copy[..len]);
-                                output.frames[output.count].len = len;
-                                output.count += 1;
-                            }
-                        }
-                    }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    if let Some(frame_bytes) = self.dm_hdlc[d].feed_bit(sym.bit) {
-                        self.total_decoded += 1;
-                        let len = frame_bytes.len().min(330);
-                        let mut frame_copy = [0u8; 330];
-                        frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
-                        let hash = super::frame_hash(&frame_copy[..len]);
-                        if !self.is_duplicate(hash) {
-                            self.record_hash(hash);
-                            self.total_unique += 1;
-                            if output.count < MAX_OUTPUT_FRAMES {
-                                output.frames[output.count].data[..len]
-                                    .copy_from_slice(&frame_copy[..len]);
-                                output.frames[output.count].len = len;
-                                output.count += 1;
-                            }
-                        }
+                if let Some(frame_bytes) = self.dm_hdlc.feed(d, sym.bit, sym.llr) {
+                    let len = frame_bytes.len().min(330);
+                    let mut frame_copy = [0u8; 330];
+                    frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
+                    self.total_decoded += 1;
+                    let hash = super::frame_hash(&frame_copy[..len]);
+                    if !self.dedup.is_duplicate(hash) {
+                        self.dedup.record(hash);
+                        self.total_unique += 1;
+                        output.push(&frame_copy[..len]);
                     }
                 }
             }
@@ -562,16 +425,13 @@ impl MultiDecoder {
     pub fn reset(&mut self) {
         for d in 0..self.num_active {
             self.decoders[d].reset();
-            self.hdlc[d].reset();
+            self.hdlc.reset(d);
         }
         for d in 0..self.dm_active {
             self.dm_decoders[d].reset();
-            self.dm_hdlc[d].reset();
+            self.dm_hdlc.reset(d);
         }
-        self.recent_hashes = [(0u32, 0u32); DEDUP_RING_SIZE];
-        self.recent_write = 0;
-        self.recent_count = 0;
-        self.generation = 0;
+        self.dedup.reset();
     }
 
     /// Number of active parallel decoders (fast + DM).
@@ -579,53 +439,20 @@ impl MultiDecoder {
         self.num_active + self.dm_active
     }
 
-    /// Total soft-recovered frames across all decoders (std only).
-    #[cfg(feature = "std")]
+    /// Total soft-recovered frames across all decoders (alloc only).
+    #[cfg(feature = "alloc")]
     pub fn total_soft_recovered(&self) -> u32 {
-        let mut total = 0u32;
-        for d in 0..self.num_active {
-            total += self.hdlc[d].stats_total_soft_recovered();
-        }
-        for d in 0..self.dm_active {
-            total += self.dm_hdlc[d].stats_total_soft_recovered();
-        }
-        total
+        self.hdlc.total_soft_recovered(self.num_active)
+            + self.dm_hdlc.total_soft_recovered(self.dm_active)
     }
 
-    /// Total false positives rejected by AX.25 validation across all decoders (std only).
-    #[cfg(feature = "std")]
+    /// Total false positives rejected by AX.25 validation across all decoders (alloc only).
+    #[cfg(feature = "alloc")]
     pub fn total_false_positives(&self) -> u32 {
-        let mut total = 0u32;
-        for d in 0..self.num_active {
-            total += self.hdlc[d].stats_false_positives;
-        }
-        for d in 0..self.dm_active {
-            total += self.dm_hdlc[d].stats_false_positives;
-        }
-        total
+        self.hdlc.total_false_positives(self.num_active)
+            + self.dm_hdlc.total_false_positives(self.dm_active)
     }
 
-    /// Check if a hash was seen recently (within last DEDUP_WINDOW generations).
-    fn is_duplicate(&self, hash: u32) -> bool {
-        /// Only dedup within this many process_samples calls (~4 chunks ≈ 370ms).
-        const DEDUP_WINDOW: u32 = 4;
-        let limit = self.recent_count.min(DEDUP_RING_SIZE);
-        for i in 0..limit {
-            let (h, gen) = self.recent_hashes[i];
-            if h == hash && self.generation.wrapping_sub(gen) <= DEDUP_WINDOW {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn record_hash(&mut self, hash: u32) {
-        self.recent_hashes[self.recent_write] = (hash, self.generation);
-        self.recent_write = (self.recent_write + 1) % DEDUP_RING_SIZE;
-        if self.recent_count < DEDUP_RING_SIZE {
-            self.recent_count += 1;
-        }
-    }
 }
 
 // ─── MiniDecoder ("Smart 3") ─────────────────────────────────────────────
@@ -645,13 +472,9 @@ const MINI_DECODERS: usize = 3;
 /// 3. `G:narrow/t1`  — Goertzel with narrow BPF, timing phase 1
 pub struct MiniDecoder {
     decoders: [FastDemodulator; MINI_DECODERS],
-    hdlc: [SoftHdlcDecoder; MINI_DECODERS],
-    /// Ring buffer of (hash, generation) for time-windowed deduplication.
-    recent_hashes: [(u32, u32); DEDUP_RING_SIZE],
-    recent_write: usize,
-    recent_count: usize,
-    /// Generation counter — incremented each process_samples call.
-    generation: u32,
+    hdlc: HdlcBank<MINI_DECODERS>,
+    /// Time-windowed deduplication ring.
+    dedup: DedupRing<DEDUP_RING_SIZE>,
     /// Total frames decoded (including duplicates caught).
     pub total_decoded: u64,
     /// Total unique frames output.
@@ -704,11 +527,8 @@ impl MiniDecoder {
 
         Self {
             decoders,
-            hdlc: core::array::from_fn(|_| SoftHdlcDecoder::new()),
-            recent_hashes: [(0u32, 0u32); DEDUP_RING_SIZE],
-            recent_write: 0,
-            recent_count: 0,
-            generation: 0,
+            hdlc: HdlcBank::new(),
+            dedup: DedupRing::new(),
             total_decoded: 0,
             total_unique: 0,
         }
@@ -716,32 +536,23 @@ impl MiniDecoder {
 
     /// Process audio samples through all 3 decoders.
     pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
-        self.generation = self.generation.wrapping_add(1);
+        self.dedup.advance_generation();
         let mut output = MultiOutput::new();
         let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
 
         for d in 0..MINI_DECODERS {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(result) = self.hdlc[d].feed_soft_bit(sym.llr) {
-                    let frame_bytes = match &result {
-                        FrameResult::Valid(d) => *d,
-                        FrameResult::Recovered { data, .. } => *data,
-                    };
+                if let Some(frame_bytes) = self.hdlc.feed(d, sym.bit, sym.llr) {
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                     self.total_decoded += 1;
                     let hash = super::frame_hash(&frame_copy[..len]);
-                    if !self.is_duplicate(hash) {
-                        self.record_hash(hash);
+                    if !self.dedup.is_duplicate(hash) {
+                        self.dedup.record(hash);
                         self.total_unique += 1;
-                        if output.count < MAX_OUTPUT_FRAMES {
-                            output.frames[output.count].data[..len]
-                                .copy_from_slice(&frame_copy[..len]);
-                            output.frames[output.count].len = len;
-                            output.count += 1;
-                        }
+                        output.push(&frame_copy[..len]);
                     }
                 }
             }
@@ -754,12 +565,9 @@ impl MiniDecoder {
     pub fn reset(&mut self) {
         for d in 0..MINI_DECODERS {
             self.decoders[d].reset();
-            self.hdlc[d].reset();
+            self.hdlc.reset(d);
         }
-        self.recent_hashes = [(0u32, 0u32); DEDUP_RING_SIZE];
-        self.recent_write = 0;
-        self.recent_count = 0;
-        self.generation = 0;
+        self.dedup.reset();
     }
 
     /// Number of active parallel decoders.
@@ -767,44 +575,18 @@ impl MiniDecoder {
         MINI_DECODERS
     }
 
-    /// Total soft-recovered frames across all 3 decoders.
+    /// Total soft-recovered frames across all 3 decoders (alloc only).
+    #[cfg(feature = "alloc")]
     pub fn total_soft_recovered(&self) -> u32 {
-        let mut total = 0u32;
-        for d in 0..MINI_DECODERS {
-            total += self.hdlc[d].stats_total_soft_recovered();
-        }
-        total
+        self.hdlc.total_soft_recovered(MINI_DECODERS)
     }
 
-    /// Total false positives rejected by AX.25 validation across all 3 decoders.
+    /// Total false positives rejected by AX.25 validation across all 3 decoders (alloc only).
+    #[cfg(feature = "alloc")]
     pub fn total_false_positives(&self) -> u32 {
-        let mut total = 0u32;
-        for d in 0..MINI_DECODERS {
-            total += self.hdlc[d].stats_false_positives;
-        }
-        total
+        self.hdlc.total_false_positives(MINI_DECODERS)
     }
 
-    /// Check if a hash was seen recently (within last DEDUP_WINDOW generations).
-    fn is_duplicate(&self, hash: u32) -> bool {
-        const DEDUP_WINDOW: u32 = 4;
-        let limit = self.recent_count.min(DEDUP_RING_SIZE);
-        for i in 0..limit {
-            let (h, gen) = self.recent_hashes[i];
-            if h == hash && self.generation.wrapping_sub(gen) <= DEDUP_WINDOW {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn record_hash(&mut self, hash: u32) {
-        self.recent_hashes[self.recent_write] = (hash, self.generation);
-        self.recent_write = (self.recent_write + 1) % DEDUP_RING_SIZE;
-        if self.recent_count < DEDUP_RING_SIZE {
-            self.recent_count += 1;
-        }
-    }
 }
 
 // ─── TwistMiniDecoder ───────────────────────────────────────────────────
@@ -826,13 +608,9 @@ const TWIST_DECODERS: usize = 6;
 /// Total: ~1.2 KB RAM (6 × ~200 bytes). Feasible on ESP32 and RP2040.
 pub struct TwistMiniDecoder {
     decoders: [FastDemodulator; TWIST_DECODERS],
-    hdlc: [SoftHdlcDecoder; TWIST_DECODERS],
-    /// Ring buffer of (hash, generation) for time-windowed deduplication.
-    recent_hashes: [(u32, u32); DEDUP_RING_SIZE],
-    recent_write: usize,
-    recent_count: usize,
-    /// Generation counter — incremented each process_samples call.
-    generation: u32,
+    hdlc: HdlcBank<TWIST_DECODERS>,
+    /// Time-windowed deduplication ring.
+    dedup: DedupRing<DEDUP_RING_SIZE>,
     /// Total frames decoded (including duplicates caught).
     pub total_decoded: u64,
     /// Total unique frames output.
@@ -926,11 +704,8 @@ impl TwistMiniDecoder {
 
         Self {
             decoders,
-            hdlc: core::array::from_fn(|_| SoftHdlcDecoder::new()),
-            recent_hashes: [(0u32, 0u32); DEDUP_RING_SIZE],
-            recent_write: 0,
-            recent_count: 0,
-            generation: 0,
+            hdlc: HdlcBank::new(),
+            dedup: DedupRing::new(),
             total_decoded: 0,
             total_unique: 0,
         }
@@ -938,32 +713,23 @@ impl TwistMiniDecoder {
 
     /// Process audio samples through all 6 decoders.
     pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
-        self.generation = self.generation.wrapping_add(1);
+        self.dedup.advance_generation();
         let mut output = MultiOutput::new();
         let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
 
         for d in 0..TWIST_DECODERS {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(result) = self.hdlc[d].feed_soft_bit(sym.llr) {
-                    let frame_bytes = match &result {
-                        FrameResult::Valid(d) => *d,
-                        FrameResult::Recovered { data, .. } => *data,
-                    };
+                if let Some(frame_bytes) = self.hdlc.feed(d, sym.bit, sym.llr) {
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                     self.total_decoded += 1;
                     let hash = super::frame_hash(&frame_copy[..len]);
-                    if !self.is_duplicate(hash) {
-                        self.record_hash(hash);
+                    if !self.dedup.is_duplicate(hash) {
+                        self.dedup.record(hash);
                         self.total_unique += 1;
-                        if output.count < MAX_OUTPUT_FRAMES {
-                            output.frames[output.count].data[..len]
-                                .copy_from_slice(&frame_copy[..len]);
-                            output.frames[output.count].len = len;
-                            output.count += 1;
-                        }
+                        output.push(&frame_copy[..len]);
                     }
                 }
             }
@@ -976,12 +742,9 @@ impl TwistMiniDecoder {
     pub fn reset(&mut self) {
         for d in 0..TWIST_DECODERS {
             self.decoders[d].reset();
-            self.hdlc[d].reset();
+            self.hdlc.reset(d);
         }
-        self.recent_hashes = [(0u32, 0u32); DEDUP_RING_SIZE];
-        self.recent_write = 0;
-        self.recent_count = 0;
-        self.generation = 0;
+        self.dedup.reset();
     }
 
     /// Number of active parallel decoders.
@@ -989,26 +752,6 @@ impl TwistMiniDecoder {
         TWIST_DECODERS
     }
 
-    /// Check if a hash was seen recently (within last DEDUP_WINDOW generations).
-    fn is_duplicate(&self, hash: u32) -> bool {
-        const DEDUP_WINDOW: u32 = 4;
-        let limit = self.recent_count.min(DEDUP_RING_SIZE);
-        for i in 0..limit {
-            let (h, gen) = self.recent_hashes[i];
-            if h == hash && self.generation.wrapping_sub(gen) <= DEDUP_WINDOW {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn record_hash(&mut self, hash: u32) {
-        self.recent_hashes[self.recent_write] = (hash, self.generation);
-        self.recent_write = (self.recent_write + 1) % DEDUP_RING_SIZE;
-        if self.recent_count < DEDUP_RING_SIZE {
-            self.recent_count += 1;
-        }
-    }
 }
 
 // frame_hash is now centralized in super::frame_hash
@@ -1427,22 +1170,18 @@ impl MultiDecoder {
         use alloc::vec::Vec;
         use alloc::collections::BTreeMap;
 
-        self.generation = self.generation.wrapping_add(1);
+        self.dedup.advance_generation();
         let mut output = MultiOutput::new();
         let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
         let mut raw_hits: Vec<(usize, u32)> = Vec::new();
         // hash -> list of decoder indices
         let mut frame_decoder_map: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
 
-        // Process fast (Goertzel) decoders (attribution implies std → SoftHdlcDecoder)
+        // Process fast (Goertzel) decoders (attribution implies alloc → SoftHdlcDecoder)
         for d in 0..self.num_active {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
             for sym in &symbols[..n] {
-                let frame_opt = self.hdlc[d].feed_soft_bit(sym.llr).map(|r| match r {
-                    FrameResult::Valid(d) => d as &[u8],
-                    FrameResult::Recovered { data, .. } => data as &[u8],
-                });
-                if let Some(frame_bytes) = frame_opt {
+                if let Some(frame_bytes) = self.hdlc.feed(d, sym.bit, sym.llr) {
                     self.total_decoded += 1;
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
@@ -1450,15 +1189,10 @@ impl MultiDecoder {
                     let hash = super::frame_hash(&frame_copy[..len]);
                     raw_hits.push((d, hash));
                     frame_decoder_map.entry(hash).or_default().push(d);
-                    if !self.is_duplicate(hash) {
-                        self.record_hash(hash);
+                    if !self.dedup.is_duplicate(hash) {
+                        self.dedup.record(hash);
                         self.total_unique += 1;
-                        if output.count < MAX_OUTPUT_FRAMES {
-                            output.frames[output.count].data[..len]
-                                .copy_from_slice(&frame_copy[..len]);
-                            output.frames[output.count].len = len;
-                            output.count += 1;
-                        }
+                        output.push(&frame_copy[..len]);
                     }
                 }
             }
@@ -1469,11 +1203,7 @@ impl MultiDecoder {
         for d in 0..self.dm_active {
             let n = self.dm_decoders[d].process_samples(samples, &mut symbols);
             for sym in &symbols[..n] {
-                let frame_opt = self.dm_hdlc[d].feed_soft_bit(sym.llr).map(|r| match r {
-                    FrameResult::Valid(d) => d as &[u8],
-                    FrameResult::Recovered { data, .. } => data as &[u8],
-                });
-                if let Some(frame_bytes) = frame_opt {
+                if let Some(frame_bytes) = self.dm_hdlc.feed(d, sym.bit, sym.llr) {
                     self.total_decoded += 1;
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
@@ -1481,15 +1211,10 @@ impl MultiDecoder {
                     let hash = super::frame_hash(&frame_copy[..len]);
                     raw_hits.push((dm_start + d, hash));
                     frame_decoder_map.entry(hash).or_default().push(dm_start + d);
-                    if !self.is_duplicate(hash) {
-                        self.record_hash(hash);
+                    if !self.dedup.is_duplicate(hash) {
+                        self.dedup.record(hash);
                         self.total_unique += 1;
-                        if output.count < MAX_OUTPUT_FRAMES {
-                            output.frames[output.count].data[..len]
-                                .copy_from_slice(&frame_copy[..len]);
-                            output.frames[output.count].len = len;
-                            output.count += 1;
-                        }
+                        output.push(&frame_copy[..len]);
                     }
                 }
             }
@@ -1633,19 +1358,20 @@ mod tests {
 
     #[test]
     fn test_dedup_ring() {
-        let config = DemodConfig::default_1200();
-        let mut multi = MultiDecoder::new(config);
+        let mut ring = DedupRing::<64>::new();
 
         // Set generation so dedup window works
-        multi.generation = 1;
+        ring.advance_generation();
 
         // Test duplicate detection
-        multi.record_hash(12345);
-        assert!(multi.is_duplicate(12345));
-        assert!(!multi.is_duplicate(67890));
+        ring.record(12345);
+        assert!(ring.is_duplicate(12345));
+        assert!(!ring.is_duplicate(67890));
 
         // Test time-window expiry: advance generation past DEDUP_WINDOW
-        multi.generation = 10;
-        assert!(!multi.is_duplicate(12345), "old hash should expire");
+        for _ in 0..10 {
+            ring.advance_generation();
+        }
+        assert!(!ring.is_duplicate(12345), "old hash should expire");
     }
 }

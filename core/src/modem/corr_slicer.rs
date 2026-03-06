@@ -16,39 +16,45 @@
 //! ```
 
 use super::filter::BiquadFilter;
+use super::frame_output::FrameOutputBuffer;
 use super::DemodConfig;
+use super::DedupRing;
 use super::SIN_TABLE_Q15;
 use super::hilbert::{HilbertTransform, InstFreqDetector, hilbert_31};
 use super::adaptive::AdaptiveTracker;
 
-#[cfg(feature = "std")]
-use super::soft_hdlc::{FrameResult, SoftHdlcDecoder};
-#[cfg(not(feature = "std"))]
-use crate::ax25::frame::HdlcDecoder;
+use super::hdlc_bank::AnyHdlc;
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
+#[cfg(feature = "alloc")]
+use alloc::boxed::Box;
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
 
 /// Maximum number of gain slicers per frequency channel.
-#[cfg(feature = "std")]
+#[cfg(feature = "alloc")]
 const MAX_SLICERS: usize = 8;
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "alloc"))]
 const MAX_SLICERS: usize = 4;
 
 /// Maximum number of frequency channels.
-#[cfg(feature = "std")]
+#[cfg(feature = "alloc")]
 const MAX_FREQ_CHANNELS: usize = 3;
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "alloc"))]
 const MAX_FREQ_CHANNELS: usize = 1;
 
 /// Frequency offsets (Hz) for each channel.
-#[cfg(feature = "std")]
+#[cfg(feature = "alloc")]
 const FREQ_OFFSETS: [i32; MAX_FREQ_CHANNELS] = [0, -50, 50];
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "alloc"))]
 const FREQ_OFFSETS: [i32; MAX_FREQ_CHANNELS] = [0];
 
 /// Gain levels (Q8) for multi-slicer diversity.
 /// Same as MultiDecoder: covers −12 dB to +12 dB range.
-#[cfg(feature = "std")]
+#[cfg(feature = "alloc")]
 const SLICER_GAINS: [u16; MAX_SLICERS] = [64, 107, 181, 256, 511, 868, 1440, 4057];
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "alloc"))]
 const SLICER_GAINS: [u16; MAX_SLICERS] = [107, 256, 868, 4057];
 
 /// Maximum unique frames tracked for deduplication.
@@ -78,44 +84,8 @@ struct CorrAdaptiveState {
     sample_index: u32,
 }
 
-/// A decoded frame with its content.
-pub struct DecodedFrame {
-    pub data: [u8; 330],
-    pub len: usize,
-}
-
 /// Output buffer for CorrSlicerDecoder.
-pub struct SlicerOutput {
-    frames: [DecodedFrame; MAX_OUTPUT_FRAMES],
-    count: usize,
-}
-
-impl SlicerOutput {
-    fn new() -> Self {
-        Self {
-            frames: core::array::from_fn(|_| DecodedFrame {
-                data: [0u8; 330],
-                len: 0,
-            }),
-            count: 0,
-        }
-    }
-
-    /// Number of unique frames decoded in this batch.
-    pub fn len(&self) -> usize {
-        self.count
-    }
-
-    /// Whether no frames were decoded.
-    pub fn is_empty(&self) -> bool {
-        self.count == 0
-    }
-
-    /// Get a decoded frame by index.
-    pub fn frame(&self, index: usize) -> &[u8] {
-        &self.frames[index].data[..self.frames[index].len]
-    }
-}
+pub type SlicerOutput = FrameOutputBuffer<MAX_OUTPUT_FRAMES>;
 
 /// Per-slicer state: gain level + NRZI + HDLC decoder.
 struct CorrSlicer {
@@ -123,11 +93,8 @@ struct CorrSlicer {
     space_gain_q8: u16,
     /// NRZI decode state.
     prev_nrzi_bit: bool,
-    /// HDLC decoder (soft on std, hard on no_std).
-    #[cfg(feature = "std")]
-    hdlc: SoftHdlcDecoder,
-    #[cfg(not(feature = "std"))]
-    hdlc: HdlcDecoder,
+    /// HDLC decoder (soft on alloc, hard on bare-metal).
+    hdlc: AnyHdlc,
 }
 
 impl CorrSlicer {
@@ -135,10 +102,7 @@ impl CorrSlicer {
         Self {
             space_gain_q8: gain_q8,
             prev_nrzi_bit: false,
-            #[cfg(feature = "std")]
-            hdlc: SoftHdlcDecoder::new(),
-            #[cfg(not(feature = "std"))]
-            hdlc: HdlcDecoder::new(),
+            hdlc: AnyHdlc::new(),
         }
     }
 
@@ -264,6 +228,9 @@ impl FreqChannel {
 pub struct CorrSlicerDecoder {
     config: DemodConfig,
     bpf: BiquadFilter,
+    #[cfg(feature = "alloc")]
+    channels: Box<[FreqChannel; MAX_FREQ_CHANNELS]>,
+    #[cfg(not(feature = "alloc"))]
     channels: [FreqChannel; MAX_FREQ_CHANNELS],
     num_channels: usize,
     num_slicers: usize,
@@ -280,11 +247,8 @@ pub struct CorrSlicerDecoder {
     adaptive: Option<CorrAdaptiveState>,
     /// Whether preamble phase scoring is enabled.
     phase_scoring: bool,
-    /// Ring buffer of (hash, generation) for deduplication.
-    recent_hashes: [(u32, u32); DEDUP_RING_SIZE],
-    recent_write: usize,
-    recent_count: usize,
-    generation: u32,
+    /// Time-windowed deduplication ring.
+    dedup: DedupRing<DEDUP_RING_SIZE>,
     /// Total frames decoded (including duplicates).
     pub total_decoded: u64,
     /// Total unique frames output.
@@ -317,14 +281,25 @@ impl CorrSlicerDecoder {
 
         // Narrower frequency offsets for 300 baud (200 Hz tone separation vs 1000 Hz)
         let freq_offsets_300: [i32; MAX_FREQ_CHANNELS] = {
-            #[cfg(feature = "std")]
+            #[cfg(feature = "alloc")]
             { [0, -10, 10] }
-            #[cfg(not(feature = "std"))]
+            #[cfg(not(feature = "alloc"))]
             { [0] }
         };
 
         let offsets = if config.baud_rate == 300 { &freq_offsets_300 } else { &FREQ_OFFSETS };
 
+        #[cfg(feature = "alloc")]
+        let channels: Box<[FreqChannel; MAX_FREQ_CHANNELS]> = {
+            let v: Vec<FreqChannel> = (0..MAX_FREQ_CHANNELS).map(|i| {
+                let offset = offsets[i];
+                let mark = (config.mark_freq as i32 + offset) as u32;
+                let space = (config.space_freq as i32 + offset) as u32;
+                FreqChannel::new(mark, space, config.sample_rate, lpf, effective_rate)
+            }).collect();
+            v.into_boxed_slice().try_into().ok().unwrap()
+        };
+        #[cfg(not(feature = "alloc"))]
         let channels: [FreqChannel; MAX_FREQ_CHANNELS] = core::array::from_fn(|i| {
             let offset = offsets[i];
             let mark = (config.mark_freq as i32 + offset) as u32;
@@ -345,10 +320,7 @@ impl CorrSlicerDecoder {
             energy_llr: true,
             adaptive: None,
             phase_scoring: false,
-            recent_hashes: [(0u32, 0u32); DEDUP_RING_SIZE],
-            recent_write: 0,
-            recent_count: 0,
-            generation: 0,
+            dedup: DedupRing::new(),
             total_decoded: 0,
             total_unique: 0,
         }
@@ -418,10 +390,7 @@ impl CorrSlicerDecoder {
             ch.reset(effective_rate, phase_scoring);
         }
         self.samples_processed = 0;
-        self.recent_hashes = [(0u32, 0u32); DEDUP_RING_SIZE];
-        self.recent_write = 0;
-        self.recent_count = 0;
-        self.generation = 0;
+        self.dedup.reset();
         if let Some(ref mut adaptive) = self.adaptive {
             adaptive.hilbert.reset();
             adaptive.inst_freq.reset();
@@ -431,13 +400,13 @@ impl CorrSlicerDecoder {
         }
     }
 
-    /// Total soft-recovered frames across all channels and slicers (std only).
-    #[cfg(feature = "std")]
+    /// Total soft-recovered frames across all channels and slicers (alloc only).
+    #[cfg(feature = "alloc")]
     pub fn total_soft_recovered(&self) -> u32 {
         let mut total = 0u32;
         for ch in &self.channels[..self.num_channels] {
             for s in &ch.slicers[..self.num_slicers] {
-                total += s.hdlc.stats_total_soft_recovered();
+                total += s.hdlc.stats_soft_recovered();
             }
         }
         total
@@ -447,15 +416,13 @@ impl CorrSlicerDecoder {
     ///
     /// Returns a `SlicerOutput` containing unique decoded frames.
     pub fn process_samples(&mut self, samples: &[i16]) -> SlicerOutput {
-        self.generation = self.generation.wrapping_add(1);
+        self.dedup.advance_generation();
         let mut output = SlicerOutput::new();
         let sample_rate = self.config.sample_rate;
         let baud_rate = self.config.baud_rate;
         let num_channels = self.num_channels;
         let num_slicers = self.num_slicers;
-        let _energy_llr = self.energy_llr;
-        #[cfg(feature = "std")]
-        let energy_llr = _energy_llr;
+        let energy_llr = self.energy_llr;
         let adaptive_gain = self.adaptive_gain_enabled;
         let phase_scoring = self.phase_scoring;
         let mark_freq = self.config.mark_freq;
@@ -464,10 +431,7 @@ impl CorrSlicerDecoder {
         let effective_rate = self.effective_sample_rate;
 
         // Dedup state borrowed separately to avoid borrow conflicts with channels.
-        let recent_hashes = &mut self.recent_hashes;
-        let recent_write = &mut self.recent_write;
-        let recent_count = &mut self.recent_count;
-        let generation = self.generation;
+        let dedup = &mut self.dedup;
         let total_decoded = &mut self.total_decoded;
         let total_unique = &mut self.total_unique;
 
@@ -676,62 +640,30 @@ impl CorrSlicerDecoder {
                     let decoded_bit = raw_bit == slicer.prev_nrzi_bit;
                     slicer.prev_nrzi_bit = raw_bit;
 
-                    #[cfg(feature = "std")]
-                    {
-                        let llr = if energy_llr {
-                            let total = mark_energy + space_energy;
-                            if total > 0 {
-                                let energy_ratio = ((mark_energy - space_energy) * 127) / total;
-                                let confidence = energy_ratio.unsigned_abs().clamp(1, 127) as i8;
-                                if decoded_bit { confidence } else { -confidence }
-                            } else {
-                                0
-                            }
-                        } else if decoded_bit {
-                            64
+                    let llr = if energy_llr {
+                        let total = mark_energy + space_energy;
+                        if total > 0 {
+                            let energy_ratio = ((mark_energy - space_energy) * 127) / total;
+                            let confidence = energy_ratio.unsigned_abs().clamp(1, 127) as i8;
+                            if decoded_bit { confidence } else { -confidence }
                         } else {
-                            -64
-                        };
-                        if let Some(result) = slicer.hdlc.feed_soft_bit(llr) {
-                            let frame_bytes = match &result {
-                                FrameResult::Valid(d) => *d,
-                                FrameResult::Recovered { data, .. } => *data,
-                            };
-                            let len = frame_bytes.len().min(330);
-                            let mut frame_copy = [0u8; 330];
-                            frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
-                            *total_decoded += 1;
-                            let hash = super::frame_hash(&frame_copy[..len]);
-                            if !is_dup(recent_hashes, *recent_count, generation, hash) {
-                                record(recent_hashes, recent_write, recent_count, generation, hash);
-                                *total_unique += 1;
-                                if output.count < MAX_OUTPUT_FRAMES {
-                                    output.frames[output.count].data[..len]
-                                        .copy_from_slice(&frame_copy[..len]);
-                                    output.frames[output.count].len = len;
-                                    output.count += 1;
-                                }
-                            }
+                            0
                         }
-                    }
-                    #[cfg(not(feature = "std"))]
-                    {
-                        if let Some(frame_bytes) = slicer.hdlc.feed_bit(decoded_bit) {
-                            *total_decoded += 1;
-                            let len = frame_bytes.len().min(330);
-                            let mut frame_copy = [0u8; 330];
-                            frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
-                            let hash = super::frame_hash(&frame_copy[..len]);
-                            if !is_dup(recent_hashes, *recent_count, generation, hash) {
-                                record(recent_hashes, recent_write, recent_count, generation, hash);
-                                *total_unique += 1;
-                                if output.count < MAX_OUTPUT_FRAMES {
-                                    output.frames[output.count].data[..len]
-                                        .copy_from_slice(&frame_copy[..len]);
-                                    output.frames[output.count].len = len;
-                                    output.count += 1;
-                                }
-                            }
+                    } else if decoded_bit {
+                        64
+                    } else {
+                        -64
+                    };
+                    if let Some(frame_bytes) = slicer.hdlc.feed(decoded_bit, llr) {
+                        let len = frame_bytes.len().min(330);
+                        let mut frame_copy = [0u8; 330];
+                        frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
+                        *total_decoded += 1;
+                        let hash = super::frame_hash(&frame_copy[..len]);
+                        if !dedup.is_duplicate(hash) {
+                            dedup.record(hash);
+                            *total_unique += 1;
+                            output.push(&frame_copy[..len]);
                         }
                     }
                 }
@@ -741,38 +673,6 @@ impl CorrSlicerDecoder {
         output
     }
 
-}
-
-/// Check if a hash was seen recently (free function to avoid borrow conflicts).
-fn is_dup(
-    recent_hashes: &[(u32, u32); DEDUP_RING_SIZE],
-    recent_count: usize,
-    generation: u32,
-    hash: u32,
-) -> bool {
-    const DEDUP_WINDOW: u32 = 4;
-    let limit = recent_count.min(DEDUP_RING_SIZE);
-    for &(h, gen) in &recent_hashes[..limit] {
-        if h == hash && generation.wrapping_sub(gen) <= DEDUP_WINDOW {
-            return true;
-        }
-    }
-    false
-}
-
-/// Record a hash in the dedup ring (free function to avoid borrow conflicts).
-fn record(
-    recent_hashes: &mut [(u32, u32); DEDUP_RING_SIZE],
-    recent_write: &mut usize,
-    recent_count: &mut usize,
-    generation: u32,
-    hash: u32,
-) {
-    recent_hashes[*recent_write] = (hash, generation);
-    *recent_write = (*recent_write + 1) % DEDUP_RING_SIZE;
-    if *recent_count < DEDUP_RING_SIZE {
-        *recent_count += 1;
-    }
 }
 
 // frame_hash is now centralized in super::frame_hash
