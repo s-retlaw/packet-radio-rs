@@ -67,6 +67,30 @@ impl Address {
     }
 }
 
+/// Error type for AX.25 frame parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameError {
+    /// Frame data is too short to contain required fields.
+    TooShort,
+    /// CRC check failed (only relevant at HDLC level, included for completeness).
+    BadCrc,
+    /// An address field is invalid or malformed.
+    InvalidAddress,
+    /// Information field exceeds maximum allowed length.
+    InfoTooLong,
+}
+
+impl core::fmt::Display for FrameError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            FrameError::TooShort => write!(f, "frame too short"),
+            FrameError::BadCrc => write!(f, "bad CRC"),
+            FrameError::InvalidAddress => write!(f, "invalid address"),
+            FrameError::InfoTooLong => write!(f, "info field too long"),
+        }
+    }
+}
+
 /// Parsed AX.25 frame (UI frame — Unnumbered Information).
 ///
 /// Most APRS traffic uses UI frames. This struct borrows from the
@@ -94,13 +118,24 @@ impl<'a> Frame<'a> {
     ///
     /// Returns `None` if the frame is too short or malformed.
     pub fn parse(data: &'a [u8]) -> Option<Self> {
+        Self::try_parse(data).ok()
+    }
+
+    /// Parse a raw AX.25 frame from bytes, returning a specific error on failure.
+    ///
+    /// This provides more detailed diagnostics than [`parse()`](Self::parse).
+    pub fn try_parse(data: &'a [u8]) -> Result<Self, FrameError> {
         // Minimum frame: dest(7) + src(7) + control(1) = 15 bytes
         if data.len() < 15 {
-            return None;
+            return Err(FrameError::TooShort);
         }
 
-        let dest = Address::from_bytes(data[0..7].try_into().ok()?);
-        let src = Address::from_bytes(data[7..14].try_into().ok()?);
+        let dest = Address::from_bytes(
+            data[0..7].try_into().map_err(|_| FrameError::InvalidAddress)?,
+        );
+        let src = Address::from_bytes(
+            data[7..14].try_into().map_err(|_| FrameError::InvalidAddress)?,
+        );
 
         // Check for digipeater addresses
         let mut digipeaters = [Address {
@@ -116,7 +151,9 @@ impl<'a> Frame<'a> {
         // there are digipeater addresses following
         if (data[13] & 0x01) == 0 {
             while pos + 7 <= data.len() && (num_digipeaters as usize) < crate::MAX_DIGIPEATERS {
-                let addr_bytes: &[u8; 7] = data[pos..pos + 7].try_into().ok()?;
+                let addr_bytes: &[u8; 7] = data[pos..pos + 7]
+                    .try_into()
+                    .map_err(|_| FrameError::InvalidAddress)?;
                 digipeaters[num_digipeaters as usize] = Address::from_bytes(addr_bytes);
                 num_digipeaters += 1;
                 let is_last = (data[pos + 6] & 0x01) != 0;
@@ -129,7 +166,7 @@ impl<'a> Frame<'a> {
 
         // Control and PID fields
         if pos + 2 > data.len() {
-            return None;
+            return Err(FrameError::TooShort);
         }
         let control = data[pos];
         let pid = data[pos + 1];
@@ -137,8 +174,11 @@ impl<'a> Frame<'a> {
 
         // Remaining bytes are the information field
         let info = &data[pos..];
+        if info.len() > crate::MAX_INFO_LEN {
+            return Err(FrameError::InfoTooLong);
+        }
 
-        Some(Frame {
+        Ok(Frame {
             dest,
             src,
             digipeaters,
@@ -202,5 +242,86 @@ mod tests {
         let addr = Address::from_bytes(&bytes);
         assert_eq!(addr.callsign_str(), b"CQ");
         assert_eq!(addr.ssid, 0);
+    }
+
+    #[test]
+    fn test_try_parse_too_short() {
+        assert_eq!(Frame::try_parse(&[]).unwrap_err(), FrameError::TooShort);
+        assert_eq!(Frame::try_parse(&[0u8; 14]).unwrap_err(), FrameError::TooShort);
+    }
+
+    #[test]
+    fn test_try_parse_too_short_after_digipeaters() {
+        // Build a frame where source address extension bit is clear (digipeaters follow)
+        // but there aren't enough bytes for control+PID after the address fields
+        let mut data = [0u8; 15];
+        // dest: 7 bytes
+        for i in 0..6 { data[i] = b' ' << 1; }
+        data[6] = 0x00;
+        // src: 7 bytes, extension bit CLEAR (digipeaters follow)
+        for i in 7..13 { data[i] = b' ' << 1; }
+        data[13] = 0x00; // no extension bit — expects digipeaters
+        // Only 1 byte left (pos=14), not enough for a digipeater or control+PID
+        data[14] = 0x03;
+        assert_eq!(Frame::try_parse(&data).unwrap_err(), FrameError::TooShort);
+    }
+
+    #[test]
+    fn test_try_parse_info_too_long() {
+        // Build a valid header + info field exceeding MAX_INFO_LEN (256)
+        // header: dest(7) + src(7) + control(1) + pid(1) = 16
+        // info: MAX_INFO_LEN + 1 = 257
+        // total: 273
+        const TOTAL: usize = 16 + crate::MAX_INFO_LEN + 1;
+        let mut data = [0u8; TOTAL];
+        // dest address
+        for i in 0..6 { data[i] = b'A' << 1; }
+        data[6] = 0x00;
+        // src address with extension bit set (last address)
+        for i in 7..13 { data[i] = b'B' << 1; }
+        data[13] = 0x01;
+        // control + PID
+        data[14] = 0x03;
+        data[15] = 0xF0;
+        // info: fill with 'X'
+        let mut i = 16;
+        while i < TOTAL { data[i] = b'X'; i += 1; }
+        assert_eq!(Frame::try_parse(&data).unwrap_err(), FrameError::InfoTooLong);
+    }
+
+    #[test]
+    fn test_try_parse_valid_frame() {
+        // Build a minimal valid frame: dest(7) + src(7) + control + PID + info
+        let mut data = [0u8; 20];
+        // dest
+        for i in 0..6 { data[i] = b'C' << 1; }
+        data[6] = 0x00;
+        // src (last address)
+        for i in 7..13 { data[i] = b'D' << 1; }
+        data[13] = 0x01;
+        // control + PID
+        data[14] = 0x03;
+        data[15] = 0xF0;
+        // info
+        data[16..20].copy_from_slice(b"Test");
+
+        let frame = Frame::try_parse(&data).expect("should parse valid frame");
+        assert!(frame.is_ui());
+        assert_eq!(frame.info, b"Test");
+    }
+
+    #[test]
+    fn test_parse_delegates_to_try_parse() {
+        // Too short: parse returns None
+        assert!(Frame::parse(&[0u8; 10]).is_none());
+        // Valid: parse returns Some
+        let mut data = [0u8; 16];
+        for i in 0..6 { data[i] = b'A' << 1; }
+        data[6] = 0x00;
+        for i in 7..13 { data[i] = b'B' << 1; }
+        data[13] = 0x01;
+        data[14] = 0x03;
+        data[15] = 0xF0;
+        assert!(Frame::parse(&data).is_some());
     }
 }

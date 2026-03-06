@@ -61,10 +61,12 @@ impl HttpFetcher {
     pub fn new() -> Result<Self, reqwest::Error> {
         let mut builder = reqwest::Client::builder();
 
-        // The CWOP source (wxqa.com) uses plain HTTP, so TLS cert validation
-        // is not normally relevant. If a future source requires accepting
-        // invalid certs (e.g., self-signed), set REFERENCE_ACCEPT_INVALID_CERTS=1.
+        // The CWOP source (wxqa.com) uses plain HTTP (no HTTPS available).
+        // This is intentional — the data is public/non-sensitive weather observations.
+        // If a future source requires accepting invalid certs (e.g., self-signed),
+        // set REFERENCE_ACCEPT_INVALID_CERTS=1.
         if std::env::var("REFERENCE_ACCEPT_INVALID_CERTS").is_ok_and(|v| v == "1") {
+            tracing::warn!("TLS certificate validation disabled via REFERENCE_ACCEPT_INVALID_CERTS");
             builder = builder.danger_accept_invalid_certs(true);
         }
 
@@ -83,6 +85,9 @@ impl HttpFetcher {
 #[async_trait]
 impl DataFetcher for HttpFetcher {
     async fn fetch_region(&self, region: &str) -> Result<String, FetchError> {
+        if region.contains('/') || region.contains('\\') || region.contains("..") || region.len() > 30 {
+            return Err(FetchError::NotFound(format!("Invalid region identifier: {}", region)));
+        }
         let path = region_to_url_path(region);
         let url = format!("http://www.wxqa.com/states/{}.html", path);
 
@@ -219,5 +224,64 @@ mod tests {
         assert!(regions.contains(&"ME".to_string()));
         assert!(regions.contains(&"CA".to_string()));
         assert!(regions.contains(&"canada".to_string()));
+    }
+
+    #[test]
+    fn test_us_regions_count() {
+        let regions = us_regions();
+        assert_eq!(regions.len(), 55);
+        assert!(regions.contains(&"ME".to_string()));
+        assert!(regions.contains(&"CA".to_string()));
+        assert!(!regions.contains(&"canada".to_string()));
+    }
+
+    #[test]
+    fn test_region_to_url_path_case_insensitive() {
+        assert_eq!(region_to_url_path("Canada"), "canada");
+        assert_eq!(region_to_url_path("CANADA"), "canada");
+        assert_eq!(region_to_url_path("UnitedKingdom"), "unitedkingdom");
+    }
+
+    #[test]
+    fn test_region_to_url_path_unknown_passthrough() {
+        // Unknown regions pass through unchanged (treated as US state codes)
+        assert_eq!(region_to_url_path("ZZ"), "ZZ");
+        assert_eq!(region_to_url_path("unknown"), "unknown");
+    }
+
+    #[test]
+    fn test_all_regions_includes_international() {
+        let regions = all_regions();
+        assert!(regions.contains(&"canada".to_string()));
+        assert!(regions.contains(&"unitedkingdom".to_string()));
+        assert!(regions.contains(&"australia".to_string()));
+        assert!(regions.contains(&"japan".to_string()));
+    }
+
+    #[test]
+    fn test_all_regions_no_duplicates() {
+        let regions = all_regions();
+        let mut seen = std::collections::HashSet::new();
+        for r in &regions {
+            assert!(seen.insert(r), "Duplicate region: {r}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mock_fetcher_nonexistent_dir() {
+        let fetcher = MockFetcher::new("/nonexistent/path");
+        let regions = fetcher.regions();
+        assert!(regions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_mock_fetcher_error_type() {
+        let fetcher = MockFetcher::new("/nonexistent/path");
+        let err = fetcher.fetch_region("ME").await.unwrap_err();
+        // Should be NotFound or Io error
+        match err {
+            FetchError::NotFound(_) | FetchError::Io(_) => {}
+            other => panic!("Expected NotFound or Io, got: {other}"),
+        }
     }
 }

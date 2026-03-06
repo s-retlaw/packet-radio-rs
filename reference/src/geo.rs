@@ -127,4 +127,81 @@ mod tests {
         assert!(RangeFilter::parse_aprs_is("r/42/-71/0").is_none()); // zero radius
         assert!(RangeFilter::parse_aprs_is("r/42/-71/-50").is_none()); // negative radius
     }
+
+    #[test]
+    fn test_haversine_symmetry() {
+        let d1 = haversine_km(43.66, -70.26, 42.36, -71.06);
+        let d2 = haversine_km(42.36, -71.06, 43.66, -70.26);
+        assert!((d1 - d2).abs() < 0.001, "Haversine should be symmetric: {d1} vs {d2}");
+    }
+
+    #[test]
+    fn test_haversine_equator_crossing() {
+        // Quito (-0.18, -78.47) to Bogota (4.71, -74.07) ≈ 710 km
+        let d = haversine_km(-0.18, -78.47, 4.71, -74.07);
+        assert!((d - 710.0).abs() < 50.0, "Quito-Bogota: {d} km");
+    }
+
+    #[test]
+    fn test_haversine_dateline_crossing() {
+        // Fiji (−17.7, 178.0) to Samoa (−13.8, −171.8) ≈ 1100 km
+        let d = haversine_km(-17.7, 178.0, -13.8, -171.8);
+        assert!((d - 1100.0).abs() < 100.0, "Fiji-Samoa across dateline: {d} km");
+    }
+
+    #[test]
+    fn test_haversine_london_tokyo() {
+        // London (51.51, -0.13) to Tokyo (35.68, 139.69) ≈ 9560 km
+        let d = haversine_km(51.51, -0.13, 35.68, 139.69);
+        assert!((d - 9560.0).abs() < 100.0, "London-Tokyo: {d} km");
+    }
+
+    #[test]
+    fn test_range_filter_zero_distance() {
+        let f = RangeFilter::new(45.0, -70.0, 1.0);
+        assert!(f.contains(45.0, -70.0)); // Same point always inside
+    }
+
+    #[test]
+    fn test_bbox_contains_near_pole() {
+        // Near North Pole — longitude degrees are very short
+        let f = RangeFilter::new(89.0, 0.0, 50.0);
+        assert!(f.bbox_contains(89.0, 10.0)); // Should still work near pole
+        assert!(f.bbox_contains(89.0, -10.0));
+    }
+
+    #[test]
+    fn test_parse_aprs_is_boundary_values() {
+        // Exact boundary lat/lon
+        let f = RangeFilter::parse_aprs_is("r/90/180/1").unwrap();
+        assert!((f.lat - 90.0).abs() < 0.001);
+        assert!((f.lon - 180.0).abs() < 0.001);
+
+        let f = RangeFilter::parse_aprs_is("r/-90/-180/0.1").unwrap();
+        assert!((f.lat - (-90.0)).abs() < 0.001);
+        assert!((f.lon - (-180.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_aprs_is_lon_out_of_range() {
+        assert!(RangeFilter::parse_aprs_is("r/42/181/100").is_none());
+        assert!(RangeFilter::parse_aprs_is("r/42/-181/100").is_none());
+    }
+
+    #[test]
+    fn test_parse_aprs_is_extra_parts() {
+        assert!(RangeFilter::parse_aprs_is("r/42/-71/100/extra").is_none());
+    }
+
+    #[test]
+    fn test_parse_aprs_is_non_numeric() {
+        assert!(RangeFilter::parse_aprs_is("r/abc/-71/100").is_none());
+        assert!(RangeFilter::parse_aprs_is("r/42/def/100").is_none());
+        assert!(RangeFilter::parse_aprs_is("r/42/-71/xyz").is_none());
+    }
+
+    #[test]
+    fn test_parse_aprs_is_empty_string() {
+        assert!(RangeFilter::parse_aprs_is("").is_none());
+    }
 }

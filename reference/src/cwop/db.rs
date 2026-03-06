@@ -252,4 +252,86 @@ mod tests {
         let counts = count_cwop_by_region(&db).await.unwrap();
         assert_eq!(counts.len(), 2);
     }
+
+    #[tokio::test]
+    async fn test_upsert_empty_slice() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+        let count = upsert_cwop_stations(&db, &[]).await.unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(db.total_count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_station_with_all_none_optionals() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+
+        let station = CwopStation {
+            callsign: "BARE1".to_string(),
+            lat: 40.0,
+            lon: -70.0,
+            elevation_m: None,
+            city: None,
+            region: "ME".to_string(),
+            nwsid: None,
+        };
+        upsert_cwop_stations(&db, &[station]).await.unwrap();
+
+        let cwop = get_cwop_station(&db, "BARE1").await.unwrap().unwrap();
+        assert!(cwop.elevation_m.is_none());
+        assert!(cwop.city.is_none());
+        assert!(cwop.nwsid.is_none());
+        assert_eq!(cwop.region, "ME");
+    }
+
+    #[tokio::test]
+    async fn test_get_cwop_station_missing() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+        let result = get_cwop_station(&db, "NONEXISTENT").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_query_by_region_empty() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+        let results = get_cwop_by_region(&db, "ZZ").await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_count_by_region_empty() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+        let counts = count_cwop_by_region(&db).await.unwrap();
+        assert!(counts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_query_by_region_sorted() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+
+        let stations = vec![
+            CwopStation {
+                callsign: "ZZZ".to_string(),
+                lat: 44.0,
+                lon: -69.0,
+                elevation_m: None,
+                city: None,
+                region: "ME".to_string(),
+                nwsid: None,
+            },
+            CwopStation {
+                callsign: "AAA".to_string(),
+                lat: 45.0,
+                lon: -70.0,
+                elevation_m: None,
+                city: None,
+                region: "ME".to_string(),
+                nwsid: None,
+            },
+        ];
+        upsert_cwop_stations(&db, &stations).await.unwrap();
+
+        let results = get_cwop_by_region(&db, "ME").await.unwrap();
+        assert_eq!(results[0].callsign, "AAA");
+        assert_eq!(results[1].callsign, "ZZZ");
+    }
 }

@@ -141,7 +141,9 @@ impl TncConfig {
         }
         let contents =
             toml::to_string_pretty(self).map_err(|e| format!("failed to serialize config: {}", e))?;
-        std::fs::write(path, contents).map_err(|e| format!("failed to write {}: {}", path.display(), e))
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, contents).map_err(|e| format!("failed to write {}: {}", tmp.display(), e))?;
+        std::fs::rename(&tmp, path).map_err(|e| format!("failed to rename {}: {}", tmp.display(), e))
     }
 
     /// Resolve the configuration file path.

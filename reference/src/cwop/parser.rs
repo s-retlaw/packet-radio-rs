@@ -299,4 +299,244 @@ mod tests {
         assert_eq!(parse_latlon("garbage"), None);
         assert_eq!(parse_latlon(""), None);
     }
+
+    #[test]
+    fn test_latlon_no_spaces() {
+        assert_eq!(parse_latlon("44.5/-69.3"), Some((44.5, -69.3)));
+    }
+
+    #[test]
+    fn test_latlon_multiple_slashes() {
+        assert_eq!(parse_latlon("44.5 / -69.3 / extra"), None);
+    }
+
+    #[test]
+    fn test_latlon_whitespace_only() {
+        assert_eq!(parse_latlon("   /   "), None);
+    }
+
+    #[test]
+    fn test_parse_out_of_range_coords_skipped() {
+        // Row with lat=999 should be skipped by the sanity check
+        let html = r#"<html><body>
+        <table>
+        <tr><th class="staffTableHeader">Call/CW</th>
+        <th class="staffTableHeader">Town/City/Meta</th>
+        <th class="staffTableHeader">Lat/Lon/Maps</th>
+        <th class="staffTableHeader">Elev (m)</th>
+        <th class="staffTableHeader">Weather Graphs</th>
+        <th class="staffTableHeader">Near Stns</th>
+        <th class="staffTableHeader">NOAA MesoMap</th>
+        <th class="staffTableHeader">CWOP QC</th>
+        <th class="staffTableHeader">Meso West</th>
+        <th class="staffTableHeader">email to:</th>
+        <th class="staffTableHeader">Web Sites</th></tr>
+        <tr>
+        <td class="tblData">BAD1</td>
+        <td class="tblData">Town</td>
+        <td class="tblData">999.0 / -69.3</td>
+        <td class="tblData">100</td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData">AP001</td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        </tr>
+        </table></body></html>"#;
+
+        let stations = parse_state_page(html, "TEST").unwrap();
+        assert!(stations.is_empty(), "Out-of-range lat should be skipped");
+    }
+
+    #[test]
+    fn test_parse_empty_callsign_skipped() {
+        let html = r#"<html><body>
+        <table>
+        <tr><th class="staffTableHeader">Call/CW</th>
+        <th class="staffTableHeader">Town/City/Meta</th>
+        <th class="staffTableHeader">Lat/Lon/Maps</th>
+        <th class="staffTableHeader">Elev (m)</th>
+        <th class="staffTableHeader">Weather Graphs</th>
+        <th class="staffTableHeader">Near Stns</th>
+        <th class="staffTableHeader">NOAA MesoMap</th>
+        <th class="staffTableHeader">CWOP QC</th>
+        <th class="staffTableHeader">Meso West</th>
+        <th class="staffTableHeader">email to:</th>
+        <th class="staffTableHeader">Web Sites</th></tr>
+        <tr>
+        <td class="tblData">   </td>
+        <td class="tblData">Town</td>
+        <td class="tblData">44.5 / -69.3</td>
+        <td class="tblData">100</td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData">AP001</td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        </tr>
+        </table></body></html>"#;
+
+        let stations = parse_state_page(html, "TEST").unwrap();
+        assert!(stations.is_empty(), "Empty callsign should be skipped");
+    }
+
+    #[test]
+    fn test_parse_no_elevation() {
+        let html = r#"<html><body>
+        <table>
+        <tr><th class="staffTableHeader">Call/CW</th>
+        <th class="staffTableHeader">Town/City/Meta</th>
+        <th class="staffTableHeader">Lat/Lon/Maps</th>
+        <th class="staffTableHeader">Elev (m)</th>
+        <th class="staffTableHeader">Weather Graphs</th>
+        <th class="staffTableHeader">Near Stns</th>
+        <th class="staffTableHeader">NOAA MesoMap</th>
+        <th class="staffTableHeader">CWOP QC</th>
+        <th class="staffTableHeader">Meso West</th>
+        <th class="staffTableHeader">email to:</th>
+        <th class="staffTableHeader">Web Sites</th></tr>
+        <tr>
+        <td class="tblData">TEST1</td>
+        <td class="tblData">Town</td>
+        <td class="tblData">44.5 / -69.3</td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        </tr>
+        </table></body></html>"#;
+
+        let stations = parse_state_page(html, "TEST").unwrap();
+        assert_eq!(stations.len(), 1);
+        assert_eq!(stations[0].callsign, "TEST1");
+        assert!(stations[0].elevation_m.is_none());
+        assert!(stations[0].nwsid.is_none());
+    }
+
+    #[test]
+    fn test_parse_region_assigned_correctly() {
+        let html = r#"<html><body>
+        <table>
+        <tr><th class="staffTableHeader">Call/CW</th>
+        <th class="staffTableHeader">Town/City/Meta</th>
+        <th class="staffTableHeader">Lat/Lon/Maps</th>
+        <th class="staffTableHeader">Elev (m)</th>
+        <th class="staffTableHeader">Weather Graphs</th>
+        <th class="staffTableHeader">Near Stns</th>
+        <th class="staffTableHeader">NOAA MesoMap</th>
+        <th class="staffTableHeader">CWOP QC</th>
+        <th class="staffTableHeader">Meso West</th>
+        <th class="staffTableHeader">email to:</th>
+        <th class="staffTableHeader">Web Sites</th></tr>
+        <tr>
+        <td class="tblData">TEST1</td>
+        <td class="tblData">Town</td>
+        <td class="tblData">44.5 / -69.3</td>
+        <td class="tblData">100</td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData">AP001</td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        </tr>
+        </table></body></html>"#;
+
+        let stations = parse_state_page(html, "custom_region").unwrap();
+        assert_eq!(stations[0].region, "custom_region");
+    }
+
+    #[test]
+    fn test_parse_multiple_rows() {
+        let html = r#"<html><body>
+        <table>
+        <tr><th class="staffTableHeader">Call/CW</th>
+        <th class="staffTableHeader">Town/City/Meta</th>
+        <th class="staffTableHeader">Lat/Lon/Maps</th>
+        <th class="staffTableHeader">Elev (m)</th>
+        <th class="staffTableHeader">Weather Graphs</th>
+        <th class="staffTableHeader">Near Stns</th>
+        <th class="staffTableHeader">NOAA MesoMap</th>
+        <th class="staffTableHeader">CWOP QC</th>
+        <th class="staffTableHeader">Meso West</th>
+        <th class="staffTableHeader">email to:</th>
+        <th class="staffTableHeader">Web Sites</th></tr>
+        <tr>
+        <td class="tblData">AAA</td>
+        <td class="tblData">City A</td>
+        <td class="tblData">40.0 / -70.0</td>
+        <td class="tblData">50</td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        </tr>
+        <tr>
+        <td class="tblData">BBB</td>
+        <td class="tblData">City B</td>
+        <td class="tblData">41.0 / -71.0</td>
+        <td class="tblData">75</td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        </tr>
+        </table></body></html>"#;
+
+        let stations = parse_state_page(html, "TEST").unwrap();
+        assert_eq!(stations.len(), 2);
+        assert_eq!(stations[0].callsign, "AAA");
+        assert_eq!(stations[1].callsign, "BBB");
+    }
+
+    #[test]
+    fn test_extract_cell_text_whitespace() {
+        // Test via parse — cells with only whitespace should yield None
+        let html = r#"<html><body>
+        <table>
+        <tr><th class="staffTableHeader">Call/CW</th>
+        <th class="staffTableHeader">Town/City/Meta</th>
+        <th class="staffTableHeader">Lat/Lon/Maps</th>
+        <th class="staffTableHeader">Elev (m)</th>
+        <th class="staffTableHeader">Weather Graphs</th>
+        <th class="staffTableHeader">Near Stns</th>
+        <th class="staffTableHeader">NOAA MesoMap</th>
+        <th class="staffTableHeader">CWOP QC</th>
+        <th class="staffTableHeader">Meso West</th>
+        <th class="staffTableHeader">email to:</th>
+        <th class="staffTableHeader">Web Sites</th></tr>
+        <tr>
+        <td class="tblData">TEST1</td>
+        <td class="tblData">   </td>
+        <td class="tblData">44.5 / -69.3</td>
+        <td class="tblData">100</td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData">   </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        <td class="tblData"> </td>
+        </tr>
+        </table></body></html>"#;
+
+        let stations = parse_state_page(html, "TEST").unwrap();
+        assert_eq!(stations.len(), 1);
+        assert!(stations[0].city.is_none(), "Whitespace-only city should be None");
+    }
 }

@@ -6,116 +6,8 @@ use tokio::sync::broadcast;
 use super::error::ServerError;
 use super::ingest::process_raw_frame;
 
-/// Configuration for the APRS-IS client connection.
-pub struct AprsIsClientConfig {
-    pub host: String,
-    pub port: u16,
-    pub callsign: String,
-    pub passcode: String,
-    pub filter: String,
-}
-
-/// Parsed TNC-2 format line.
-#[derive(Debug, Clone)]
-pub struct Tnc2Packet {
-    pub source: String,
-    pub dest: String,
-    pub path: Vec<String>,
-    pub info: Vec<u8>,
-}
-
-/// Parse a TNC-2 format line into its components.
-/// Format: `SOURCE>DEST,PATH1,PATH2:INFO`
-pub fn parse_tnc2_line(line: &str) -> Option<Tnc2Packet> {
-    let line = line.trim();
-
-    // Skip comments and empty lines
-    if line.is_empty() || line.starts_with('#') {
-        return None;
-    }
-
-    // Find source>dest separator
-    let gt_pos = line.find('>')?;
-    let source = &line[..gt_pos];
-    if source.is_empty() {
-        return None;
-    }
-
-    let rest = &line[gt_pos + 1..];
-
-    // Find the info separator ':'
-    let colon_pos = rest.find(':')?;
-    let dest_path = &rest[..colon_pos];
-    let info = &rest[colon_pos + 1..];
-
-    // Split dest,path1,path2,...
-    let mut parts = dest_path.split(',');
-    let dest = parts.next()?.to_string();
-    if dest.is_empty() {
-        return None;
-    }
-
-    let path: Vec<String> = parts.map(|s| s.to_string()).collect();
-
-    Some(Tnc2Packet {
-        source: source.to_string(),
-        dest,
-        path,
-        info: info.as_bytes().to_vec(),
-    })
-}
-
-/// Build a synthetic AX.25 frame from a TNC-2 parsed packet.
-/// This allows us to reuse the same process_raw_frame pipeline.
-fn tnc2_to_ax25(pkt: &Tnc2Packet) -> Vec<u8> {
-    let mut frame = Vec::new();
-
-    // Encode address field (shifted left by 1, space-padded to 6 chars)
-    fn encode_address(call_ssid: &str, is_last: bool) -> [u8; 7] {
-        let mut bytes = [0x40u8; 7]; // space << 1
-        let (callsign, ssid) = if let Some(dash) = call_ssid.find('-') {
-            (&call_ssid[..dash], call_ssid[dash + 1..].parse::<u8>().unwrap_or(0))
-        } else {
-            // Check for H-bit marker
-            let clean = call_ssid.trim_end_matches('*');
-            (clean, 0u8)
-        };
-
-        for (i, &b) in callsign.as_bytes().iter().take(6).enumerate() {
-            bytes[i] = b << 1;
-        }
-
-        let h_bit = if call_ssid.ends_with('*') { 0x80 } else { 0 };
-        bytes[6] = 0x60 | ((ssid & 0x0F) << 1) | h_bit;
-        if is_last {
-            bytes[6] |= 0x01;
-        }
-        bytes
-    }
-
-    let has_path = !pkt.path.is_empty();
-
-    // Destination
-    frame.extend_from_slice(&encode_address(&pkt.dest, false));
-
-    // Source (last if no digipeaters)
-    frame.extend_from_slice(&encode_address(&pkt.source, !has_path));
-
-    // Digipeaters
-    for (i, digi) in pkt.path.iter().enumerate() {
-        let is_last = i == pkt.path.len() - 1;
-        frame.extend_from_slice(&encode_address(digi, is_last));
-    }
-
-    // Control + PID
-    frame.push(0x03); // UI
-    frame.push(0xF0); // No L3
-
-    // Info field
-    frame.extend_from_slice(&pkt.info);
-
-    frame
-}
+// Re-export shared types for use by other modules in this crate.
+pub use packet_radio_shared::aprs_is::{parse_tnc2_line, AprsIsClientConfig, Tnc2Packet};
 
 /// Process a single TNC-2 format line through the ingest pipeline.
 pub async fn process_tnc2_line(
@@ -129,7 +21,7 @@ pub async fn process_tnc2_line(
         None => return Ok(false),
     };
 
-    let ax25 = tnc2_to_ax25(&pkt);
+    let ax25 = packet_radio_shared::aprs_is::tnc2_to_ax25(&pkt);
     process_raw_frame(&ax25, pool, tx, reference_db, "aprs-is").await
 }
 
@@ -184,6 +76,10 @@ pub async fn run_aprs_is_client(
 
                 // Read lines
                 while let Ok(Some(line)) = lines.next_line().await {
+                    if line.len() > 1024 {
+                        tracing::warn!("APRS-IS: skipping oversized line ({} bytes)", line.len());
+                        continue;
+                    }
                     if let Err(e) = process_tnc2_line(&line, &pool, &tx, reference_db.as_deref()).await {
                         tracing::error!("APRS-IS packet processing error: {}", e);
                     }

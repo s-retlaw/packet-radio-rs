@@ -17,7 +17,9 @@
 
 use super::demod::DemodSymbol;
 use super::demod_9600::*;
+use super::frame_output::FrameOutputBuffer;
 use super::soft_hdlc::{FrameResult, SoftHdlcDecoder};
+use super::DedupRing;
 
 #[cfg(feature = "std")]
 extern crate alloc;
@@ -53,44 +55,8 @@ const SLICER_THRESHOLDS_NEG: [i16; 3] = [-660, -330, 0];
 /// Positive-inclusive thresholds for 4th-order LPF diversity.
 const SLICER_THRESHOLDS_POS: [i16; 3] = [-330, 0, 330];
 
-/// A decoded frame with its content.
-pub struct DecodedFrame9600 {
-    pub data: [u8; 330],
-    pub len: usize,
-}
-
 /// Multi-decoder output buffer for 9600 baud.
-pub struct Multi9600Output {
-    frames: [DecodedFrame9600; MAX_OUTPUT_FRAMES],
-    count: usize,
-}
-
-impl Multi9600Output {
-    fn new() -> Self {
-        Self {
-            frames: core::array::from_fn(|_| DecodedFrame9600 {
-                data: [0u8; 330],
-                len: 0,
-            }),
-            count: 0,
-        }
-    }
-
-    /// Number of unique frames decoded in this batch.
-    pub fn len(&self) -> usize {
-        self.count
-    }
-
-    /// Whether no frames were decoded.
-    pub fn is_empty(&self) -> bool {
-        self.count == 0
-    }
-
-    /// Get a decoded frame by index.
-    pub fn frame(&self, index: usize) -> &[u8] {
-        &self.frames[index].data[..self.frames[index].len]
-    }
-}
+pub type Multi9600Output = FrameOutputBuffer<MAX_OUTPUT_FRAMES>;
 
 /// Which 9600 baud algorithm a decoder slot uses.
 #[derive(Clone, Copy)]
@@ -142,10 +108,7 @@ pub struct Multi9600Decoder {
     pub frame_count: usize,
 
     // Deduplication
-    recent_hashes: [(u32, u32); DEDUP_RING_SIZE],
-    recent_write: usize,
-    recent_count: usize,
-    generation: u32,
+    dedup: DedupRing<DEDUP_RING_SIZE>,
 
     // Stats
     pub total_decoded: u64,
@@ -178,10 +141,7 @@ impl Multi9600Decoder {
             frame_sources: Box::new([[false; MAX_9600_DECODERS]; 256]),
             #[cfg(feature = "attribution")]
             frame_count: 0,
-            recent_hashes: [(0, 0); DEDUP_RING_SIZE],
-            recent_write: 0,
-            recent_count: 0,
-            generation: 0,
+            dedup: DedupRing::new(),
             total_decoded: 0,
             total_unique: 0,
         };
@@ -429,7 +389,7 @@ impl Multi9600Decoder {
     /// Process a buffer of audio samples through all decoders.
     pub fn process_samples(&mut self, samples: &[i16]) -> Multi9600Output {
         let mut output = Multi9600Output::new();
-        self.generation = self.generation.wrapping_add(1);
+        self.dedup.advance_generation();
 
         let mut symbols = [DemodSymbol { bit: false, llr: 0 }; MAX_SYMBOLS];
 
@@ -471,7 +431,7 @@ impl Multi9600Decoder {
                 if got_frame {
                     self.total_decoded += 1;
                     let hash = super::frame_hash(&frame_buf[..frame_len]);
-                    let is_dup = self.is_duplicate(hash);
+                    let is_dup = self.dedup.is_duplicate(hash);
 
                     #[cfg(feature = "attribution")]
                     {
@@ -483,15 +443,9 @@ impl Multi9600Decoder {
                     }
 
                     if !is_dup {
-                        self.add_hash(hash);
+                        self.dedup.record(hash);
                         self.total_unique += 1;
-
-                        if output.count < MAX_OUTPUT_FRAMES {
-                            output.frames[output.count].data[..frame_len]
-                                .copy_from_slice(&frame_buf[..frame_len]);
-                            output.frames[output.count].len = frame_len;
-                            output.count += 1;
-                        }
+                        output.push(&frame_buf[..frame_len]);
                     }
                 }
             }
@@ -511,32 +465,8 @@ impl Multi9600Decoder {
         &self.labels[..self.num_active]
     }
 
-    fn is_duplicate(&self, hash: u32) -> bool {
-        let min_gen = self.generation.saturating_sub(3);
-        for i in 0..self.recent_count.min(DEDUP_RING_SIZE) {
-            if self.recent_hashes[i].0 == hash && self.recent_hashes[i].1 >= min_gen {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn add_hash(&mut self, hash: u32) {
-        self.recent_hashes[self.recent_write] = (hash, self.generation);
-        self.recent_write = (self.recent_write + 1) % DEDUP_RING_SIZE;
-        self.recent_count = (self.recent_count + 1).min(DEDUP_RING_SIZE);
-    }
-
     #[cfg(feature = "attribution")]
-    fn find_or_add_frame_hash(&mut self, hash: u32) -> usize {
-        // Linear scan (frame_count is small — typically <100)
-        for i in 0..self.frame_count {
-            if self.recent_hashes.get(i).map(|h| h.0) == Some(hash) {
-                return i;
-            }
-        }
-        // Check in the dedup ring as a secondary lookup
-        // Actually, we need a separate hash-to-index mapping for attribution.
+    fn find_or_add_frame_hash(&mut self, _hash: u32) -> usize {
         // Use frame_count as the index for new frames.
         let idx = self.frame_count;
         if idx < 256 {
@@ -721,10 +651,7 @@ pub struct Mini9600Decoder {
     #[cfg(not(feature = "std"))]
     hdlc: [HdlcDecoder; MINI_9600_DECODERS],
     // dedup
-    recent_hashes: [(u32, u32); 32],
-    recent_write: usize,
-    recent_count: usize,
-    generation: u32,
+    dedup: DedupRing<32>,
     pub total_decoded: u64,
     pub total_unique: u64,
 }
@@ -760,10 +687,7 @@ impl Mini9600Decoder {
             hdlc: core::array::from_fn(|_| SoftHdlcDecoder::new()),
             #[cfg(not(feature = "std"))]
             hdlc: core::array::from_fn(|_| HdlcDecoder::new()),
-            recent_hashes: [(0, 0); 32],
-            recent_write: 0,
-            recent_count: 0,
-            generation: 0,
+            dedup: DedupRing::new(),
             total_decoded: 0,
             total_unique: 0,
         }
@@ -944,7 +868,7 @@ impl Mini9600Decoder {
     /// Process a buffer of audio samples through all 6 decoders.
     pub fn process_samples(&mut self, samples: &[i16]) -> Multi9600Output {
         let mut output = Multi9600Output::new();
-        self.generation = self.generation.wrapping_add(1);
+        self.dedup.advance_generation();
 
         let mut symbols = [DemodSymbol { bit: false, llr: 0 }; MAX_SYMBOLS];
 
@@ -987,16 +911,10 @@ impl Mini9600Decoder {
                 if got_frame {
                     self.total_decoded += 1;
                     let hash = super::frame_hash(&frame_buf[..frame_len]);
-                    if !self.is_duplicate(hash) {
-                        self.add_hash(hash);
+                    if !self.dedup.is_duplicate(hash) {
+                        self.dedup.record(hash);
                         self.total_unique += 1;
-
-                        if output.count < MAX_OUTPUT_FRAMES {
-                            output.frames[output.count].data[..frame_len]
-                                .copy_from_slice(&frame_buf[..frame_len]);
-                            output.frames[output.count].len = frame_len;
-                            output.count += 1;
-                        }
+                        output.push(&frame_buf[..frame_len]);
                     }
                 }
             }
@@ -1008,22 +926,6 @@ impl Mini9600Decoder {
     /// Number of active decoders (always 6).
     pub fn num_decoders(&self) -> usize {
         MINI_9600_DECODERS
-    }
-
-    fn is_duplicate(&self, hash: u32) -> bool {
-        let min_gen = self.generation.saturating_sub(3);
-        for i in 0..self.recent_count.min(32) {
-            if self.recent_hashes[i].0 == hash && self.recent_hashes[i].1 >= min_gen {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn add_hash(&mut self, hash: u32) {
-        self.recent_hashes[self.recent_write] = (hash, self.generation);
-        self.recent_write = (self.recent_write + 1) % 32;
-        self.recent_count = (self.recent_count + 1).min(32);
     }
 }
 

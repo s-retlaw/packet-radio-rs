@@ -80,6 +80,7 @@ pub struct KissDecoder {
     len: usize,
     in_frame: bool,
     escape: bool,
+    overflow: bool,
 }
 
 impl Default for KissDecoder {
@@ -95,6 +96,7 @@ impl KissDecoder {
             len: 0,
             in_frame: false,
             escape: false,
+            overflow: false,
         }
     }
 
@@ -102,6 +104,7 @@ impl KissDecoder {
         self.len = 0;
         self.in_frame = false;
         self.escape = false;
+        self.overflow = false;
     }
 
     /// Feed a single byte. Returns Some((port, command, data)) when
@@ -110,6 +113,10 @@ impl KissDecoder {
         match byte {
             FEND => {
                 if self.in_frame && self.len > 0 {
+                    if self.overflow {
+                        self.reset();
+                        return None;
+                    }
                     // End of frame
                     let (port, cmd) = Command::from_byte(self.buf[0]);
                     let data = &self.buf[1..self.len];
@@ -151,6 +158,8 @@ impl KissDecoder {
         if self.len < self.buf.len() {
             self.buf[self.len] = byte;
             self.len += 1;
+        } else {
+            self.overflow = true;
         }
     }
 }

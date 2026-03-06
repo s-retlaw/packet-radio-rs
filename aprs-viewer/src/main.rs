@@ -313,11 +313,10 @@ async fn api_get_stations(
     use axum::response::IntoResponse;
     match aprs_viewer::server::db::get_stations(&state.db).await {
         Ok(stations) => axum::Json(stations).into_response(),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get stations: {}", e),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to get stations: {}", e);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to get stations").into_response()
+        }
     }
 }
 
@@ -338,11 +337,10 @@ async fn api_get_station_track(
 
     match aprs_viewer::server::db::get_station_track(&state.db, &callsign, ssid, hours).await {
         Ok(track) => axum::Json(track).into_response(),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get track: {}", e),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to get track: {}", e);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to get track").into_response()
+        }
     }
 }
 
@@ -357,11 +355,10 @@ async fn api_get_station_weather(
     match aprs_viewer::server::db::get_station_by_callsign(&state.db, &callsign, ssid).await {
         Ok(Some(station)) => axum::Json(station.weather).into_response(),
         Ok(None) => (axum::http::StatusCode::NOT_FOUND, "Station not found").into_response(),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get weather: {}", e),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to get weather: {}", e);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to get weather").into_response()
+        }
     }
 }
 
@@ -382,11 +379,10 @@ async fn api_get_weather_history(
 
     match aprs_viewer::server::db::get_weather_history(&state.db, &callsign, ssid, hours).await {
         Ok(history) => axum::Json(history).into_response(),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get weather history: {}", e),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to get weather history: {}", e);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to get weather history").into_response()
+        }
     }
 }
 
@@ -402,16 +398,15 @@ async fn api_get_station_packets(
 ) -> impl axum::response::IntoResponse {
     use axum::response::IntoResponse;
 
-    let limit = query.limit.unwrap_or(50).min(200);
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let (callsign, ssid) = parse_callsign_ssid(&call);
 
     match aprs_viewer::server::db::get_station_packets(&state.db, &callsign, ssid, limit).await {
         Ok(packets) => axum::Json(packets).into_response(),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get station packets: {}", e),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to get station packets: {}", e);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to get station packets").into_response()
+        }
     }
 }
 
@@ -430,11 +425,10 @@ async fn api_get_station_coverage(
         (Ok(hears), Ok(heard_by)) => {
             axum::Json(aprs_viewer::models::CoverageResponse { hears, heard_by }).into_response()
         }
-        (Err(e), _) | (_, Err(e)) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get coverage: {}", e),
-        )
-            .into_response(),
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::error!("Failed to get coverage: {}", e);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to get coverage").into_response()
+        }
     }
 }
 
@@ -449,23 +443,25 @@ async fn api_get_packets(
 ) -> impl axum::response::IntoResponse {
     use axum::response::IntoResponse;
 
-    let limit = query.limit.unwrap_or(200).min(1000);
+    let limit = query.limit.unwrap_or(200).clamp(1, 1000);
 
     match aprs_viewer::server::db::get_recent_packets(&state.db, limit).await {
         Ok(packets) => axum::Json(packets).into_response(),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get packets: {}", e),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to get packets: {}", e);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to get packets").into_response()
+        }
     }
 }
 
 async fn api_get_config(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> impl axum::response::IntoResponse {
-    let config = state.config.read().await;
-    axum::Json(config.clone())
+    let mut config = state.config.read().await.clone();
+    if !config.aprs_is.passcode.is_empty() {
+        config.aprs_is.passcode = "***".to_string();
+    }
+    axum::Json(config)
 }
 
 async fn api_put_config(
@@ -480,8 +476,8 @@ async fn api_put_config(
     }
 
     if let Err(e) = new_config.save(&state.config_path) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to save config: {}", e))
-            .into_response();
+        tracing::error!("Failed to save config: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save config").into_response();
     }
 
     {
@@ -503,11 +499,10 @@ async fn api_list_maps(
     };
     match aprs_viewer::server::map_manager::list_installed_packs(&maps_dir).await {
         Ok(packs) => axum::Json(packs).into_response(),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to list maps: {}", e),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to list maps: {}", e);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to list maps").into_response()
+        }
     }
 }
 
@@ -524,7 +519,10 @@ async fn api_delete_map(
     };
     match aprs_viewer::server::map_manager::delete_pack(&maps_dir, &name).await {
         Ok(()) => (StatusCode::OK, "Deleted").into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, format!("{}", e)).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to delete map: {}", e);
+            (StatusCode::BAD_REQUEST, "Failed to delete map").into_response()
+        }
     }
 }
 
@@ -549,11 +547,10 @@ async fn api_download_map(
         .await
     {
         Ok(()) => (StatusCode::OK, "Downloaded").into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Download failed: {}", e),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("Download failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Download failed").into_response()
+        }
     }
 }
 

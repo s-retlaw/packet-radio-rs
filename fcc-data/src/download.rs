@@ -132,6 +132,8 @@ async fn download_and_extract(url: &str) -> Result<ExtractedData> {
     extract_zip(&bytes)
 }
 
+const MAX_EXTRACTED_SIZE: usize = 500 * 1024 * 1024; // 500 MB
+
 fn extract_zip(data: &[u8]) -> Result<ExtractedData> {
     let cursor = Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor)?;
@@ -164,6 +166,9 @@ fn extract_zip(data: &[u8]) -> Result<ExtractedData> {
 
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
+        if buf.len() > MAX_EXTRACTED_SIZE {
+            return Err(FccError::Download(format!("Extracted file {} exceeds size limit ({} bytes)", file.name(), buf.len())));
+        }
         *target = Some(latin1_to_utf8(&buf));
         info!("Extracted {} ({} bytes)", file.name(), buf.len());
     }

@@ -18,6 +18,9 @@ toml = "1"
 # Core crate
 packet-radio-core = { path = "../core", features = ["std", "multi-decoder"] }
 
+# Shared utilities (APRS-IS, config, IGate)
+packet-radio-shared = { path = "../shared" }
+
 # Reference data (CWOP station positions, etc.)
 reference = { path = "../reference" }
 

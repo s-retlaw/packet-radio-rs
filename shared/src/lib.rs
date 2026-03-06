@@ -5,5 +5,6 @@
 //! - IGate logic (bridging RF ↔ APRS-IS)
 //! - Configuration file parsing
 
-pub mod igate;
+pub mod aprs_is;
 pub mod config;
+pub mod igate;

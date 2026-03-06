@@ -449,4 +449,112 @@ mod tests {
         assert_eq!(counts[0], ("cwop".to_string(), 2));
         assert_eq!(counts[1], ("fcc".to_string(), 1));
     }
+
+    #[tokio::test]
+    async fn test_batch_lookup_empty() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+        let results = db.lookup_positions_batch(&[]).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_batch_lookup_all_missing() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+        let results = db.lookup_positions_batch(&["X", "Y", "Z"]).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_geo_query_empty_results() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Insert a station in Maine
+        sqlx::query(
+            "INSERT INTO positions (callsign, source, lat, lon, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind("MAINE1")
+        .bind("cwop")
+        .bind(43.66)
+        .bind(-70.26)
+        .bind(&now)
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // Query in Los Angeles area — should find nothing
+        let filter = RangeFilter::new(34.05, -118.24, 50.0);
+        let results = db.query_positions_within(&filter).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_same_callsign_different_sources() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Same callsign, different source — should both exist (composite PK)
+        for src in ["cwop", "fcc"] {
+            sqlx::query(
+                "INSERT INTO positions (callsign, source, lat, lon, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .bind("KD1KE")
+            .bind(src)
+            .bind(44.489)
+            .bind(-69.35)
+            .bind(&now)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(db.total_count().await.unwrap(), 2);
+
+        // lookup_position returns first match (LIMIT 1)
+        let pos = db.lookup_position("KD1KE").await.unwrap();
+        assert!(pos.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_sync_log_no_region() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+
+        db.record_sync("cwop", None, 1000, 5000).await.unwrap();
+
+        let last = db.last_sync("cwop", None).await.unwrap().unwrap();
+        assert_eq!(last.source, "cwop");
+        assert!(last.region.is_none());
+        assert_eq!(last.station_count, Some(1000));
+    }
+
+    #[tokio::test]
+    async fn test_sync_log_region_isolation() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+
+        db.record_sync("cwop", Some("ME"), 137, 500).await.unwrap();
+        db.record_sync("cwop", Some("CA"), 900, 2000).await.unwrap();
+
+        let me = db.last_sync("cwop", Some("ME")).await.unwrap().unwrap();
+        assert_eq!(me.station_count, Some(137));
+
+        let ca = db.last_sync("cwop", Some("CA")).await.unwrap().unwrap();
+        assert_eq!(ca.station_count, Some(900));
+
+        // No-region query should find nothing (separate from per-region)
+        let none = db.last_sync("cwop", None).await.unwrap();
+        assert!(none.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_count_by_source_empty() {
+        let db = ReferenceDb::open_memory().await.unwrap();
+        let counts = db.count_by_source().await.unwrap();
+        assert!(counts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_default_db_path() {
+        let path = default_db_path();
+        assert!(path.to_str().unwrap().contains("reference.db"));
+    }
 }

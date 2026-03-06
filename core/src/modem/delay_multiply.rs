@@ -48,7 +48,7 @@ impl DelayMultiplyDetector {
 
     /// Create with an explicit delay value (for testing or tuning).
     pub fn with_delay(delay: usize, lpf: BiquadFilter) -> Self {
-        assert!(delay > 0 && delay < MAX_DELAY);
+        let delay = delay.clamp(1, MAX_DELAY - 1);
         Self {
             delay_line: [0i16; MAX_DELAY],
             write_pos: 0,

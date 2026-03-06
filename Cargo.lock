@@ -130,6 +130,7 @@ dependencies = [
  "futures",
  "open",
  "packet-radio-core",
+ "packet-radio-shared",
  "reference",
  "reqwest",
  "rust-embed",

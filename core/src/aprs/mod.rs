@@ -564,6 +564,7 @@ fn compressed_range(n: u32) -> u16 {
 
 /// Compute 1.002^n (altitude in feet) using integer math.
 fn compressed_altitude(n: u32) -> i32 {
+    let n = n.min(4600);
     // 1.002^n — use iterative multiply with high-precision fixed-point
     let mut val = 1_000_000u64; // ×1e6
     for _ in 0..n {

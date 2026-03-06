@@ -845,11 +845,12 @@ mod tests {
         // Max amplitude input should not overflow
         for _ in 0..1000 {
             let out = filt.process(32767);
-            assert!(out >= -32768 && out <= 32767);
+            // out is i16, so it's always in range — just ensure no panic
+            let _ = out;
         }
         for _ in 0..1000 {
             let out = filt.process(-32768);
-            assert!(out >= -32768 && out <= 32767);
+            let _ = out;
         }
     }
 

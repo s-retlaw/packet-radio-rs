@@ -11,6 +11,8 @@ use packet_radio_core::kiss;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+const MAX_CLIENTS: u32 = 8;
+
 /// Run the bidirectional KISS TCP server.
 ///
 /// - `frame_tx`: broadcast channel for RX frames → clients
@@ -22,7 +24,7 @@ pub async fn run_bidirectional(
     kiss_in: CrossbeamSender<Vec<u8>>,
     client_count: Arc<AtomicU32>,
 ) {
-    let listener = match TcpListener::bind(format!("0.0.0.0:{port}")).await {
+    let listener = match TcpListener::bind(format!("127.0.0.1:{port}")).await {
         Ok(l) => l,
         Err(e) => {
             tracing::error!("KISS TCP bind failed on port {port}: {e}");
@@ -30,11 +32,17 @@ pub async fn run_bidirectional(
         }
     };
 
-    tracing::info!("KISS TCP server listening on port {port}");
+    tracing::info!("KISS TCP server listening on 127.0.0.1:{port}");
 
     loop {
         match listener.accept().await {
             Ok((socket, addr)) => {
+                let current = client_count.load(Ordering::Relaxed);
+                if current >= MAX_CLIENTS {
+                    tracing::warn!("KISS TCP: rejecting connection from {addr} (max {MAX_CLIENTS} clients)");
+                    drop(socket);
+                    continue;
+                }
                 tracing::info!("KISS client connected from {addr}");
                 client_count.fetch_add(1, Ordering::Relaxed);
                 let client_count = client_count.clone();
@@ -69,7 +77,9 @@ pub async fn run_bidirectional(
                                 match result {
                                     Ok(0) => break, // Client disconnected
                                     Ok(n) => {
-                                        let _ = kiss_in.try_send(read_buf[..n].to_vec());
+                                        if kiss_in.try_send(read_buf[..n].to_vec()).is_err() {
+                                            tracing::trace!("KISS TX channel full, dropping {} bytes from {addr}", n);
+                                        }
                                     }
                                     Err(e) => {
                                         tracing::debug!("KISS client {addr} read error: {e}");
