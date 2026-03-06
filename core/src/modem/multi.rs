@@ -196,7 +196,7 @@ impl MultiDecoder {
             for o in 0..3 {
                 if idx < MAX_DECODERS {
                     decoders[idx] =
-                        FastDemodulator::with_filter_and_offset(config, filters[f], offsets[o]);
+                        FastDemodulator::new(config).filter(filters[f]).phase_offset(offsets[o]);
                     idx += 1;
                 }
             }
@@ -225,9 +225,8 @@ impl MultiDecoder {
                 let timing_variants = if offset.abs() <= small_limit { &offsets[..] } else { &offsets[..1] };
                 for &phase in timing_variants {
                     if idx < MAX_DECODERS {
-                        decoders[idx] = FastDemodulator::with_filter_freq_and_offset(
-                            config, bpf, phase, mark, space,
-                        );
+                        decoders[idx] = FastDemodulator::new(config)
+                            .filter(bpf).phase_offset(phase).frequencies(mark, space);
                         idx += 1;
                     }
                 }
@@ -241,9 +240,8 @@ impl MultiDecoder {
                 if idx < MAX_DECODERS {
                     let mark = (config.mark_freq as i32 + offset) as u32;
                     let space = (config.space_freq as i32 + offset) as u32;
-                    decoders[idx] = FastDemodulator::with_filter_freq_and_offset(
-                        config, wide_bpf, 0, mark, space,
-                    );
+                    decoders[idx] = FastDemodulator::new(config)
+                        .filter(wide_bpf).phase_offset(0).frequencies(mark, space);
                     idx += 1;
                 }
             }
@@ -253,7 +251,7 @@ impl MultiDecoder {
         // These replace 3 of the static gain decoders.
         for f in 0..3 {
             if idx < MAX_DECODERS {
-                decoders[idx] = FastDemodulator::with_filter(config, filters[f]).with_agc();
+                decoders[idx] = FastDemodulator::new(config).filter(filters[f]).with_agc();
                 idx += 1;
             }
         }
@@ -311,9 +309,9 @@ impl MultiDecoder {
                     let space = (config.space_freq as i32 + offset) as u32;
                     let center = center_freq + offset as f64;
                     let bpf = super::filter::bandpass_coeffs(config.sample_rate, center, bpf_bw);
-                    decoders[idx] = FastDemodulator::with_filter_freq_and_offset(
-                        config, bpf, 0, mark, space,
-                    ).with_space_gain(gain);
+                    decoders[idx] = FastDemodulator::new(config)
+                        .filter(bpf).frequencies(mark, space)
+                        .with_space_gain(gain);
                     idx += 1;
                 }
             }
@@ -460,7 +458,7 @@ impl MultiDecoder {
         for f in filters {
             for &o in timing_offsets {
                 if idx < MAX_DECODERS {
-                    decoders[idx] = FastDemodulator::with_filter_and_offset(config, *f, o);
+                    decoders[idx] = FastDemodulator::new(config).filter(*f).phase_offset(o);
                     idx += 1;
                 }
             }
@@ -730,11 +728,11 @@ impl MiniDecoder {
                 _ => super::filter::afsk_300_bandpass_11025(),
             };
             [
-                FastDemodulator::with_filter_and_offset(config, std_bpf, offsets[1])
+                FastDemodulator::new(config).filter(std_bpf).phase_offset(offsets[1])
                     .with_energy_llr(),
-                FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[0])
+                FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[0])
                     .with_energy_llr(),
-                FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[2])
+                FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[2])
                     .with_energy_llr(),
             ]
         } else {
@@ -754,12 +752,11 @@ impl MiniDecoder {
                 _ => super::filter::afsk_bandpass_wide_11025(),
             };
             [
-                FastDemodulator::with_filter_freq_and_offset(
-                    config, shifted_bpf, offsets[2], mark_shifted, space_shifted,
-                ).with_energy_llr(),
-                FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[0])
+                FastDemodulator::new(config).filter(shifted_bpf).phase_offset(offsets[2])
+                    .frequencies(mark_shifted, space_shifted).with_energy_llr(),
+                FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[0])
                     .with_energy_llr(),
-                FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[1])
+                FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[1])
                     .with_energy_llr(),
             ]
         };
@@ -974,25 +971,24 @@ impl TwistMiniDecoder {
 
         let decoders = [
             // Smart3 original 3
-            FastDemodulator::with_filter_freq_and_offset(
-                config, shifted_bpf, offsets[2], mark_shifted, space_shifted,
-            ).with_energy_llr(),
-            FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[0])
+            FastDemodulator::new(config).filter(shifted_bpf).phase_offset(offsets[2])
+                .frequencies(mark_shifted, space_shifted).with_energy_llr(),
+            FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[0])
                 .with_energy_llr(),
-            FastDemodulator::with_filter_and_offset(config, narrow_bpf, offsets[1])
+            FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[1])
                 .with_energy_llr(),
             // Twist decoder 4: BPF+0Hz, gain=+1.5dB (362 Q8)
             // At 12k: t2 (top T2 winner); otherwise: t0
-            FastDemodulator::with_filter_and_offset(config, std_bpf, twist4_phase)
+            FastDemodulator::new(config).filter(std_bpf).phase_offset(twist4_phase)
                 .with_space_gain(362)
                 .with_energy_llr(),
             // Twist decoder 5: BPF+200Hz (or +300Hz@12k), gain=+1.5dB (362 Q8), t2
-            FastDemodulator::with_filter_and_offset(config, bpf_twist5, twist5_phase)
+            FastDemodulator::new(config).filter(bpf_twist5).phase_offset(twist5_phase)
                 .with_space_gain(362)
                 .with_energy_llr(),
             // Twist decoder 6: BPF-200Hz, gain=0dB
             // At 12k: t1; otherwise: t0
-            FastDemodulator::with_filter_and_offset(config, bpf_minus200, twist6_phase)
+            FastDemodulator::new(config).filter(bpf_minus200).phase_offset(twist6_phase)
                 .with_energy_llr(),
         ];
 

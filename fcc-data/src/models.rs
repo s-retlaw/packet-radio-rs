@@ -141,7 +141,7 @@ pub struct CoRecord {
 }
 
 /// Full license record joined from HD+EN+AM for search results.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct LicenseRecord {
     pub usi: i64,
     pub call_sign: String,
@@ -231,7 +231,7 @@ pub struct ZipCentroid {
 }
 
 /// Sync log entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SyncLogEntry {
     pub id: i64,
     pub sync_type: String,

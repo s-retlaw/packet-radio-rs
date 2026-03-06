@@ -2,6 +2,73 @@ use sqlx::{Row, SqlitePool};
 
 use crate::models::{CoverageStation, MessageRow, PacketRow, StationRow, TrackPoint, WebWeather, WeatherHistoryPoint};
 
+/// Run all database migrations in order. Idempotent — safe to call on every startup.
+pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    // 001: initial schema
+    sqlx::query(include_str!("../../migrations/001_initial.sql"))
+        .execute(pool)
+        .await?;
+
+    // 002: weather_history table + index
+    for stmt in [
+        "CREATE TABLE IF NOT EXISTS weather_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            callsign TEXT NOT NULL,
+            ssid INTEGER NOT NULL DEFAULT 0,
+            temperature INTEGER,
+            wind_speed INTEGER,
+            wind_direction INTEGER,
+            wind_gust INTEGER,
+            humidity INTEGER,
+            barometric_pressure INTEGER,
+            rain_last_hour INTEGER,
+            rain_24h INTEGER,
+            luminosity INTEGER,
+            recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+        "CREATE INDEX IF NOT EXISTS idx_weather_history_call
+         ON weather_history(callsign, ssid, recorded_at)",
+    ] {
+        sqlx::query(stmt).execute(pool).await?;
+    }
+
+    // 002: ALTER TABLE columns — ignore errors if columns already exist
+    for stmt in [
+        "ALTER TABLE packets ADD COLUMN source_type TEXT NOT NULL DEFAULT 'unknown'",
+        "ALTER TABLE stations ADD COLUMN heard_via TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE stations ADD COLUMN last_source_type TEXT NOT NULL DEFAULT 'unknown'",
+        "ALTER TABLE stations ADD COLUMN last_path TEXT",
+    ] {
+        let _ = sqlx::query(stmt).execute(pool).await;
+    }
+
+    // 003: rf_links table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS rf_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hearer TEXT NOT NULL,
+            hearer_ssid INTEGER NOT NULL DEFAULT 0,
+            heard TEXT NOT NULL,
+            heard_ssid INTEGER NOT NULL DEFAULT 0,
+            link_type TEXT NOT NULL,
+            packet_count INTEGER NOT NULL DEFAULT 1,
+            last_seen TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(hearer, hearer_ssid, heard, heard_ssid, link_type)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    for stmt in [
+        "CREATE INDEX IF NOT EXISTS idx_rf_links_hearer ON rf_links(hearer, hearer_ssid)",
+        "CREATE INDEX IF NOT EXISTS idx_rf_links_heard ON rf_links(heard, heard_ssid)",
+    ] {
+        sqlx::query(stmt).execute(pool).await?;
+    }
+
+    Ok(())
+}
+
 /// Insert a decoded packet into the database.
 pub async fn insert_packet(
     pool: &SqlitePool,

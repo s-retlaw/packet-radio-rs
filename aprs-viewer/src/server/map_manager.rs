@@ -1,10 +1,36 @@
 use crate::models::MapPack;
+use super::error::ServerError;
 use std::path::Path;
+
+/// Allowed domains for map tile downloads.
+const ALLOWED_DOWNLOAD_DOMAINS: &[&str] = &[
+    "build.protomaps.com",
+    "maps.protomaps.com",
+    "r2-public.protomaps.com",
+];
+
+/// Check whether a URL points to an allowed download domain.
+fn is_allowed_url(url: &str) -> bool {
+    let parsed = match url::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+
+    // Must be HTTPS
+    if parsed.scheme() != "https" {
+        return false;
+    }
+
+    match parsed.host_str() {
+        Some(host) => ALLOWED_DOWNLOAD_DOMAINS.iter().any(|&d| host == d),
+        None => false,
+    }
+}
 
 /// List installed PMTiles packs in the maps directory.
 pub async fn list_installed_packs(
     maps_dir: &str,
-) -> Result<Vec<MapPack>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Vec<MapPack>, ServerError> {
     let mut packs = Vec::new();
     let dir = Path::new(maps_dir);
 
@@ -47,19 +73,19 @@ pub async fn list_installed_packs(
 pub async fn delete_pack(
     maps_dir: &str,
     filename: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), ServerError> {
     // Safety: reject traversal
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return Err("Invalid filename".into());
+        return Err(ServerError::InvalidInput("Invalid filename".into()));
     }
 
     if !filename.ends_with(".pmtiles") {
-        return Err("Can only delete .pmtiles files".into());
+        return Err(ServerError::InvalidInput("Can only delete .pmtiles files".into()));
     }
 
     let path = Path::new(maps_dir).join(filename);
     if !path.exists() {
-        return Err("File not found".into());
+        return Err(ServerError::InvalidInput("File not found".into()));
     }
 
     tokio::fs::remove_file(&path).await?;
@@ -67,18 +93,27 @@ pub async fn delete_pack(
 }
 
 /// Download a map pack from a URL to the maps directory.
+///
+/// Only allows downloads from known tile server domains to prevent SSRF.
 pub async fn download_pack(
     url: &str,
     filename: &str,
     maps_dir: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), ServerError> {
     // Safety: reject traversal
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return Err("Invalid filename".into());
+        return Err(ServerError::InvalidInput("Invalid filename".into()));
     }
 
     if !filename.ends_with(".pmtiles") {
-        return Err("Filename must end with .pmtiles".into());
+        return Err(ServerError::InvalidInput("Filename must end with .pmtiles".into()));
+    }
+
+    // SSRF protection: only allow known tile server domains
+    if !is_allowed_url(url) {
+        return Err(ServerError::InvalidInput(
+            "URL not allowed: must be HTTPS from a known tile server domain".into(),
+        ));
     }
 
     // Create maps dir if needed
@@ -89,7 +124,7 @@ pub async fn download_pack(
     // Download using reqwest
     let response = reqwest::get(url).await?;
     if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status()).into());
+        return Err(ServerError::InvalidInput(format!("HTTP {}", response.status())));
     }
 
     let bytes = response.bytes().await?;
@@ -176,5 +211,44 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let result = delete_pack(dir.path().to_str().unwrap(), "missing.pmtiles").await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_allowed_url_valid() {
+        assert!(is_allowed_url("https://build.protomaps.com/20260301.pmtiles"));
+        assert!(is_allowed_url("https://maps.protomaps.com/some/path.pmtiles"));
+        assert!(is_allowed_url("https://r2-public.protomaps.com/file.pmtiles"));
+    }
+
+    #[test]
+    fn test_is_allowed_url_rejects_http() {
+        assert!(!is_allowed_url("http://build.protomaps.com/file.pmtiles"));
+    }
+
+    #[test]
+    fn test_is_allowed_url_rejects_unknown_domain() {
+        assert!(!is_allowed_url("https://evil.com/file.pmtiles"));
+        assert!(!is_allowed_url("https://localhost/file.pmtiles"));
+        assert!(!is_allowed_url("https://127.0.0.1/file.pmtiles"));
+        assert!(!is_allowed_url("https://192.168.1.1/file.pmtiles"));
+    }
+
+    #[test]
+    fn test_is_allowed_url_rejects_invalid() {
+        assert!(!is_allowed_url("not-a-url"));
+        assert!(!is_allowed_url(""));
+    }
+
+    #[tokio::test]
+    async fn test_download_pack_ssrf_rejected() {
+        let dir = TempDir::new().unwrap();
+        let result = download_pack(
+            "https://evil.com/malicious.pmtiles",
+            "test.pmtiles",
+            dir.path().to_str().unwrap(),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("URL not allowed"));
     }
 }

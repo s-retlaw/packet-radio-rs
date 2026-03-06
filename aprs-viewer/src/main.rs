@@ -34,84 +34,9 @@ async fn main() {
         .expect("Failed to connect to SQLite");
 
     // Run migrations
-    sqlx::query(include_str!("../migrations/001_initial.sql"))
-        .execute(&pool)
+    aprs_viewer::server::db::run_migrations(&pool)
         .await
-        .expect("Failed to run migration 001");
-
-    // Run 002 migration — individual statements since SQLite doesn't batch ALTER TABLE
-    for stmt in [
-        "CREATE TABLE IF NOT EXISTS weather_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            callsign TEXT NOT NULL,
-            ssid INTEGER NOT NULL DEFAULT 0,
-            temperature INTEGER,
-            wind_speed INTEGER,
-            wind_direction INTEGER,
-            wind_gust INTEGER,
-            humidity INTEGER,
-            barometric_pressure INTEGER,
-            rain_last_hour INTEGER,
-            rain_24h INTEGER,
-            luminosity INTEGER,
-            recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-        "CREATE INDEX IF NOT EXISTS idx_weather_history_call
-         ON weather_history(callsign, ssid, recorded_at)",
-    ] {
-        sqlx::query(stmt).execute(&pool).await.expect("Failed to run migration 002");
-    }
-    // ALTER TABLE columns — ignore errors if columns already exist
-    for stmt in [
-        "ALTER TABLE packets ADD COLUMN source_type TEXT NOT NULL DEFAULT 'unknown'",
-        "ALTER TABLE stations ADD COLUMN heard_via TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE stations ADD COLUMN last_source_type TEXT NOT NULL DEFAULT 'unknown'",
-        "ALTER TABLE stations ADD COLUMN last_path TEXT",
-    ] {
-        let _ = sqlx::query(stmt).execute(&pool).await;
-    }
-    // 003: rf_links table
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS rf_links (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hearer TEXT NOT NULL,
-            hearer_ssid INTEGER NOT NULL DEFAULT 0,
-            heard TEXT NOT NULL,
-            heard_ssid INTEGER NOT NULL DEFAULT 0,
-            link_type TEXT NOT NULL,
-            packet_count INTEGER NOT NULL DEFAULT 1,
-            last_seen TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(hearer, hearer_ssid, heard, heard_ssid, link_type)
-        )",
-    )
-    .execute(&pool)
-    .await
-    .expect("Failed to create rf_links table");
-    for stmt in [
-        "CREATE INDEX IF NOT EXISTS idx_rf_links_hearer ON rf_links(hearer, hearer_ssid)",
-        "CREATE INDEX IF NOT EXISTS idx_rf_links_heard ON rf_links(heard, heard_ssid)",
-    ] {
-        sqlx::query(stmt).execute(&pool).await.expect("Failed to create rf_links index");
-    }
-
-    // Backfill existing data as aprs-is (idempotent)
-    for stmt in [
-        "UPDATE packets SET source_type = 'aprs-is' WHERE source_type = 'unknown'",
-        "UPDATE stations SET heard_via = 'aprs-is' WHERE heard_via = ''",
-        "UPDATE stations SET last_source_type = 'aprs-is' WHERE last_source_type = 'unknown'",
-    ] {
-        let _ = sqlx::query(stmt).execute(&pool).await;
-    }
-
-    // Clean up bogus (0,0) position history (idempotent)
-    let deleted = sqlx::query("DELETE FROM position_history WHERE abs(lat) < 0.1 AND abs(lon) < 0.1")
-        .execute(&pool)
-        .await
-        .unwrap_or_default()
-        .rows_affected();
-    if deleted > 0 {
-        tracing::info!("Cleaned up {} bogus (0,0) position_history rows", deleted);
-    }
+        .expect("Failed to run database migrations");
 
     // Broadcast channel for WebSocket events
     let (packet_tx, _) = broadcast::channel::<String>(256);
@@ -230,7 +155,13 @@ async fn main() {
             }
 
             let max_age = std::time::Duration::from_secs(sync_interval_hours as u64 * 3600);
-            let fetcher = reference::cwop::fetcher::HttpFetcher::new();
+            let fetcher = match reference::cwop::fetcher::HttpFetcher::new() {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::error!("Failed to create CWOP HTTP fetcher: {}", e);
+                    return;
+                }
+            };
 
             // We need to clone the inner pool to create a new ReferenceDb for CwopSource.
             // CwopSource takes ownership, so we re-open at the same path.

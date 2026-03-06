@@ -10,4 +10,5 @@ name = "benchmark"
 path = "main.rs"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 packet-radio-core = { path = "../../core", features = ["std", "multi-decoder", "attribution", "9600-baud"] }

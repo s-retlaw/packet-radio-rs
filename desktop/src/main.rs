@@ -75,10 +75,9 @@ fn run_tui_mode(cli: cli::Cli) {
     if cli.sample_rate != 11025 {
         tnc_config.audio.sample_rate = cli.sample_rate;
     }
-    let cli_mode = cli.demod_mode();
-    if cli_mode != "fast" {
-        // "fast" is the CLI default — only override if user explicitly chose something
-        tnc_config.modem.mode = cli_mode.to_string();
+    if cli.mode != cli::DemodMode::Fast {
+        // Fast is the CLI default — only override if user explicitly chose something
+        tnc_config.modem.mode = cli.mode.as_str().to_string();
     }
     if cli.kiss_port != 8001 {
         tnc_config.kiss.port = cli.kiss_port;
@@ -218,211 +217,21 @@ fn run_audio_loop(
 ) {
     let mut frame_count: u64 = 0;
     let mut audio_buf = [0i16; 1024];
+    let demod_mode = cli::DemodMode::from_config_str(mode);
+    let mut decoder = UnifiedDecoder::new(&demod_mode, config);
 
-    match mode {
-        "multi" => {
-            let mut multi = MultiDecoder::new(config);
-            loop {
-                if stop.load(Ordering::Relaxed) { break; }
-                let n = source.read_samples(&mut audio_buf);
-                if n == 0 {
-                    if is_wav { break; }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                let output = multi.process_samples(&audio_buf[..n]);
-                for i in 0..output.len() {
-                    frame_count += 1;
-                    emit_tui_frame(frame_count, output.frame(i), async_tx, kiss_frame_tx);
-                }
-            }
+    loop {
+        if stop.load(Ordering::Relaxed) { break; }
+        let n = source.read_samples(&mut audio_buf);
+        if n == 0 {
+            if is_wav { break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
         }
-        "smart3" => {
-            let mut mini = MiniDecoder::new(config);
-            loop {
-                if stop.load(Ordering::Relaxed) { break; }
-                let n = source.read_samples(&mut audio_buf);
-                if n == 0 {
-                    if is_wav { break; }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                let output = mini.process_samples(&audio_buf[..n]);
-                for i in 0..output.len() {
-                    frame_count += 1;
-                    emit_tui_frame(frame_count, output.frame(i), async_tx, kiss_frame_tx);
-                }
-            }
-        }
-        "corr-slicer" => {
-            let mut decoder = CorrSlicerDecoder::new(config).with_adaptive_gain();
-            loop {
-                if stop.load(Ordering::Relaxed) { break; }
-                let n = source.read_samples(&mut audio_buf);
-                if n == 0 {
-                    if is_wav { break; }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                let output = decoder.process_samples(&audio_buf[..n]);
-                for i in 0..output.len() {
-                    frame_count += 1;
-                    emit_tui_frame(frame_count, output.frame(i), async_tx, kiss_frame_tx);
-                }
-            }
-        }
-        "dm" => {
-            let mut demod = DmDemodulator::with_bpf_pll(config);
-            let mut soft_hdlc = SoftHdlcDecoder::new();
-            let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-            loop {
-                if stop.load(Ordering::Relaxed) { break; }
-                let n = source.read_samples(&mut audio_buf);
-                if n == 0 {
-                    if is_wav { break; }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
-                for i in 0..ns {
-                    if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                        frame_count += 1;
-                        let data = match &result {
-                            FrameResult::Valid(d) => *d,
-                            FrameResult::Recovered { data, .. } => *data,
-                        };
-                        emit_tui_frame(frame_count, data, async_tx, kiss_frame_tx);
-                    }
-                }
-            }
-        }
-        "xor" => {
-            let mut demod = BinaryXorDemodulator::new(config);
-            let mut soft_hdlc = SoftHdlcDecoder::new();
-            let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-            loop {
-                if stop.load(Ordering::Relaxed) { break; }
-                let n = source.read_samples(&mut audio_buf);
-                if n == 0 {
-                    if is_wav { break; }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
-                for i in 0..ns {
-                    if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                        frame_count += 1;
-                        let data = match &result {
-                            FrameResult::Valid(d) => *d,
-                            FrameResult::Recovered { data, .. } => *data,
-                        };
-                        emit_tui_frame(frame_count, data, async_tx, kiss_frame_tx);
-                    }
-                }
-            }
-        }
-        "corr" => {
-            let mut demod = CorrelationDemodulator::new(config)
-                .with_adaptive_gain()
-                .with_energy_llr();
-            let mut soft_hdlc = SoftHdlcDecoder::new();
-            let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-            loop {
-                if stop.load(Ordering::Relaxed) { break; }
-                let n = source.read_samples(&mut audio_buf);
-                if n == 0 {
-                    if is_wav { break; }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
-                for i in 0..ns {
-                    if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                        frame_count += 1;
-                        let data = match &result {
-                            FrameResult::Valid(d) => *d,
-                            FrameResult::Recovered { data, .. } => *data,
-                        };
-                        emit_tui_frame(frame_count, data, async_tx, kiss_frame_tx);
-                    }
-                }
-            }
-        }
-        "corr-pll" => {
-            let mut demod = CorrelationDemodulator::new(config)
-                .with_adaptive_gain()
-                .with_energy_llr()
-                .with_pll();
-            let mut soft_hdlc = SoftHdlcDecoder::new();
-            let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-            loop {
-                if stop.load(Ordering::Relaxed) { break; }
-                let n = source.read_samples(&mut audio_buf);
-                if n == 0 {
-                    if is_wav { break; }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
-                for i in 0..ns {
-                    if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                        frame_count += 1;
-                        let data = match &result {
-                            FrameResult::Valid(d) => *d,
-                            FrameResult::Recovered { data, .. } => *data,
-                        };
-                        emit_tui_frame(frame_count, data, async_tx, kiss_frame_tx);
-                    }
-                }
-            }
-        }
-        "quality" => {
-            let mut demod = QualityDemodulator::new(config);
-            let mut soft_hdlc = SoftHdlcDecoder::new();
-            let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-            loop {
-                if stop.load(Ordering::Relaxed) { break; }
-                let n = source.read_samples(&mut audio_buf);
-                if n == 0 {
-                    if is_wav { break; }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
-                for i in 0..ns {
-                    if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                        frame_count += 1;
-                        let data = match &result {
-                            FrameResult::Valid(d) => *d,
-                            FrameResult::Recovered { data, .. } => *data,
-                        };
-                        emit_tui_frame(frame_count, data, async_tx, kiss_frame_tx);
-                    }
-                }
-            }
-        }
-        _ => {
-            // Default: fast demodulator
-            let mut demod = FastDemodulator::new(config);
-            let mut hdlc = HdlcDecoder::new();
-            let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-            loop {
-                if stop.load(Ordering::Relaxed) { break; }
-                let n = source.read_samples(&mut audio_buf);
-                if n == 0 {
-                    if is_wav { break; }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
-                for i in 0..ns {
-                    if let Some(f) = hdlc.feed_bit(symbols[i].bit) {
-                        frame_count += 1;
-                        emit_tui_frame(frame_count, f, async_tx, kiss_frame_tx);
-                    }
-                }
-            }
-        }
+        decoder.process(&audio_buf[..n], &mut |data| {
+            frame_count += 1;
+            emit_tui_frame(frame_count, data, async_tx, kiss_frame_tx);
+        });
     }
 }
 
@@ -916,14 +725,7 @@ fn run_headless(cli: cli::Cli) {
             source,
             config,
             true, // always finite — break on EOF
-            cli.quality,
-            cli.multi,
-            cli.dm,
-            cli.smart3,
-            cli.corr,
-            cli.corr_slicer,
-            cli.corr_pll,
-            cli.xor,
+            &cli.mode,
         );
         return;
     }
@@ -938,7 +740,7 @@ fn run_headless(cli: cli::Cli) {
         let sample_rate = if cli.sample_rate == 11025 { 48000 } else { cli.sample_rate };
         let config_9600 = Demod9600Config::with_sample_rate(sample_rate);
         tracing::info!("9600 baud mode (sample rate {})", sample_rate);
-        if cli.multi {
+        if cli.mode == cli::DemodMode::Multi {
             process_loop_9600_multi(source, frame_tx, cli.wav.is_some(), config_9600, tx_pipeline)
         } else if cli.mini9600 {
             process_loop_9600_mini(source, frame_tx, cli.wav.is_some(), config_9600, tx_pipeline)
@@ -952,14 +754,7 @@ fn run_headless(cli: cli::Cli) {
             source,
             frame_tx,
             cli.wav.is_some(),
-            cli.quality,
-            cli.multi,
-            cli.dm,
-            cli.smart3,
-            cli.corr,
-            cli.corr_slicer,
-            cli.corr_pll,
-            cli.xor,
+            &cli.mode,
             effective_rate,
             cli.baud,
             tx_pipeline,
@@ -1128,534 +923,198 @@ fn demod_config_for_rate(rate: u32, baud: u32) -> DemodConfig {
 
 // ── Process Loops ───────────────────────────────────────────────────────
 
-/// Main DSP processing loop. Returns the TX pipeline (if any) for WAV writing.
-fn process_loop(
-    source: Box<dyn SampleSource>,
-    frame_tx: broadcast::Sender<Vec<u8>>,
-    is_wav: bool,
-    use_quality: bool,
-    use_multi: bool,
-    use_dm: bool,
-    use_smart3: bool,
-    use_corr: bool,
-    use_corr_slicer: bool,
-    use_corr_pll: bool,
-    use_xor: bool,
-    sample_rate: u32,
-    baud_rate: u32,
-    tx_pipeline: Option<TxPipeline>,
-) -> Option<TxPipeline> {
-    let config = demod_config_for_rate(sample_rate, baud_rate);
+// ── Unified Decoder ─────────────────────────────────────────────────────
 
-    if use_multi {
-        tracing::info!("using multi-decoder ({} parallel decoders)", {
-            let m = MultiDecoder::new(config);
-            m.num_decoders()
-        });
-        process_loop_multi(source, frame_tx, is_wav, config, tx_pipeline)
-    } else if use_smart3 {
-        tracing::info!("using smart3 mini-decoder (3 parallel decoders)");
-        process_loop_smart3(source, frame_tx, is_wav, config, tx_pipeline)
-    } else if use_corr_slicer {
-        tracing::info!("using correlation multi-slicer demodulator ({} slicers)", {
-            let d = CorrSlicerDecoder::new(config);
-            d.num_slicers()
-        });
-        process_loop_corr_slicer(source, frame_tx, is_wav, config, tx_pipeline)
-    } else if use_corr_pll {
-        tracing::info!("using correlation demodulator + Gardner PLL");
-        process_loop_corr_pll(source, frame_tx, is_wav, config, tx_pipeline)
-    } else if use_corr {
-        tracing::info!("using correlation (mixer) demodulator");
-        process_loop_corr(source, frame_tx, is_wav, config, tx_pipeline)
-    } else if use_dm {
-        tracing::info!("using delay-multiply demodulator");
-        process_loop_dm(source, frame_tx, is_wav, config, tx_pipeline)
-    } else if use_xor {
-        tracing::info!("using binary XOR correlator");
-        process_loop_xor(source, frame_tx, is_wav, config, tx_pipeline)
-    } else {
-        process_loop_single(source, frame_tx, is_wav, use_quality, config, tx_pipeline)
+/// Wraps all 1200/300 baud demodulator variants behind a single interface.
+/// Callers provide a frame callback; the decoder handles symbol->HDLC internally.
+enum UnifiedDecoder {
+    Multi(MultiDecoder),
+    Smart3(MiniDecoder),
+    CorrSlicer(CorrSlicerDecoder),
+    /// Symbol-producing demodulators that feed through SoftHdlcDecoder.
+    Soft {
+        demod: SoftDemod,
+        hdlc: SoftHdlcDecoder,
+        symbols: [DemodSymbol; 1024],
+    },
+    /// Fast demodulator with hard HDLC (no soft decode).
+    Fast {
+        demod: FastDemodulator,
+        hdlc: HdlcDecoder,
+        symbols: [DemodSymbol; 1024],
+    },
+}
+
+/// Symbol-producing demodulators that use soft HDLC.
+enum SoftDemod {
+    Quality(QualityDemodulator),
+    Dm(DmDemodulator),
+    Corr(CorrelationDemodulator),
+    CorrPll(CorrelationDemodulator),
+    Xor(BinaryXorDemodulator),
+}
+
+impl SoftDemod {
+    fn process_samples(&mut self, samples: &[i16], symbols: &mut [DemodSymbol]) -> usize {
+        match self {
+            SoftDemod::Quality(d) => d.process_samples(samples, symbols),
+            SoftDemod::Dm(d) => d.process_samples(samples, symbols),
+            SoftDemod::Corr(d) | SoftDemod::CorrPll(d) => d.process_samples(samples, symbols),
+            SoftDemod::Xor(d) => d.process_samples(samples, symbols),
+        }
     }
 }
 
-/// Multi-decoder processing loop.
-fn process_loop_multi(
-    mut source: Box<dyn SampleSource>,
-    frame_tx: broadcast::Sender<Vec<u8>>,
-    is_wav: bool,
-    config: DemodConfig,
-    mut tx: Option<TxPipeline>,
-) -> Option<TxPipeline> {
-    let mut multi = MultiDecoder::new(config);
-    let mut audio_buf = [0i16; 1024];
-    let mut frame_count: u64 = 0;
-
-    tracing::info!("processing audio at {} Hz", config.sample_rate);
-
-    loop {
-        let n = source.read_samples(&mut audio_buf);
-        if n == 0 {
-            if is_wav {
-                tracing::info!(
-                    "WAV file complete, decoded {} unique frames ({} total from {} decoders)",
-                    multi.total_unique, multi.total_decoded, multi.num_decoders()
-                );
-                break;
+impl UnifiedDecoder {
+    fn new(mode: &cli::DemodMode, config: DemodConfig) -> Self {
+        let zero_sym = DemodSymbol { bit: false, llr: 0 };
+        match mode {
+            cli::DemodMode::Multi => UnifiedDecoder::Multi(MultiDecoder::new(config)),
+            cli::DemodMode::Smart3 => UnifiedDecoder::Smart3(MiniDecoder::new(config)),
+            cli::DemodMode::CorrSlicer => {
+                UnifiedDecoder::CorrSlicer(CorrSlicerDecoder::new(config).with_adaptive_gain())
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            continue;
-        }
-
-        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-
-        let output = multi.process_samples(&audio_buf[..n]);
-        for i in 0..output.len() {
-            frame_count += 1;
-            let frame_data = output.frame(i).to_vec();
-            print_frame(frame_count, &frame_data);
-            let _ = frame_tx.send(frame_data);
+            cli::DemodMode::Quality => UnifiedDecoder::Soft {
+                demod: SoftDemod::Quality(QualityDemodulator::new(config)),
+                hdlc: SoftHdlcDecoder::new(),
+                symbols: [zero_sym; 1024],
+            },
+            cli::DemodMode::Dm => UnifiedDecoder::Soft {
+                demod: SoftDemod::Dm(DmDemodulator::with_bpf_pll(config)),
+                hdlc: SoftHdlcDecoder::new(),
+                symbols: [zero_sym; 1024],
+            },
+            cli::DemodMode::Corr => UnifiedDecoder::Soft {
+                demod: SoftDemod::Corr(
+                    CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr(),
+                ),
+                hdlc: SoftHdlcDecoder::new(),
+                symbols: [zero_sym; 1024],
+            },
+            cli::DemodMode::CorrPll => UnifiedDecoder::Soft {
+                demod: SoftDemod::CorrPll(
+                    CorrelationDemodulator::new(config)
+                        .with_adaptive_gain()
+                        .with_energy_llr()
+                        .with_pll(),
+                ),
+                hdlc: SoftHdlcDecoder::new(),
+                symbols: [zero_sym; 1024],
+            },
+            cli::DemodMode::Xor => UnifiedDecoder::Soft {
+                demod: SoftDemod::Xor(BinaryXorDemodulator::new(config)),
+                hdlc: SoftHdlcDecoder::new(),
+                symbols: [zero_sym; 1024],
+            },
+            cli::DemodMode::Fast => UnifiedDecoder::Fast {
+                demod: FastDemodulator::new(config),
+                hdlc: HdlcDecoder::new(),
+                symbols: [zero_sym; 1024],
+            },
         }
     }
 
-    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-    tx
-}
-
-/// Smart3 mini-decoder processing loop (3 attribution-optimal decoders).
-fn process_loop_smart3(
-    mut source: Box<dyn SampleSource>,
-    frame_tx: broadcast::Sender<Vec<u8>>,
-    is_wav: bool,
-    config: DemodConfig,
-    mut tx: Option<TxPipeline>,
-) -> Option<TxPipeline> {
-    let mut mini = MiniDecoder::new(config);
-    let mut audio_buf = [0i16; 1024];
-    let mut frame_count: u64 = 0;
-
-    tracing::info!("processing audio at {} Hz", config.sample_rate);
-
-    loop {
-        let n = source.read_samples(&mut audio_buf);
-        if n == 0 {
-            if is_wav {
-                tracing::info!(
-                    "WAV file complete, decoded {} unique frames ({} total from {} decoders)",
-                    mini.total_unique, mini.total_decoded, mini.num_decoders()
-                );
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            continue;
-        }
-
-        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-
-        let output = mini.process_samples(&audio_buf[..n]);
-        for i in 0..output.len() {
-            frame_count += 1;
-            let frame_data = output.frame(i).to_vec();
-            print_frame(frame_count, &frame_data);
-            let _ = frame_tx.send(frame_data);
-        }
-    }
-
-    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-    tx
-}
-
-/// Delay-multiply demodulator processing loop (Gardner PLL + soft HDLC).
-fn process_loop_dm(
-    mut source: Box<dyn SampleSource>,
-    frame_tx: broadcast::Sender<Vec<u8>>,
-    is_wav: bool,
-    config: DemodConfig,
-    mut tx: Option<TxPipeline>,
-) -> Option<TxPipeline> {
-    let mut demod = DmDemodulator::with_bpf_pll(config);
-    let mut soft_hdlc = SoftHdlcDecoder::new();
-    let mut audio_buf = [0i16; 1024];
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-    let mut frame_count: u64 = 0;
-    let mut soft_saves: u32 = 0;
-
-    tracing::info!("processing audio at {} Hz (delay-multiply + Gardner PLL + soft HDLC)", config.sample_rate);
-
-    loop {
-        let n = source.read_samples(&mut audio_buf);
-        if n == 0 {
-            if is_wav {
-                if soft_saves > 0 {
-                    tracing::info!("WAV file complete, decoded {frame_count} frames ({soft_saves} soft recoveries)");
-                } else {
-                    tracing::info!("WAV file complete, decoded {frame_count} frames");
+    /// Process audio samples and call `emit` for each decoded frame.
+    fn process(&mut self, samples: &[i16], emit: &mut dyn FnMut(&[u8])) {
+        match self {
+            UnifiedDecoder::Multi(dec) => {
+                let output = dec.process_samples(samples);
+                for i in 0..output.len() {
+                    emit(output.frame(i));
                 }
-                break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            continue;
-        }
-
-        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-
-        let num_symbols = demod.process_samples(&audio_buf[..n], &mut symbols);
-        for i in 0..num_symbols {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                if let FrameResult::Recovered { flips, .. } = &result {
-                    soft_saves += 1;
-                    tracing::debug!("soft recovery: {flips} bit(s) corrected");
+            UnifiedDecoder::Smart3(dec) => {
+                let output = dec.process_samples(samples);
+                for i in 0..output.len() {
+                    emit(output.frame(i));
                 }
-                let data = match &result {
-                    FrameResult::Valid(d) => *d,
-                    FrameResult::Recovered { data, .. } => *data,
-                };
-                frame_count += 1;
-                let frame_data = data.to_vec();
-                print_frame(frame_count, &frame_data);
-                let _ = frame_tx.send(frame_data);
             }
-        }
-    }
-
-    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-    tx
-}
-
-/// Binary XOR correlator processing loop + soft HDLC.
-fn process_loop_xor(
-    mut source: Box<dyn SampleSource>,
-    frame_tx: broadcast::Sender<Vec<u8>>,
-    is_wav: bool,
-    config: DemodConfig,
-    mut tx: Option<TxPipeline>,
-) -> Option<TxPipeline> {
-    let mut demod = BinaryXorDemodulator::new(config);
-    let mut soft_hdlc = SoftHdlcDecoder::new();
-    let mut audio_buf = [0i16; 1024];
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-    let mut frame_count: u64 = 0;
-    let mut soft_saves: u32 = 0;
-
-    tracing::info!("processing audio at {} Hz (binary XOR correlator + soft HDLC)", config.sample_rate);
-
-    loop {
-        let n = source.read_samples(&mut audio_buf);
-        if n == 0 {
-            if is_wav {
-                if soft_saves > 0 {
-                    tracing::info!("WAV file complete, decoded {frame_count} frames ({soft_saves} soft recoveries)");
-                } else {
-                    tracing::info!("WAV file complete, decoded {frame_count} frames");
+            UnifiedDecoder::CorrSlicer(dec) => {
+                let output = dec.process_samples(samples);
+                for i in 0..output.len() {
+                    emit(output.frame(i));
                 }
-                break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            continue;
-        }
-
-        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-
-        let num_symbols = demod.process_samples(&audio_buf[..n], &mut symbols);
-        for i in 0..num_symbols {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                if let FrameResult::Recovered { flips, .. } = &result {
-                    soft_saves += 1;
-                    tracing::debug!("soft recovery: {flips} bit(s) corrected");
-                }
-                let data = match &result {
-                    FrameResult::Valid(d) => *d,
-                    FrameResult::Recovered { data, .. } => *data,
-                };
-                frame_count += 1;
-                let frame_data = data.to_vec();
-                print_frame(frame_count, &frame_data);
-                let _ = frame_tx.send(frame_data);
-            }
-        }
-    }
-
-    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-    tx
-}
-
-/// Correlation multi-slicer demodulator processing loop.
-fn process_loop_corr_slicer(
-    mut source: Box<dyn SampleSource>,
-    frame_tx: broadcast::Sender<Vec<u8>>,
-    is_wav: bool,
-    config: DemodConfig,
-    mut tx: Option<TxPipeline>,
-) -> Option<TxPipeline> {
-    let mut decoder = CorrSlicerDecoder::new(config).with_adaptive_gain();
-    let mut audio_buf = [0i16; 1024];
-    let mut frame_count: u64 = 0;
-
-    tracing::info!("processing audio at {} Hz (correlation multi-slicer, {} slicers)",
-        config.sample_rate, decoder.num_slicers());
-
-    loop {
-        let n = source.read_samples(&mut audio_buf);
-        if n == 0 {
-            if is_wav {
-                tracing::info!(
-                    "WAV file complete, decoded {} unique frames ({} total from {} slicers)",
-                    decoder.total_unique, decoder.total_decoded, decoder.num_slicers()
-                );
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            continue;
-        }
-
-        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-
-        let output = decoder.process_samples(&audio_buf[..n]);
-        for i in 0..output.len() {
-            frame_count += 1;
-            let frame_data = output.frame(i).to_vec();
-            print_frame(frame_count, &frame_data);
-            let _ = frame_tx.send(frame_data);
-        }
-    }
-
-    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-    tx
-}
-
-/// Correlation (mixer) demodulator processing loop + soft HDLC.
-fn process_loop_corr(
-    mut source: Box<dyn SampleSource>,
-    frame_tx: broadcast::Sender<Vec<u8>>,
-    is_wav: bool,
-    config: DemodConfig,
-    mut tx: Option<TxPipeline>,
-) -> Option<TxPipeline> {
-    let mut demod = CorrelationDemodulator::new(config)
-        .with_adaptive_gain()
-        .with_energy_llr();
-    let mut soft_hdlc = SoftHdlcDecoder::new();
-    let mut audio_buf = [0i16; 1024];
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-    let mut frame_count: u64 = 0;
-    let mut soft_saves: u32 = 0;
-
-    tracing::info!("processing audio at {} Hz (correlation mixer + soft HDLC)", config.sample_rate);
-
-    loop {
-        let n = source.read_samples(&mut audio_buf);
-        if n == 0 {
-            if is_wav {
-                if soft_saves > 0 {
-                    tracing::info!("WAV file complete, decoded {frame_count} frames ({soft_saves} soft recoveries)");
-                } else {
-                    tracing::info!("WAV file complete, decoded {frame_count} frames");
-                }
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            continue;
-        }
-
-        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-
-        let num_symbols = demod.process_samples(&audio_buf[..n], &mut symbols);
-        for i in 0..num_symbols {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                if let FrameResult::Recovered { flips, .. } = &result {
-                    soft_saves += 1;
-                    tracing::debug!("soft recovery: {flips} bit(s) corrected");
-                }
-                let data = match &result {
-                    FrameResult::Valid(d) => *d,
-                    FrameResult::Recovered { data, .. } => *data,
-                };
-                frame_count += 1;
-                let frame_data = data.to_vec();
-                print_frame(frame_count, &frame_data);
-                let _ = frame_tx.send(frame_data);
-            }
-        }
-    }
-
-    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-    tx
-}
-
-/// Correlation + Gardner PLL demodulator processing loop + soft HDLC.
-fn process_loop_corr_pll(
-    mut source: Box<dyn SampleSource>,
-    frame_tx: broadcast::Sender<Vec<u8>>,
-    is_wav: bool,
-    config: DemodConfig,
-    mut tx: Option<TxPipeline>,
-) -> Option<TxPipeline> {
-    let mut demod = CorrelationDemodulator::new(config)
-        .with_adaptive_gain()
-        .with_energy_llr()
-        .with_pll();
-    let mut soft_hdlc = SoftHdlcDecoder::new();
-    let mut audio_buf = [0i16; 1024];
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-    let mut frame_count: u64 = 0;
-    let mut soft_saves: u32 = 0;
-
-    tracing::info!("processing audio at {} Hz (correlation + Gardner PLL + soft HDLC)", config.sample_rate);
-
-    loop {
-        let n = source.read_samples(&mut audio_buf);
-        if n == 0 {
-            if is_wav {
-                if soft_saves > 0 {
-                    tracing::info!("WAV file complete, decoded {frame_count} frames ({soft_saves} soft recoveries)");
-                } else {
-                    tracing::info!("WAV file complete, decoded {frame_count} frames");
-                }
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            continue;
-        }
-
-        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-
-        let num_symbols = demod.process_samples(&audio_buf[..n], &mut symbols);
-        for i in 0..num_symbols {
-            if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                if let FrameResult::Recovered { flips, .. } = &result {
-                    soft_saves += 1;
-                    tracing::debug!("soft recovery: {flips} bit(s) corrected");
-                }
-                let data = match &result {
-                    FrameResult::Valid(d) => *d,
-                    FrameResult::Recovered { data, .. } => *data,
-                };
-                frame_count += 1;
-                let frame_data = data.to_vec();
-                print_frame(frame_count, &frame_data);
-                let _ = frame_tx.send(frame_data);
-            }
-        }
-    }
-
-    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-    tx
-}
-
-/// Single-decoder processing loop (fast or quality).
-fn process_loop_single(
-    mut source: Box<dyn SampleSource>,
-    frame_tx: broadcast::Sender<Vec<u8>>,
-    is_wav: bool,
-    use_quality: bool,
-    config: DemodConfig,
-    mut tx: Option<TxPipeline>,
-) -> Option<TxPipeline> {
-    // We use an enum to avoid boxing the demodulator in the hot loop
-    enum Demod {
-        Fast(FastDemodulator),
-        Quality(QualityDemodulator),
-    }
-
-    let mut demod = if use_quality {
-        tracing::info!("using quality demodulator");
-        Demod::Quality(QualityDemodulator::new(config))
-    } else {
-        tracing::info!("using fast demodulator");
-        Demod::Fast(FastDemodulator::new(config))
-    };
-
-    // Use an enum to avoid boxing the HDLC decoder
-    enum Hdlc {
-        Hard(HdlcDecoder),
-        Soft(SoftHdlcDecoder),
-    }
-
-    let mut hdlc = if use_quality {
-        Hdlc::Soft(SoftHdlcDecoder::new())
-    } else {
-        Hdlc::Hard(HdlcDecoder::new())
-    };
-
-    let mut audio_buf = [0i16; 1024];
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-    let mut frame_count: u64 = 0;
-    let mut soft_saves: u32 = 0;
-
-    tracing::info!("processing audio at {} Hz", config.sample_rate);
-
-    loop {
-        let n = source.read_samples(&mut audio_buf);
-        if n == 0 {
-            if is_wav {
-                if soft_saves > 0 {
-                    tracing::info!("WAV file complete, decoded {frame_count} frames ({soft_saves} soft recoveries)");
-                } else {
-                    tracing::info!("WAV file complete, decoded {frame_count} frames");
-                }
-                break;
-            }
-            // Live mode: shouldn't happen, but sleep briefly
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            continue;
-        }
-
-        if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-
-        let num_symbols = match &mut demod {
-            Demod::Fast(d) => d.process_samples(&audio_buf[..n], &mut symbols),
-            Demod::Quality(d) => d.process_samples(&audio_buf[..n], &mut symbols),
-        };
-
-        for i in 0..num_symbols {
-            let frame_data = match &mut hdlc {
-                Hdlc::Hard(h) => h.feed_bit(symbols[i].bit).map(|f| f.to_vec()),
-                Hdlc::Soft(s) => {
-                    s.feed_soft_bit(symbols[i].llr).map(|result| {
-                        if let FrameResult::Recovered { flips, .. } = &result {
-                            soft_saves += 1;
-                            tracing::debug!("soft recovery: {flips} bit(s) corrected");
-                        }
+            UnifiedDecoder::Soft { demod, hdlc, symbols } => {
+                let ns = demod.process_samples(samples, symbols);
+                for i in 0..ns {
+                    if let Some(result) = hdlc.feed_soft_bit(symbols[i].llr) {
                         let data = match &result {
                             FrameResult::Valid(d) => *d,
                             FrameResult::Recovered { data, .. } => *data,
                         };
-                        data.to_vec()
-                    })
+                        emit(data);
+                    }
                 }
-            };
-
-            if let Some(frame_data) = frame_data {
-                frame_count += 1;
-
-                // Print to console
-                print_frame(frame_count, &frame_data);
-
-                // Broadcast to KISS clients (ignore error if no receivers)
-                let _ = frame_tx.send(frame_data);
+            }
+            UnifiedDecoder::Fast { demod, hdlc, symbols } => {
+                let ns = demod.process_samples(samples, symbols);
+                for i in 0..ns {
+                    if let Some(f) = hdlc.feed_bit(symbols[i].bit) {
+                        emit(f);
+                    }
+                }
             }
         }
     }
+}
 
-    if let Some(ref mut pipeline) = tx { pipeline.poll(); }
-    tx
+// ── Process Loops ───────────────────────────────────────────────────────
+
+/// Main DSP processing loop. Returns the TX pipeline (if any) for WAV writing.
+fn process_loop(
+    mut source: Box<dyn SampleSource>,
+    frame_tx: broadcast::Sender<Vec<u8>>,
+    is_wav: bool,
+    mode: &cli::DemodMode,
+    sample_rate: u32,
+    baud_rate: u32,
+    mut tx_pipeline: Option<TxPipeline>,
+) -> Option<TxPipeline> {
+    let config = demod_config_for_rate(sample_rate, baud_rate);
+    let mut decoder = UnifiedDecoder::new(mode, config);
+    let mut audio_buf = [0i16; 1024];
+    let mut frame_count: u64 = 0;
+
+    tracing::info!("using {} demodulator at {} Hz", mode.as_str(), sample_rate);
+
+    loop {
+        let n = source.read_samples(&mut audio_buf);
+        if n == 0 {
+            if is_wav {
+                tracing::info!("WAV file complete, decoded {frame_count} frames");
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        if let Some(ref mut pipeline) = tx_pipeline {
+            pipeline.poll();
+        }
+
+        decoder.process(&audio_buf[..n], &mut |data| {
+            frame_count += 1;
+            let frame_data = data.to_vec();
+            print_frame(frame_count, &frame_data);
+            let _ = frame_tx.send(frame_data);
+        });
+    }
+
+    if let Some(ref mut pipeline) = tx_pipeline {
+        pipeline.poll();
+    }
+    tx_pipeline
 }
 
 // ── RX Pipe Mode ────────────────────────────────────────────────────────
 
-/// RX pipe mode: demodulate audio → KISS binary on stdout.
+/// RX pipe mode: demodulate audio -> KISS binary on stdout.
 fn process_loop_rx_pipe(
     mut source: Box<dyn SampleSource>,
     config: DemodConfig,
     is_wav: bool,
-    use_quality: bool,
-    use_multi: bool,
-    use_dm: bool,
-    use_smart3: bool,
-    use_corr: bool,
-    use_corr_slicer: bool,
-    use_corr_pll: bool,
-    use_xor: bool,
+    mode: &cli::DemodMode,
 ) {
     use std::io::Write;
 
@@ -1665,7 +1124,6 @@ fn process_loop_rx_pipe(
     let mut audio_buf = [0i16; 1024];
     let mut frame_count: u64 = 0;
 
-    // Callback to KISS-encode and write frame to stdout
     let mut emit_frame = |data: &[u8]| {
         frame_count += 1;
         if let Some(len) = kiss::encode_frame(0, data, &mut kiss_buf) {
@@ -1674,187 +1132,17 @@ fn process_loop_rx_pipe(
         }
     };
 
-    if use_multi {
-        let mut multi = MultiDecoder::new(config);
-        tracing::info!("rx-pipe: multi-decoder ({} decoders)", multi.num_decoders());
-        loop {
-            let n = source.read_samples(&mut audio_buf);
-            if n == 0 {
-                if is_wav { break; }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                continue;
-            }
-            let output = multi.process_samples(&audio_buf[..n]);
-            for i in 0..output.len() {
-                emit_frame(output.frame(i));
-            }
+    let mut decoder = UnifiedDecoder::new(mode, config);
+    tracing::info!("rx-pipe: {} demodulator", mode.as_str());
+
+    loop {
+        let n = source.read_samples(&mut audio_buf);
+        if n == 0 {
+            if is_wav { break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
         }
-    } else if use_smart3 {
-        let mut mini = MiniDecoder::new(config);
-        tracing::info!("rx-pipe: smart3 mini-decoder");
-        loop {
-            let n = source.read_samples(&mut audio_buf);
-            if n == 0 {
-                if is_wav { break; }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                continue;
-            }
-            let output = mini.process_samples(&audio_buf[..n]);
-            for i in 0..output.len() {
-                emit_frame(output.frame(i));
-            }
-        }
-    } else if use_corr_slicer {
-        let mut decoder = CorrSlicerDecoder::new(config).with_adaptive_gain();
-        tracing::info!("rx-pipe: correlation multi-slicer ({} slicers)", decoder.num_slicers());
-        loop {
-            let n = source.read_samples(&mut audio_buf);
-            if n == 0 {
-                if is_wav { break; }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                continue;
-            }
-            let output = decoder.process_samples(&audio_buf[..n]);
-            for i in 0..output.len() {
-                emit_frame(output.frame(i));
-            }
-        }
-    } else if use_corr_pll {
-        let mut demod = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr().with_pll();
-        let mut soft_hdlc = SoftHdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-        tracing::info!("rx-pipe: correlation + PLL");
-        loop {
-            let n = source.read_samples(&mut audio_buf);
-            if n == 0 {
-                if is_wav { break; }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                continue;
-            }
-            let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
-            for i in 0..ns {
-                if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                    let data = match &result {
-                        FrameResult::Valid(d) => *d,
-                        FrameResult::Recovered { data, .. } => *data,
-                    };
-                    emit_frame(data);
-                }
-            }
-        }
-    } else if use_corr {
-        let mut demod = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
-        let mut soft_hdlc = SoftHdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-        tracing::info!("rx-pipe: correlation mixer");
-        loop {
-            let n = source.read_samples(&mut audio_buf);
-            if n == 0 {
-                if is_wav { break; }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                continue;
-            }
-            let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
-            for i in 0..ns {
-                if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                    let data = match &result {
-                        FrameResult::Valid(d) => *d,
-                        FrameResult::Recovered { data, .. } => *data,
-                    };
-                    emit_frame(data);
-                }
-            }
-        }
-    } else if use_dm {
-        let mut demod = DmDemodulator::with_bpf_pll(config);
-        let mut soft_hdlc = SoftHdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-        tracing::info!("rx-pipe: delay-multiply + PLL");
-        loop {
-            let n = source.read_samples(&mut audio_buf);
-            if n == 0 {
-                if is_wav { break; }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                continue;
-            }
-            let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
-            for i in 0..ns {
-                if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                    let data = match &result {
-                        FrameResult::Valid(d) => *d,
-                        FrameResult::Recovered { data, .. } => *data,
-                    };
-                    emit_frame(data);
-                }
-            }
-        }
-    } else if use_xor {
-        let mut demod = BinaryXorDemodulator::new(config);
-        let mut soft_hdlc = SoftHdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-        tracing::info!("rx-pipe: binary XOR correlator");
-        loop {
-            let n = source.read_samples(&mut audio_buf);
-            if n == 0 {
-                if is_wav { break; }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                continue;
-            }
-            let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
-            for i in 0..ns {
-                if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                    let data = match &result {
-                        FrameResult::Valid(d) => *d,
-                        FrameResult::Recovered { data, .. } => *data,
-                    };
-                    emit_frame(data);
-                }
-            }
-        }
-    } else {
-        // Default: fast or quality single decoder
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
-        if use_quality {
-            let mut demod = QualityDemodulator::new(config);
-            let mut soft_hdlc = SoftHdlcDecoder::new();
-            tracing::info!("rx-pipe: quality demodulator");
-            loop {
-                let n = source.read_samples(&mut audio_buf);
-                if n == 0 {
-                    if is_wav { break; }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
-                for i in 0..ns {
-                    if let Some(result) = soft_hdlc.feed_soft_bit(symbols[i].llr) {
-                        let data = match &result {
-                            FrameResult::Valid(d) => *d,
-                            FrameResult::Recovered { data, .. } => *data,
-                        };
-                        emit_frame(data);
-                    }
-                }
-            }
-        } else {
-            let mut demod = FastDemodulator::new(config);
-            let mut hdlc = HdlcDecoder::new();
-            tracing::info!("rx-pipe: fast demodulator");
-            loop {
-                let n = source.read_samples(&mut audio_buf);
-                if n == 0 {
-                    if is_wav { break; }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                let ns = demod.process_samples(&audio_buf[..n], &mut symbols);
-                for i in 0..ns {
-                    if let Some(f) = hdlc.feed_bit(symbols[i].bit) {
-                        emit_frame(f);
-                    }
-                }
-            }
-        }
+        decoder.process(&audio_buf[..n], &mut |data| emit_frame(data));
     }
 
     tracing::info!("rx-pipe: done, output {frame_count} frames");

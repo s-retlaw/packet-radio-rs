@@ -58,14 +58,20 @@ pub struct HttpFetcher {
 }
 
 impl HttpFetcher {
-    pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .danger_accept_invalid_certs(true)
-                .build()
-                .expect("Failed to build HTTP client"),
-            delay: std::time::Duration::from_millis(200),
+    pub fn new() -> Result<Self, reqwest::Error> {
+        let mut builder = reqwest::Client::builder();
+
+        // The CWOP source (wxqa.com) uses plain HTTP, so TLS cert validation
+        // is not normally relevant. If a future source requires accepting
+        // invalid certs (e.g., self-signed), set REFERENCE_ACCEPT_INVALID_CERTS=1.
+        if std::env::var("REFERENCE_ACCEPT_INVALID_CERTS").is_ok_and(|v| v == "1") {
+            builder = builder.danger_accept_invalid_certs(true);
         }
+
+        Ok(Self {
+            client: builder.build()?,
+            delay: std::time::Duration::from_millis(200),
+        })
     }
 
     pub fn with_delay(mut self, delay: std::time::Duration) -> Self {

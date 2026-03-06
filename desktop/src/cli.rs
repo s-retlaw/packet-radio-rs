@@ -3,6 +3,63 @@
 use std::path::PathBuf;
 use clap::Parser;
 
+/// Demodulator mode for 1200/300 baud AFSK.
+#[derive(Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum DemodMode {
+    /// Single Goertzel + Bresenham. Lowest CPU, basic decode.
+    #[default]
+    Fast,
+    /// Goertzel + LLR soft decode. Slight improvement over fast.
+    Quality,
+    /// 38 parallel decoders. Best decode rate, highest CPU.
+    Multi,
+    /// 3 optimal decoders. ~97% of multi at 8% CPU cost.
+    Smart3,
+    /// Delay-multiply discriminator + Gardner PLL timing.
+    Dm,
+    /// DireWolf-style mixer demodulator + soft HDLC.
+    Corr,
+    /// Correlation + 24 gain/frequency diversity slicers.
+    CorrSlicer,
+    /// Correlation mixer with Gardner PLL clock recovery.
+    CorrPll,
+    /// Binary XOR correlator. Twist-immune, amplitude-invariant.
+    Xor,
+}
+
+impl DemodMode {
+    /// Convert to the string key used by config and process loops.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DemodMode::Fast => "fast",
+            DemodMode::Quality => "quality",
+            DemodMode::Multi => "multi",
+            DemodMode::Smart3 => "smart3",
+            DemodMode::Dm => "dm",
+            DemodMode::Corr => "corr",
+            DemodMode::CorrSlicer => "corr-slicer",
+            DemodMode::CorrPll => "corr-pll",
+            DemodMode::Xor => "xor",
+        }
+    }
+
+    /// Parse from a config string. Returns `Fast` for unknown values.
+    pub fn from_config_str(s: &str) -> Self {
+        match s {
+            "fast" => DemodMode::Fast,
+            "quality" => DemodMode::Quality,
+            "multi" => DemodMode::Multi,
+            "smart3" => DemodMode::Smart3,
+            "dm" => DemodMode::Dm,
+            "corr" => DemodMode::Corr,
+            "corr-slicer" => DemodMode::CorrSlicer,
+            "corr-pll" => DemodMode::CorrPll,
+            "xor" => DemodMode::Xor,
+            _ => DemodMode::Fast,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "packet-radio-tnc", about = "Packet radio TNC — AFSK modem with KISS TCP")]
 pub struct Cli {
@@ -26,37 +83,9 @@ pub struct Cli {
     #[arg(short = 's', long, default_value = "11025")]
     pub sample_rate: u32,
 
-    /// Use quality demodulator (default: fast)
-    #[arg(long)]
-    pub quality: bool,
-
-    /// Use multi-decoder (32+ parallel decoders with filter/timing diversity)
-    #[arg(long)]
-    pub multi: bool,
-
-    /// Use delay-multiply demodulator (BPF → delay-multiply → Bresenham)
-    #[arg(long)]
-    pub dm: bool,
-
-    /// Use Smart3 mini-decoder (3 attribution-optimal parallel decoders)
-    #[arg(long)]
-    pub smart3: bool,
-
-    /// Use correlation (mixer) demodulator (DireWolf-style tone detection)
-    #[arg(long)]
-    pub corr: bool,
-
-    /// Use correlation demodulator + multi-slicer (8 gain levels, single demod)
-    #[arg(long)]
-    pub corr_slicer: bool,
-
-    /// Use correlation demodulator + Gardner PLL timing recovery
-    #[arg(long)]
-    pub corr_pll: bool,
-
-    /// Use binary XOR correlator (twist-immune, amplitude-invariant)
-    #[arg(long)]
-    pub xor: bool,
+    /// Demodulator mode
+    #[arg(short = 'm', long, value_enum, default_value_t = DemodMode::Fast)]
+    pub mode: DemodMode,
 
     /// Write TX audio to WAV file (modulated output from KISS frames received via TCP)
     #[arg(long)]
@@ -103,18 +132,5 @@ impl Cli {
     /// Returns true if TUI should be bypassed (pipe modes, WAV decode, --no-tui).
     pub fn is_headless(&self) -> bool {
         self.no_tui || self.rx_pipe || self.tx_pipe || self.wav.is_some() || self.list_devices
-    }
-
-    /// Determine the demod mode string from CLI flags.
-    pub fn demod_mode(&self) -> &str {
-        if self.multi { "multi" }
-        else if self.smart3 { "smart3" }
-        else if self.corr_slicer { "corr-slicer" }
-        else if self.corr_pll { "corr-pll" }
-        else if self.corr { "corr" }
-        else if self.dm { "dm" }
-        else if self.xor { "xor" }
-        else if self.quality { "quality" }
-        else { "fast" }
     }
 }

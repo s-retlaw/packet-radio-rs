@@ -1,11 +1,27 @@
 use clap::{Parser, Subcommand};
 use reference::cwop::db::{count_cwop_by_region, get_cwop_station};
 use reference::cwop::fetcher::HttpFetcher;
-use reference::cwop::CwopSource;
+use reference::cwop::{CwopError, CwopSource};
 use reference::db::{default_db_path, ReferenceDb};
 use reference::geo::RangeFilter;
 use std::path::PathBuf;
 use std::time::Duration;
+
+/// Top-level error type for the reference-tool CLI.
+#[derive(Debug, thiserror::Error)]
+enum CliError {
+    #[error("{0}")]
+    Db(#[from] sqlx::Error),
+
+    #[error("{0}")]
+    Cwop(#[from] CwopError),
+
+    #[error("{0}")]
+    Http(#[from] reqwest::Error),
+
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+}
 
 #[derive(Parser)]
 #[command(name = "reference-tool", about = "Manage APRS reference data")]
@@ -70,7 +86,7 @@ enum SyncSource {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), CliError> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -86,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Sync { source } => match source {
             SyncSource::Cwop { region, max_age_hours } => {
-                let fetcher = HttpFetcher::new();
+                let fetcher = HttpFetcher::new()?;
                 let source = CwopSource::new(fetcher, db);
 
                 if let Some(region) = region {

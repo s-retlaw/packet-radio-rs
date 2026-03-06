@@ -1,5 +1,4 @@
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
-use sqlx::Row;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -7,55 +6,31 @@ use crate::error::Result;
 use crate::geo::haversine_km;
 use crate::models::{GeoQuery, LicenseRecord, SearchQuery, SyncLogEntry};
 
-/// Extract a LicenseRecord from a SqliteRow with the standard SELECT column order.
-fn row_to_license(row: &sqlx::sqlite::SqliteRow) -> LicenseRecord {
-    LicenseRecord {
-        usi: row.get(0),
-        call_sign: row.get(1),
-        license_status: row.get(2),
-        operator_class: row.get(3),
-        first_name: row.get(4),
-        last_name: row.get(5),
-        entity_name: row.get(6),
-        street_address: row.get(7),
-        city: row.get(8),
-        state: row.get(9),
-        zip_code: row.get(10),
-        grant_date: row.get(11),
-        expired_date: row.get(12),
-        previous_call_sign: row.get(13),
-        lat: row.get(14),
-        lon: row.get(15),
-        geo_source: row.get(16),
-        frn: row.get(17),
-        licensee_id: row.get(18),
-        mi: row.get(19),
-        suffix: row.get(20),
-        previous_operator_class: row.get(21),
-        cancellation_date: row.get(22),
-        last_action_date: row.get(23),
-        radio_service_code: row.get(24),
-        region_code: row.get(25),
-        entity_type: row.get(26),
-        geo_quality: row.get(27),
-    }
-}
-
-/// Column list shared by all license queries. Must match `row_to_license` field order.
+/// Column list shared by all license queries. Aliases match `LicenseRecord` field names.
 macro_rules! license_columns {
     () => {
-        "h.usi, h.call_sign, h.license_status, COALESCE(a.operator_class, ''),
-            COALESCE(e.first_name, ''), COALESCE(e.last_name, ''),
-            COALESCE(e.entity_name, ''), COALESCE(e.street_address, ''),
-            COALESCE(e.city, ''), COALESCE(e.state, ''), COALESCE(e.zip_code, ''),
-            h.grant_date, h.expired_date, COALESCE(a.previous_call_sign, ''),
+        "h.usi, h.call_sign, h.license_status,
+            COALESCE(a.operator_class, '') AS operator_class,
+            COALESCE(e.first_name, '') AS first_name,
+            COALESCE(e.last_name, '') AS last_name,
+            COALESCE(e.entity_name, '') AS entity_name,
+            COALESCE(e.street_address, '') AS street_address,
+            COALESCE(e.city, '') AS city,
+            COALESCE(e.state, '') AS state,
+            COALESCE(e.zip_code, '') AS zip_code,
+            h.grant_date, h.expired_date,
+            COALESCE(a.previous_call_sign, '') AS previous_call_sign,
             g.lat, g.lon, g.geo_source,
-            COALESCE(e.frn, ''), COALESCE(e.licensee_id, ''),
-            COALESCE(e.mi, ''), COALESCE(e.suffix, ''),
-            COALESCE(a.previous_operator_class, ''),
+            COALESCE(e.frn, '') AS frn,
+            COALESCE(e.licensee_id, '') AS licensee_id,
+            COALESCE(e.mi, '') AS mi,
+            COALESCE(e.suffix, '') AS suffix,
+            COALESCE(a.previous_operator_class, '') AS previous_operator_class,
             h.cancellation_date, h.last_action_date,
-            h.radio_service_code, COALESCE(a.region_code, ''),
-            COALESCE(e.entity_type, ''), g.geo_quality"
+            h.radio_service_code,
+            COALESCE(a.region_code, '') AS region_code,
+            COALESCE(e.entity_type, '') AS entity_type,
+            g.geo_quality"
     };
 }
 
@@ -173,22 +148,22 @@ impl FccDb {
              LIMIT 1"
         );
 
-        let row = sqlx::query(&sql)
+        let record = sqlx::query_as::<_, LicenseRecord>(&sql)
             .bind(call_sign)
             .fetch_optional(&self.pool)
             .await?;
 
-        Ok(row.as_ref().map(row_to_license))
+        Ok(record)
     }
 
     /// Look up a license by USI.
     pub async fn lookup_usi(&self, usi: i64) -> Result<Option<LicenseRecord>> {
         let sql = format!("{LICENSE_SELECT} WHERE h.usi = ?1");
-        let row = sqlx::query(&sql)
+        let record = sqlx::query_as::<_, LicenseRecord>(&sql)
             .bind(usi)
             .fetch_optional(&self.pool)
             .await?;
-        Ok(row.as_ref().map(row_to_license))
+        Ok(record)
     }
 
     /// Search licenses with flexible filters.
@@ -245,13 +220,13 @@ impl FccDb {
              LIMIT ?{}", bind_values.len()
         );
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query_as::<_, LicenseRecord>(&sql);
         for val in &bind_values {
             q = q.bind(val);
         }
 
-        let rows = q.fetch_all(&self.pool).await?;
-        Ok(rows.iter().map(row_to_license).collect())
+        let records = q.fetch_all(&self.pool).await?;
+        Ok(records)
     }
 
     /// Find stations near a geographic point.
@@ -274,7 +249,7 @@ impl FccDb {
 
         let limit = query.limit.unwrap_or(100) as i64 * 2; // overfetch for haversine filter
 
-        let rows = sqlx::query(sql)
+        let records = sqlx::query_as::<_, LicenseRecord>(sql)
             .bind(query.lat - dlat)
             .bind(query.lat + dlat)
             .bind(query.lon - dlon)
@@ -287,15 +262,13 @@ impl FccDb {
 
         let actual_limit = query.limit.unwrap_or(100) as usize;
 
-        Ok(rows.iter()
-            .filter_map(|r| {
-                let rec = row_to_license(r);
-                let lat = rec.lat?;
-                let lon = rec.lon?;
-                if haversine_km(query.lat, query.lon, lat, lon) <= query.radius_km {
-                    Some(rec)
-                } else {
-                    None
+        Ok(records.into_iter()
+            .filter(|rec| {
+                match (rec.lat, rec.lon) {
+                    (Some(lat), Some(lon)) => {
+                        haversine_km(query.lat, query.lon, lat, lon) <= query.radius_km
+                    }
+                    _ => false,
                 }
             })
             .take(actual_limit)
@@ -338,11 +311,11 @@ impl FccDb {
              LIMIT 20"
         );
 
-        let rows = sqlx::query(&sql)
+        let records = sqlx::query_as::<_, LicenseRecord>(&sql)
             .bind(usi)
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.iter().map(row_to_license).collect())
+        Ok(records)
     }
 
     /// Follow the previous_call_sign chain for a callsign.
@@ -492,7 +465,7 @@ impl FccDb {
 
     /// Get sync log history.
     pub async fn sync_history(&self, limit: i64) -> Result<Vec<SyncLogEntry>> {
-        let rows = sqlx::query_as::<_, (i64, String, String, Option<String>, String, Option<i64>, Option<String>)>(
+        let entries = sqlx::query_as::<_, SyncLogEntry>(
             "SELECT id, sync_type, started_at, finished_at, status, records_processed, error_message
              FROM fcc_sync_log ORDER BY id DESC LIMIT ?1"
         )
@@ -500,10 +473,7 @@ impl FccDb {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|r| SyncLogEntry {
-            id: r.0, sync_type: r.1, started_at: r.2, finished_at: r.3,
-            status: r.4, records_processed: r.5, error_message: r.6,
-        }).collect())
+        Ok(entries)
     }
 
     /// Get the timestamp of the last successful sync (any type).

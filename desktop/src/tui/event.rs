@@ -18,6 +18,13 @@ pub enum Event {
     Async(super::state::AsyncEvent),
 }
 
+/// Crossterm event or tick, returned from the blocking poll thread.
+enum TermEvent {
+    Key(KeyEvent),
+    Resize(u16, u16),
+    Tick,
+}
+
 /// Event handler that polls crossterm and a crossbeam async channel in a
 /// background tokio task.
 pub struct EventHandler {
@@ -42,30 +49,39 @@ impl EventHandler {
 
         tokio::spawn(async move {
             loop {
-                tokio::select! {
-                    _ = &mut stop_rx => break,
-                    _ = async {
-                        // Check for async events first (non-blocking)
-                        if let Some(ref arx) = async_rx {
-                            while let Ok(evt) = arx.try_recv() {
-                                let _ = tx.send(Event::Async(evt));
-                            }
-                        }
+                // Drain async events from the audio thread (non-blocking).
+                if let Some(ref arx) = async_rx {
+                    while let Ok(evt) = arx.try_recv() {
+                        let _ = tx.send(Event::Async(evt));
+                    }
+                }
 
+                // Poll crossterm on a blocking thread to avoid stalling the
+                // tokio runtime. select! lets us break on stop_rx.
+                let term_event = tokio::select! {
+                    _ = &mut stop_rx => break,
+                    result = tokio::task::spawn_blocking(move || {
                         if event::poll(tick_rate).unwrap_or(false) {
                             match event::read() {
-                                Ok(CrosstermEvent::Key(key)) => {
-                                    let _ = tx.send(Event::Key(key));
-                                }
-                                Ok(CrosstermEvent::Resize(w, h)) => {
-                                    let _ = tx.send(Event::Resize(w, h));
-                                }
-                                _ => {}
+                                Ok(CrosstermEvent::Key(key)) => TermEvent::Key(key),
+                                Ok(CrosstermEvent::Resize(w, h)) => TermEvent::Resize(w, h),
+                                _ => TermEvent::Tick,
                             }
                         } else {
-                            let _ = tx.send(Event::Tick);
+                            TermEvent::Tick
                         }
-                    } => {}
+                    }) => {
+                        match result {
+                            Ok(evt) => evt,
+                            Err(_) => break, // JoinError — task panicked
+                        }
+                    }
+                };
+
+                match term_event {
+                    TermEvent::Key(key) => { let _ = tx.send(Event::Key(key)); }
+                    TermEvent::Resize(w, h) => { let _ = tx.send(Event::Resize(w, h)); }
+                    TermEvent::Tick => { let _ = tx.send(Event::Tick); }
                 }
             }
         });

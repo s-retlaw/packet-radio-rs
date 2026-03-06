@@ -21,7 +21,7 @@ pub fn parse_state_page(html: &str, region: &str) -> Result<Vec<CwopStation>, Pa
     let document = Html::parse_document(html);
 
     // Find the data table by looking for the header row with "Call/CW"
-    let th_sel = Selector::parse("th.staffTableHeader").unwrap();
+    let th_sel = Selector::parse("th.staffTableHeader").expect("valid CSS selector");
     let headers: Vec<String> = document
         .select(&th_sel)
         .map(|el| el.text().collect::<String>())
@@ -48,8 +48,8 @@ pub fn parse_state_page(html: &str, region: &str) -> Result<Vec<CwopStation>, Pa
     let num_cols = headers.len();
 
     // Select all data rows
-    let tr_sel = Selector::parse("tr").unwrap();
-    let td_sel = Selector::parse("td.tblData").unwrap();
+    let tr_sel = Selector::parse("tr").expect("valid CSS selector");
+    let td_sel = Selector::parse("td.tblData").expect("valid CSS selector");
 
     let mut stations = Vec::new();
 

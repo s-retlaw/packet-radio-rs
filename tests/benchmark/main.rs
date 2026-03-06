@@ -10,8 +10,10 @@
 //!   cargo run --release -p benchmark -- --synthetic
 
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use clap::{Parser, Subcommand};
 use packet_radio_core::ax25::frame::HdlcDecoder;
 
 thread_local! {
@@ -34,62 +36,214 @@ use packet_radio_core::modem::demod_9600::{
 };
 use packet_radio_core::modem::multi_9600::{Mini9600Decoder, Multi9600Decoder, Single9600Decoder};
 
-/// Global arguments parsed from the command line.
-struct GlobalArgs {
+/// Packet Radio RS — Benchmark Runner
+#[derive(Parser)]
+#[command(name = "benchmark", about = "WA8LMF TNC Test CD benchmark runner")]
+struct Cli {
+    /// Set baud rate (default: 1200)
+    #[arg(long, short = 'B', global = true, default_value_t = 1200)]
     baud: u32,
+
+    /// Run suite at specific sample rate (e.g. 22050)
+    #[arg(long, global = true)]
     rate: Option<u32>,
+
+    /// Run suite at all discovered sample rates + best summary
+    #[arg(long, global = true)]
     all_rates: bool,
+
+    /// Only run MCU-feasible decoders (Fast, Quality, Smart3, TwistMini, DM)
+    #[arg(long, global = true)]
     mcu_only: bool,
-    filtered_args: Vec<String>,
+
+    #[command(subcommand)]
+    command: Command,
 }
 
-/// Parse global flags from args, returning GlobalArgs with filtered remaining args.
-fn parse_global_args(args: &[String]) -> GlobalArgs {
-    let mut baud = 1200u32;
-    let mut rate: Option<u32> = None;
-    let mut all_rates = false;
-    let mut mcu_only = false;
-    let mut filtered = Vec::new();
-    let mut skip_next = false;
-    for (i, arg) in args.iter().enumerate() {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-        match arg.as_str() {
-            "--baud" | "-B" => {
-                if let Some(val) = args.get(i + 1) {
-                    baud = val.parse().unwrap_or(1200);
-                    skip_next = true;
-                    continue;
-                }
-            }
-            "--rate" => {
-                if let Some(val) = args.get(i + 1) {
-                    rate = val.parse().ok();
-                    skip_next = true;
-                    continue;
-                }
-            }
-            "--all-rates" => {
-                all_rates = true;
-                continue;
-            }
-            "--mcu-only" => {
-                mcu_only = true;
-                continue;
-            }
-            _ => {}
-        }
-        filtered.push(arg.clone());
-    }
-    GlobalArgs {
-        baud,
-        rate,
-        all_rates,
-        mcu_only,
-        filtered_args: filtered,
-    }
+#[derive(Subcommand)]
+enum Command {
+    /// Decode a single WAV file (all decoders)
+    Wav {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Decode all WAV files in directory, compare with Dire Wolf
+    Suite {
+        /// Path to directory containing WAV files
+        directory: PathBuf,
+    },
+    /// Compare fast vs. quality path frame-by-frame
+    #[command(alias = "compare")]
+    CompareApproaches {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Decode using delay-multiply demodulator
+    Dm {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Run synthetic signal benchmark
+    Synthetic,
+    /// DM+PLL with all variant combinations
+    DmPll {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Sweep PLL alpha/beta parameters
+    DmPllSweep {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Dump DM discriminator diagnostics to CSV
+    DmDebug {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Two-stage parameter tuning (Gardner shift, smoothing, LLR)
+    DmPllTune {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Export decoded frames to files
+    Export {
+        /// Path to WAV file
+        file: PathBuf,
+        /// Output directory
+        output_dir: PathBuf,
+    },
+    /// Frame-level diff against Dire Wolf reference
+    Diff {
+        /// Path to WAV file
+        file: PathBuf,
+        /// Path to reference packets file
+        #[arg(long)]
+        reference: Option<PathBuf>,
+    },
+    /// Per-decoder attribution analysis (multi-decoder)
+    Attribution {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Decode using Smart3 mini-decoder (3 optimal decoders)
+    Smart3 {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Soft decode diagnostics (per-frame LLR analysis)
+    SoftDiag {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Decode using correlation (mixer) demodulator
+    Corr {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Sweep correlation LPF cutoff (400-1000 Hz, 50 Hz steps)
+    CorrLpfSweep {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Decode using correlation multi-slicer (8 gain levels)
+    CorrSlicer {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Correlation + Gardner PLL timing recovery
+    CorrPll {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Sweep Corr+PLL alpha/error_shift parameters
+    CorrPllSweep {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Decode using binary XOR correlator
+    Xor {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Sweep twist-tuned decoder configurations
+    Twist {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// TwistMini multi-rate comparison
+    TwistMini {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Sweep Smart3 decoder configurations
+    Smart3Sweep {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Sweep Goertzel window types (ISI reduction)
+    Window {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Sweep 300-baud DM+PLL alpha values
+    #[command(name = "pll-300")]
+    Pll300 {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Cross-architecture Goertzel+Corr LLR fusion
+    Fusion {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Decode 9600 baud WAV (all algorithms)
+    #[command(name = "9600")]
+    Baud9600 {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Side-by-side 9600 baud algorithm comparison
+    #[command(name = "9600-compare")]
+    Baud9600Compare {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Decode using Multi9600 ensemble decoder
+    #[command(name = "9600-multi")]
+    Baud9600Multi {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Grid: all algorithms x all 9600 WAVs vs DireWolf
+    #[command(name = "9600-suite")]
+    Baud9600Suite {
+        /// Path to directory containing WAV files
+        directory: PathBuf,
+    },
+    /// 9600 baud diagnostics
+    #[command(name = "9600-diag")]
+    Baud9600Diag {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Decode using Mini9600 (6-decoder MCU ensemble)
+    #[command(name = "9600-mini")]
+    Baud9600Mini {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Grid search: LPF x timing x slicer x cascaded
+    #[command(name = "9600-tune")]
+    Baud9600Tune {
+        /// Path to WAV file
+        file: PathBuf,
+    },
+    /// Per-decoder attribution + greedy set-cover
+    #[command(name = "9600-attribution")]
+    Baud9600Attribution {
+        /// Path to WAV file
+        file: PathBuf,
+    },
 }
 
 /// Build a DemodConfig for the given sample rate and baud rate.
@@ -109,319 +263,115 @@ fn config_for_rate(sample_rate: u32, baud: u32) -> DemodConfig {
 }
 
 fn main() {
-    let raw_args: Vec<String> = std::env::args().collect();
-    let gargs = parse_global_args(&raw_args);
-    let args = &gargs.filtered_args;
-
-    if args.len() < 2 {
-        print_usage();
-        return;
-    }
+    let cli = Cli::parse();
 
     // Store baud rate in a thread-local for decode functions
-    BAUD_RATE.with(|b| b.set(gargs.baud));
+    BAUD_RATE.with(|b| b.set(cli.baud));
 
-    match args[1].as_str() {
-        "--wav" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark [--baud 300] --wav <file.wav>");
-                return;
-            }
-            run_single_wav(&args[2], gargs.mcu_only);
+    match cli.command {
+        Command::Wav { file } => {
+            run_single_wav(&file.to_string_lossy(), cli.mcu_only);
         }
-        "--suite" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark [--baud 300] --suite <directory>");
-                return;
-            }
-            run_suite(&args[2], gargs.rate, gargs.all_rates, gargs.mcu_only);
+        Command::Suite { directory } => {
+            run_suite(&directory.to_string_lossy(), cli.rate, cli.all_rates, cli.mcu_only);
         }
-        "--compare-approaches" | "--compare" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --compare-approaches <file.wav>");
-                return;
-            }
-            run_compare_approaches(&args[2]);
+        Command::CompareApproaches { file } => {
+            run_compare_approaches(&file.to_string_lossy());
         }
-        "--dm" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --dm <file.wav>");
-                return;
-            }
-            run_dm_single(&args[2]);
+        Command::Dm { file } => {
+            run_dm_single(&file.to_string_lossy());
         }
-        "--synthetic" => {
+        Command::Synthetic => {
             run_synthetic_benchmark();
         }
-        "--dm-pll" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --dm-pll <file.wav>");
-                return;
-            }
-            run_dm_pll(&args[2]);
+        Command::DmPll { file } => {
+            run_dm_pll(&file.to_string_lossy());
         }
-        "--dm-pll-sweep" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --dm-pll-sweep <file.wav>");
-                return;
-            }
-            run_dm_pll_sweep(&args[2]);
+        Command::DmPllSweep { file } => {
+            run_dm_pll_sweep(&file.to_string_lossy());
         }
-        "--dm-debug" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --dm-debug <file.wav>");
-                return;
-            }
-            run_dm_debug(&args[2]);
+        Command::DmDebug { file } => {
+            run_dm_debug(&file.to_string_lossy());
         }
-        "--dm-pll-tune" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --dm-pll-tune <file.wav>");
-                return;
-            }
-            run_dm_pll_tune(&args[2]);
+        Command::DmPllTune { file } => {
+            run_dm_pll_tune(&file.to_string_lossy());
         }
-        "--export" => {
-            if args.len() < 4 {
-                eprintln!("Usage: benchmark --export <file.wav> <output_dir>");
-                return;
-            }
-            run_export(&args[2], &args[3]);
+        Command::Export { file, output_dir } => {
+            run_export(&file.to_string_lossy(), &output_dir.to_string_lossy());
         }
-        "--diff" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --diff <file.wav> [--reference <packets.txt>]");
-                return;
-            }
-            let reference = if args.len() >= 5 && args[3] == "--reference" {
-                Some(args[4].as_str())
-            } else {
-                None
-            };
-            run_diff(&args[2], reference);
+        Command::Diff { file, reference } => {
+            run_diff(&file.to_string_lossy(), reference.as_ref().map(|p| p.to_str().unwrap_or("")));
         }
-        "--attribution" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --attribution <file.wav>");
-                return;
-            }
-            run_attribution(&args[2]);
+        Command::Attribution { file } => {
+            run_attribution(&file.to_string_lossy());
         }
-        "--smart3" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --smart3 <file.wav>");
-                return;
-            }
-            run_smart3(&args[2]);
+        Command::Smart3 { file } => {
+            run_smart3(&file.to_string_lossy());
         }
-        "--soft-diag" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --soft-diag <file.wav>");
-                return;
-            }
-            run_soft_diag(&args[2]);
+        Command::SoftDiag { file } => {
+            run_soft_diag(&file.to_string_lossy());
         }
-        "--corr" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --corr <file.wav>");
-                return;
-            }
-            run_corr(&args[2]);
+        Command::Corr { file } => {
+            run_corr(&file.to_string_lossy());
         }
-        "--corr-lpf-sweep" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --corr-lpf-sweep <file.wav>");
-                return;
-            }
-            run_corr_lpf_sweep(&args[2]);
+        Command::CorrLpfSweep { file } => {
+            run_corr_lpf_sweep(&file.to_string_lossy());
         }
-        "--corr-slicer" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --corr-slicer <file.wav>");
-                return;
-            }
-            run_corr_slicer(&args[2]);
+        Command::CorrSlicer { file } => {
+            run_corr_slicer(&file.to_string_lossy());
         }
-        "--corr-pll" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --corr-pll <file.wav>");
-                return;
-            }
-            run_corr_pll(&args[2]);
+        Command::CorrPll { file } => {
+            run_corr_pll(&file.to_string_lossy());
         }
-        "--corr-pll-sweep" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --corr-pll-sweep <file.wav>");
-                return;
-            }
-            run_corr_pll_sweep(&args[2]);
+        Command::CorrPllSweep { file } => {
+            run_corr_pll_sweep(&file.to_string_lossy());
         }
-        "--xor" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --xor <file.wav>");
-                return;
-            }
-            run_xor(&args[2]);
+        Command::Xor { file } => {
+            run_xor(&file.to_string_lossy());
         }
-        "--twist" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --twist <file.wav>");
-                return;
-            }
-            run_twist_sweep(&args[2]);
+        Command::Twist { file } => {
+            run_twist_sweep(&file.to_string_lossy());
         }
-        "--twist-mini" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --twist-mini <file.wav>");
-                return;
-            }
-            run_twist_mini(&args[2]);
+        Command::TwistMini { file } => {
+            run_twist_mini(&file.to_string_lossy());
         }
-        "--smart3-sweep" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --smart3-sweep <file.wav>");
-                return;
-            }
-            run_smart3_sweep(&args[2]);
+        Command::Smart3Sweep { file } => {
+            run_smart3_sweep(&file.to_string_lossy());
         }
-        "--window" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --window <file.wav>");
-                return;
-            }
-            run_window_sweep(&args[2]);
+        Command::Window { file } => {
+            run_window_sweep(&file.to_string_lossy());
         }
-        "--pll-300" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --baud 300 --pll-300 <file.wav>");
-                return;
-            }
-            run_pll_300(&args[2]);
+        Command::Pll300 { file } => {
+            run_pll_300(&file.to_string_lossy());
         }
-        "--fusion" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --fusion <file.wav>");
-                return;
-            }
-            run_fusion(&args[2]);
+        Command::Fusion { file } => {
+            run_fusion(&file.to_string_lossy());
         }
-        "--9600" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --9600 <file.wav>");
-                return;
-            }
-            run_9600_single(&args[2]);
+        Command::Baud9600 { file } => {
+            run_9600_single(&file.to_string_lossy());
         }
-        "--9600-compare" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --9600-compare <file.wav>");
-                return;
-            }
-            run_9600_compare(&args[2]);
+        Command::Baud9600Compare { file } => {
+            run_9600_compare(&file.to_string_lossy());
         }
-        "--9600-multi" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --9600-multi <file.wav>");
-                return;
-            }
-            run_9600_multi(&args[2]);
+        Command::Baud9600Multi { file } => {
+            run_9600_multi(&file.to_string_lossy());
         }
-        "--9600-suite" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --9600-suite <directory>");
-                return;
-            }
-            run_9600_suite(&args[2]);
+        Command::Baud9600Suite { directory } => {
+            run_9600_suite(&directory.to_string_lossy());
         }
-        "--9600-diag" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --9600-diag <file.wav>");
-                return;
-            }
-            run_9600_diag(&args[2]);
+        Command::Baud9600Diag { file } => {
+            run_9600_diag(&file.to_string_lossy());
         }
-        "--9600-mini" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --9600-mini <file.wav>");
-                return;
-            }
-            run_9600_mini(&args[2]);
+        Command::Baud9600Mini { file } => {
+            run_9600_mini(&file.to_string_lossy());
         }
-        "--9600-tune" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --9600-tune <file.wav>");
-                return;
-            }
-            run_9600_tune(&args[2]);
+        Command::Baud9600Tune { file } => {
+            run_9600_tune(&file.to_string_lossy());
         }
-        "--9600-attribution" => {
-            if args.len() < 3 {
-                eprintln!("Usage: benchmark --9600-attribution <file.wav>");
-                return;
-            }
-            run_9600_attribution(&args[2]);
-        }
-        "--help" | "-h" => print_usage(),
-        _ => {
-            eprintln!("Unknown argument: {}", args[1]);
-            print_usage();
+        Command::Baud9600Attribution { file } => {
+            run_9600_attribution(&file.to_string_lossy());
         }
     }
-}
-
-fn print_usage() {
-    println!("Packet Radio RS — Benchmark Runner");
-    println!();
-    println!("USAGE:");
-    println!("  benchmark --wav <file.wav>             Decode a single WAV file (all decoders)");
-    println!("  benchmark --suite <directory>           Decode all WAV files, compare with Dire Wolf");
-    println!("  benchmark --compare-approaches <wav>    Compare fast vs. quality path frame-by-frame");
-    println!("  benchmark --synthetic                   Run synthetic signal benchmark");
-    println!();
-    println!("GLOBAL FLAGS:");
-    println!("  --baud <N>      Set baud rate (default: 1200)");
-    println!("  --rate <N>      Run suite at specific sample rate (e.g. 22050)");
-    println!("  --all-rates     Run suite at all discovered sample rates + best summary");
-    println!("  --mcu-only      Only run MCU-feasible decoders (Fast, Quality, Smart3, TwistMini, DM)");
-    println!();
-    println!("SPECIALIZED COMMANDS:");
-    println!("  benchmark --dm <file.wav>              Decode using delay-multiply demodulator");
-    println!("  benchmark --dm-pll <file.wav>          DM+PLL with all variant combinations");
-    println!("  benchmark --dm-pll-sweep <file.wav>    Sweep PLL alpha/beta parameters");
-    println!("  benchmark --dm-pll-tune <file.wav>     Two-stage parameter tuning (Gardner shift, smoothing, LLR)");
-    println!("  benchmark --dm-debug <file.wav>        Dump DM discriminator diagnostics to CSV");
-    println!("  benchmark --export <wav> <dir>         Export decoded frames to files");
-    println!("  benchmark --diff <file.wav>            Frame-level diff against Dire Wolf reference");
-    println!("  benchmark --attribution <file.wav>     Per-decoder attribution analysis (multi-decoder)");
-    println!("  benchmark --smart3 <file.wav>          Decode using Smart3 mini-decoder (3 optimal decoders)");
-    println!("  benchmark --soft-diag <file.wav>       Soft decode diagnostics (per-frame LLR analysis)");
-    println!("  benchmark --corr <file.wav>            Decode using correlation (mixer) demodulator");
-    println!("  benchmark --corr-slicer <file.wav>    Decode using correlation multi-slicer (8 gain levels)");
-    println!("  benchmark --corr-lpf-sweep <file.wav>  Sweep correlation LPF cutoff (400-1000 Hz, 50 Hz steps)");
-    println!("  benchmark --corr-pll <file.wav>        Correlation + Gardner PLL timing recovery");
-    println!("  benchmark --corr-pll-sweep <file.wav>  Sweep Corr+PLL alpha/error_shift parameters");
-    println!("  benchmark --xor <file.wav>             Decode using binary XOR correlator");
-    println!("  benchmark --twist <file.wav>           Sweep twist-tuned decoder configurations");
-    println!("  benchmark --twist-mini <file.wav>      TwistMini multi-rate comparison");
-    println!("  benchmark --window <file.wav>          Sweep Goertzel window types (ISI reduction)");
-    println!("  benchmark --fusion <file.wav>          Cross-architecture Goertzel+Corr LLR fusion");
-    println!("  benchmark --pll-300 <file.wav>         Sweep 300-baud DM+PLL alpha values");
-    println!();
-    println!("300 BAUD HF:");
-    println!("  benchmark --baud 300 --suite <dir>     Run all decoders at 300 baud");
-    println!("  benchmark --pll-300 <file.wav>         Sweep 300-baud DM+PLL alpha values");
-    println!();
-    println!("9600 BAUD G3RUH:");
-    println!("  benchmark --9600 <file.wav>             Decode 9600 baud WAV (all algorithms)");
-    println!("  benchmark --9600-compare <file.wav>     Side-by-side algorithm comparison");
-    println!("  benchmark --9600-multi <file.wav>       Decode using Multi9600 ensemble decoder");
-    println!("  benchmark --9600-mini <file.wav>        Decode using Mini9600 (6-decoder MCU ensemble)");
-    println!("  benchmark --9600-tune <file.wav>        Grid search: LPF × timing × slicer × cascaded");
-    println!("  benchmark --9600-attribution <file.wav>  Per-decoder attribution + greedy set-cover");
-    println!("  benchmark --9600-suite <directory>      Grid: all algorithms × all 9600 WAVs vs DireWolf");
-    println!();
-    println!("The WAV files from the WA8LMF TNC Test CD are the standard benchmark.");
-    println!("Download from: http://wa8lmf.net/TNCtest/");
 }
 
 // ─── Decode Engine ───────────────────────────────────────────────────────
@@ -637,9 +587,8 @@ fn decode_best_single(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let center = (1700i32 + freq_offset) as f64;
     let bpf = filter::bandpass_coeffs(sample_rate, center, 2000.0);
 
-    let mut demod = FastDemodulator::with_filter_freq_and_offset(
-        config, bpf, phase_offset, mark, space,
-    ).with_adaptive_retune().with_energy_llr();
+    let mut demod = FastDemodulator::new(config).filter(bpf).phase_offset(phase_offset)
+        .frequencies(mark, space).with_adaptive_retune().with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
     let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
@@ -694,9 +643,8 @@ fn decode_custom_goertzel(
         _ => filter::afsk_bandpass_11025(),
     };
 
-    let mut demod = FastDemodulator::with_filter_freq_and_offset(
-        config, bpf, phase_offset, mark, space,
-    );
+    let mut demod = FastDemodulator::new(config).filter(bpf).phase_offset(phase_offset)
+        .frequencies(mark, space);
     let mut hdlc = HdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
     let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
@@ -2591,7 +2539,7 @@ fn decode_twist(
         filter::afsk_bandpass_11025()
     };
 
-    let mut demod = FastDemodulator::with_filter_and_offset(config, bpf, phase_offset)
+    let mut demod = FastDemodulator::new(config).filter(bpf).phase_offset(phase_offset)
         .with_space_gain(space_gain_q8)
         .with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
@@ -2802,9 +2750,8 @@ fn run_smart3_sweep(path: &str) {
                 let bpf = bpf_fn(sample_rate, center);
                 let phase_offset = t * sample_rate / 3;
 
-                let mut demod = FastDemodulator::with_filter_freq_and_offset(
-                    config, bpf, phase_offset, mark, space,
-                ).with_energy_llr();
+                let mut demod = FastDemodulator::new(config).filter(bpf).phase_offset(phase_offset)
+                    .frequencies(mark, space).with_energy_llr();
                 let mut soft_hdlc = SoftHdlcDecoder::new();
                 let mut frames: Vec<Vec<u8>> = Vec::new();
                 let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
@@ -2907,9 +2854,9 @@ fn run_smart3_sweep(path: &str) {
                     let off2 = d2_t * sample_rate / 3;
                     let off3 = d3_t * sample_rate / 3;
 
-                    let mut d1 = FastDemodulator::with_filter_freq_and_offset(config, bpf1, off1, mark1, space1).with_energy_llr();
-                    let mut d2 = FastDemodulator::with_filter_and_offset(config, narrow, off2).with_energy_llr();
-                    let mut d3 = FastDemodulator::with_filter_and_offset(config, narrow.clone(), off3).with_energy_llr();
+                    let mut d1 = FastDemodulator::new(config).filter(bpf1).phase_offset(off1).frequencies(mark1, space1).with_energy_llr();
+                    let mut d2 = FastDemodulator::new(config).filter(narrow).phase_offset(off2).with_energy_llr();
+                    let mut d3 = FastDemodulator::new(config).filter(narrow.clone()).phase_offset(off3).with_energy_llr();
                     let mut h1 = SoftHdlcDecoder::new();
                     let mut h2 = SoftHdlcDecoder::new();
                     let mut h3 = SoftHdlcDecoder::new();

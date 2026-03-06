@@ -46,6 +46,9 @@ const AGC_DECAY_SHIFT: u32 = 6;
 /// Maximum window table length for windowed Goertzel (covers up to 48000/1200=40 SPB).
 const MAX_WINDOW_LEN: usize = 48;
 
+/// Unity gain in Q8 fixed-point (256 = 1.0, i.e. 0 dB).
+const UNITY_GAIN_Q8: u16 = 256;
+
 /// Goertzel window type for ISI reduction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GoertzelWindow {
@@ -180,109 +183,15 @@ impl FastDemodulator {
         }
     }
 
-    /// Create a new fast-path demodulator.
-    pub fn new(config: DemodConfig) -> Self {
-        let bpf = Self::select_bpf(&config);
-
-        let mark_coeff = goertzel_coeff(config.mark_freq, config.sample_rate);
-        let space_coeff = goertzel_coeff(config.space_freq, config.sample_rate);
-
-        Self {
-            config,
-            bpf,
-            bpf2: None,
-            prev_nrzi_bit: false,
-            samples_processed: 0,
-            mark_s1: 0,
-            mark_s2: 0,
-            space_s1: 0,
-            space_s2: 0,
-            mark_coeff,
-            space_coeff,
-            bit_phase: 0,
-            space_gain_q8: 256,
-            agc_enabled: false,
-            window_q8: [256; MAX_WINDOW_LEN],
-            window_len: 0,
-            sym_sample_idx: 0,
-            mark_energy_peak: 1,
-            space_energy_peak: 1,
-            energy_llr: false,
-            adaptive: None,
-            adaptive_gain_enabled: false,
-            demod_shift_reg: 0,
-            preamble_mark_energy: 0,
-            preamble_space_energy: 0,
-            preamble_mark_count: 0,
-            preamble_space_count: 0,
-            preamble_flag_count: 0,
-            symbols_since_last_flag: 255,
-            pll: None,
-            timing_baud_rate: config.baud_rate,
-        }
-    }
-
-    /// Create with a custom bandpass filter.
-    pub fn with_filter(config: DemodConfig, bpf: BiquadFilter) -> Self {
-        let mark_coeff = goertzel_coeff(config.mark_freq, config.sample_rate);
-        let space_coeff = goertzel_coeff(config.space_freq, config.sample_rate);
-
-        Self {
-            config,
-            bpf,
-            bpf2: None,
-            prev_nrzi_bit: false,
-            samples_processed: 0,
-            mark_s1: 0,
-            mark_s2: 0,
-            space_s1: 0,
-            space_s2: 0,
-            mark_coeff,
-            space_coeff,
-            bit_phase: 0,
-            space_gain_q8: 256,
-            agc_enabled: false,
-            mark_energy_peak: 1,
-            space_energy_peak: 1,
-            energy_llr: false,
-            adaptive: None,
-            adaptive_gain_enabled: false,
-            demod_shift_reg: 0,
-            preamble_mark_energy: 0,
-            preamble_space_energy: 0,
-            preamble_mark_count: 0,
-            preamble_space_count: 0,
-            preamble_flag_count: 0,
-            symbols_since_last_flag: 255,
-            pll: None,
-            timing_baud_rate: config.baud_rate,
-            window_q8: [256; MAX_WINDOW_LEN],
-            window_len: 0,
-            sym_sample_idx: 0,
-        }
-    }
-
-    /// Create with custom filter and initial timing offset.
-    pub fn with_filter_and_offset(config: DemodConfig, bpf: BiquadFilter, phase_offset: u32) -> Self {
-        let mut d = Self::with_filter(config, bpf);
-        d.bit_phase = phase_offset;
-        d
-    }
-
-    /// Create with custom filter, timing offset, and frequency offset.
-    ///
-    /// The mark/space frequencies are shifted by `freq_offset` Hz, allowing
-    /// the decoder to handle transmitters with crystal frequency error.
-    pub fn with_filter_freq_and_offset(
+    /// Common internal constructor. All public constructors delegate here.
+    fn create(
         config: DemodConfig,
         bpf: BiquadFilter,
+        mark_coeff: i32,
+        space_coeff: i32,
         phase_offset: u32,
-        mark_freq: u32,
-        space_freq: u32,
     ) -> Self {
-        let mark_coeff = goertzel_coeff(mark_freq, config.sample_rate);
-        let space_coeff = goertzel_coeff(space_freq, config.sample_rate);
-
+        let timing_baud_rate = config.baud_rate;
         Self {
             config,
             bpf,
@@ -296,8 +205,11 @@ impl FastDemodulator {
             mark_coeff,
             space_coeff,
             bit_phase: phase_offset,
-            space_gain_q8: 256,
+            space_gain_q8: UNITY_GAIN_Q8,
             agc_enabled: false,
+            window_q8: [UNITY_GAIN_Q8; MAX_WINDOW_LEN],
+            window_len: 0,
+            sym_sample_idx: 0,
             mark_energy_peak: 1,
             space_energy_peak: 1,
             energy_llr: false,
@@ -311,11 +223,42 @@ impl FastDemodulator {
             preamble_flag_count: 0,
             symbols_since_last_flag: 255,
             pll: None,
-            timing_baud_rate: config.baud_rate,
-            window_q8: [256; MAX_WINDOW_LEN],
-            window_len: 0,
-            sym_sample_idx: 0,
+            timing_baud_rate,
         }
+    }
+
+    /// Create a new fast-path demodulator.
+    #[must_use]
+    pub fn new(config: DemodConfig) -> Self {
+        let bpf = Self::select_bpf(&config);
+        let mark_coeff = goertzel_coeff(config.mark_freq, config.sample_rate);
+        let space_coeff = goertzel_coeff(config.space_freq, config.sample_rate);
+        Self::create(config, bpf, mark_coeff, space_coeff, 0)
+    }
+
+    /// Set a custom bandpass filter, replacing the auto-selected one.
+    #[must_use]
+    pub fn filter(mut self, bpf: BiquadFilter) -> Self {
+        self.bpf = bpf;
+        self
+    }
+
+    /// Set the initial Bresenham timing phase offset.
+    #[must_use]
+    pub fn phase_offset(mut self, offset: u32) -> Self {
+        self.bit_phase = offset;
+        self
+    }
+
+    /// Set custom mark/space Goertzel frequencies.
+    ///
+    /// Re-computes Goertzel coefficients for the given frequencies, allowing
+    /// the decoder to handle transmitters with crystal frequency error.
+    #[must_use]
+    pub fn frequencies(mut self, mark_freq: u32, space_freq: u32) -> Self {
+        self.mark_coeff = goertzel_coeff(mark_freq, self.config.sample_rate);
+        self.space_coeff = goertzel_coeff(space_freq, self.config.sample_rate);
+        self
     }
 
     /// Override baud rate for Bresenham symbol timing.
@@ -323,6 +266,7 @@ impl FastDemodulator {
     /// The BPF and Goertzel coefficients remain tuned for the nominal baud rate,
     /// but the symbol timing runs at a different rate. Used for baud-rate diversity
     /// in multi-decoder to handle variable-speed transmitters.
+    #[must_use]
     pub fn with_timing_baud_rate(mut self, baud_rate: u32) -> Self {
         self.timing_baud_rate = baud_rate;
         self
@@ -333,6 +277,7 @@ impl FastDemodulator {
     /// Q8 format: 256 = 0 dB (no gain), higher values boost space energy
     /// relative to mark. Used to handle de-emphasized audio where the
     /// space tone (2200 Hz) is weaker than mark (1200 Hz).
+    #[must_use]
     pub fn with_space_gain(mut self, gain_q8: u16) -> Self {
         self.space_gain_q8 = gain_q8;
         self
@@ -344,6 +289,7 @@ impl FastDemodulator {
     /// and normalizes the bit decision by cross-multiplying, so that
     /// frequency-dependent gain differences (e.g. de-emphasis) are compensated
     /// without needing a fixed gain parameter.
+    #[must_use]
     pub fn with_agc(mut self) -> Self {
         self.agc_enabled = true;
         self
@@ -353,6 +299,7 @@ impl FastDemodulator {
     ///
     /// Replaces the fixed ±64 LLR with actual mark/space energy ratio,
     /// enabling SoftHdlcDecoder bit-flip recovery on the fast path.
+    #[must_use]
     pub fn with_energy_llr(mut self) -> Self {
         self.energy_llr = true;
         self
@@ -363,6 +310,7 @@ impl FastDemodulator {
     /// Adds a second BPF stage in series with the first, doubling the
     /// rolloff to -12 dB/octave. Improves out-of-band noise rejection.
     /// Cost: ~5 extra ops/sample.
+    #[must_use]
     pub fn with_cascade_bpf(mut self) -> Self {
         self.bpf2 = Some(self.bpf);
         self
@@ -377,6 +325,7 @@ impl FastDemodulator {
     /// with rectangular windowing but near-zero with Hann.
     ///
     /// Cost: one extra integer multiply per sample.
+    #[must_use]
     pub fn with_window(mut self, window_type: GoertzelWindow) -> Self {
         let spb = self.config.sample_rate / self.config.baud_rate;
         if spb == 0 || spb > MAX_WINDOW_LEN as u32 {
@@ -402,6 +351,7 @@ impl FastDemodulator {
     ///
     /// Additional cost: ~46 ops/sample during preamble (~920 samples at 11025 Hz).
     /// After lock, the adaptive path is bypassed (just retuned Goertzel runs).
+    #[must_use]
     pub fn with_adaptive_retune(mut self) -> Self {
         self.adaptive = Some(AdaptiveState {
             hilbert: hilbert_31(),
@@ -418,6 +368,7 @@ impl FastDemodulator {
     /// Uses a normalized Goertzel energy discriminator to drive the PLL.
     /// Particularly useful for 300 baud where 37 samples/symbol gives
     /// PLL much better convergence than at 1200 baud (9 sps).
+    #[must_use]
     pub fn with_pll(mut self) -> Self {
         self.pll = Some(
             ClockRecoveryPll::new_gardner(self.config.sample_rate, self.config.baud_rate, 936, 0)
@@ -427,6 +378,7 @@ impl FastDemodulator {
     }
 
     /// Enable PLL timing recovery with custom parameters.
+    #[must_use]
     pub fn with_custom_pll(mut self, pll: ClockRecoveryPll) -> Self {
         self.pll = Some(pll);
         self
@@ -439,6 +391,7 @@ impl FastDemodulator {
     /// frequency-dependent gain differences. Re-measures on each new preamble.
     ///
     /// Only effective when AGC is disabled (AGC already handles gain).
+    #[must_use]
     pub fn with_adaptive_gain(mut self) -> Self {
         self.adaptive_gain_enabled = true;
         self
@@ -1658,7 +1611,8 @@ impl DmDemodulator {
                 } else {
                     disc_out
                 };
-                self.pll.as_mut().unwrap().update(pll_input).is_some()
+                // Safety: use_pll is set from self.pll.is_some() above
+                self.pll.as_mut().expect("PLL checked above").update(pll_input).is_some()
             } else {
                 self.bit_phase += baud_rate;
                 if self.bit_phase >= sample_rate {
