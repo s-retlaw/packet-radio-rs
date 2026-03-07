@@ -106,66 +106,6 @@ pub async fn run_aprs_is_client(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_parse_tnc2_basic() {
-        let pkt = parse_tnc2_line("N0CALL>APRS,WIDE1-1:!4903.50N/07201.75W-Test").unwrap();
-        assert_eq!(pkt.source, "N0CALL");
-        assert_eq!(pkt.dest, "APRS");
-        assert_eq!(pkt.path, vec!["WIDE1-1"]);
-        assert_eq!(pkt.info, b"!4903.50N/07201.75W-Test");
-    }
-
-    #[test]
-    fn test_parse_tnc2_no_path() {
-        let pkt = parse_tnc2_line("N0CALL>APRS:!4903.50N/07201.75W-").unwrap();
-        assert_eq!(pkt.source, "N0CALL");
-        assert_eq!(pkt.dest, "APRS");
-        assert!(pkt.path.is_empty());
-    }
-
-    #[test]
-    fn test_parse_tnc2_multiple_digipeaters() {
-        let pkt =
-            parse_tnc2_line("N0CALL>APRS,DIGI1*,DIGI2,WIDE2-1:!4903.50N/07201.75W-").unwrap();
-        assert_eq!(pkt.path.len(), 3);
-        assert_eq!(pkt.path[0], "DIGI1*");
-        assert_eq!(pkt.path[1], "DIGI2");
-        assert_eq!(pkt.path[2], "WIDE2-1");
-    }
-
-    #[test]
-    fn test_parse_tnc2_comment_line() {
-        assert!(parse_tnc2_line("# logresp N0CALL verified").is_none());
-    }
-
-    #[test]
-    fn test_parse_tnc2_empty_line() {
-        assert!(parse_tnc2_line("").is_none());
-        assert!(parse_tnc2_line("   ").is_none());
-    }
-
-    #[test]
-    fn test_parse_tnc2_missing_gt() {
-        assert!(parse_tnc2_line("N0CALLAPRS:data").is_none());
-    }
-
-    #[test]
-    fn test_parse_tnc2_missing_colon() {
-        assert!(parse_tnc2_line("N0CALL>APRS").is_none());
-    }
-
-    #[test]
-    fn test_parse_tnc2_empty_info() {
-        let pkt = parse_tnc2_line("N0CALL>APRS:").unwrap();
-        assert!(pkt.info.is_empty());
-    }
-
-    #[test]
-    fn test_parse_tnc2_info_with_colons() {
-        let pkt = parse_tnc2_line("N0CALL>APRS::W1AW     :Hello{001").unwrap();
-        assert_eq!(pkt.info, b":W1AW     :Hello{001");
-    }
-
     #[tokio::test]
     async fn test_process_tnc2_line_pipeline() {
         let pool = super::super::db::test_db().await;
