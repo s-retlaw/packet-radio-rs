@@ -46,6 +46,7 @@ pub mod soft_hdlc;
 pub mod multi;
 pub mod corr_slicer;
 pub mod binary_xor;
+pub mod fixed_vec;
 pub mod frame_output;
 pub mod hdlc_bank;
 
