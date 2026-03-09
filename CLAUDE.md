@@ -8,11 +8,17 @@ run on everything from desktop computers to ESP32 microcontrollers.
 
 ## Architecture
 
-- **`core/`** — `no_std` library with all computation: AFSK modem, AX.25, APRS, KISS
+- **`core/`** — `no_std` library with all computation: AFSK/G3RUH modem, AX.25, APRS, KISS
 - **`shared/`** — Cross-platform `std` utilities: APRS-IS client, IGate, config
-- **`desktop/`** — Desktop binary using sound card (cpal) for audio
+- **`desktop/`** — Desktop binary using sound card (cpal) for audio, TUI interface
 - **`esp32/`** — ESP32 firmware using I2S for audio and WiFi for IGate
-- **`docs/`** — Design documentation (READ THESE for implementation details)
+- **`reference/`** — Reference data crate (FCC callsign DB)
+- **`aprs-viewer/`** — APRS packet viewer utility
+- **`tests/benchmark/`** — WA8LMF TNC Test CD benchmark runner (18 subcommand modules)
+- **`tools/`** — Utilities (kiss-dump)
+- **`rp2040-test/`**, **`pico2w-test/`** — MCU test harnesses (RP2040, RP2350)
+- **`esp32c3-test/`**, **`esp32c6-test/`**, **`esp32c3-host/`** — ESP32-C3/C6 test harnesses
+- **`docs/`** — Design documentation (13 files — READ THESE for implementation details)
 
 ## Key Design Constraints
 
@@ -33,12 +39,12 @@ extract from difficult signals is what matters most.
   important benchmark — 100 de-emphasized Mic-E bursts that stress clock recovery,
   AGC, and filter design.
 - All WA8LMF tracks matter, but Track 2 is the priority target.
-- Multi-decoder results (97.6% of Dire Wolf) are useful for desktop but are NOT
+- Multi-decoder results (98.3% of Dire Wolf) are useful for desktop but are NOT
   the MCU optimization target.
 - Current single-decoder baselines on Track 2 (of 974 total, Dire Wolf=974):
-  - Fast (Goertzel+Bresenham): **446**
-  - Quality (Goertzel+Bresenham+SoftHDLC): **447**
-  - DM+PLL (Delay-Multiply+Gardner PLL): **417**
+  - Fast (Goertzel+Bresenham): **563**
+  - Quality (Goertzel+Bresenham+SoftHDLC): **564**
+  - DM+PLL (Delay-Multiply+Gardner PLL): **386**
 
 ## Important Documentation
 
@@ -61,7 +67,7 @@ cargo build -p packet-radio-core
 cargo test -p packet-radio-core
 
 # Build desktop TNC
-cargo build -p desktop --release
+cargo build -p packet-radio-desktop --release
 
 # Check everything compiles
 cargo check --workspace
@@ -86,9 +92,10 @@ implementation order (from docs/GETTING_STARTED.md):
       - PLL clock recovery uses Gardner TED (alpha+beta correction)
 5. ✅ AFSK modulator (NCO phase accumulator, sin table)
 6. ✅ APRS parser (position, Mic-E, message parsing)
-7. ✅ Desktop TNC (cpal audio, WAV decode, KISS TCP, --quality/--multi modes)
-8. 🔲 APRS-IS client
-9. 🔲 ESP32 firmware
+7. ✅ Desktop TNC (cpal audio, WAV decode, KISS TCP, TUI, config file)
+      - Modes: fast, quality, multi, smart3, dm, corr, corr-slicer, combined, xor
+8. ✅ APRS-IS client (TNC-2 parser, TCP connection in `shared/src/aprs_is.rs`)
+9. 🔲 ESP32 firmware (test harnesses for ESP32/C3/C6/RP2040/Pico2W complete)
 
 ## Coding Conventions
 
@@ -104,26 +111,44 @@ implementation order (from docs/GETTING_STARTED.md):
 ## Testing
 
 ```bash
-# Run all core unit tests
-cargo test -p packet-radio-core
+# Run all core unit tests (152+ tests)
+cargo test -p packet-radio-core --features multi-decoder
 
-# Run comparative demodulator tests (once implemented)
+# Run comparative demodulator tests
 cargo test --test demod_comparative -- --nocapture
 
-# Run TNC Test CD benchmark
-cargo run --release -p benchmark -- --wav tests/wav/track1.wav
+# 1200 baud WA8LMF benchmark
+cargo run --release -p benchmark -- suite tests/wav/
+cargo run --release -p benchmark -- wav tests/wav/01_track1.wav
+cargo run --release -p benchmark -- compare-approaches tests/wav/01_track1.wav
 
-# Compare fast vs quality demodulator paths
-cargo run --release -p benchmark -- --compare-approaches tests/wav/track1.wav
+# 1200 baud specialized modes
+cargo run --release -p benchmark -- smart3 tests/wav/01_track1.wav
+cargo run --release -p benchmark -- corr tests/wav/01_track1.wav
+cargo run --release -p benchmark -- corr-slicer tests/wav/01_track1.wav
+cargo run --release -p benchmark -- dm tests/wav/01_track1.wav
+cargo run --release -p benchmark -- xor tests/wav/01_track1.wav
+cargo run --release -p benchmark -- twist-mini tests/wav/01_track1.wav
+cargo run --release -p benchmark -- diff tests/wav/02_100-mic-e-bursts-de-emphasized.wav
+cargo run --release -p benchmark -- attribution tests/wav/02_100-mic-e-bursts-de-emphasized.wav
+
+# 300 baud HF AFSK
+cargo run --release -p benchmark -- pll-300 tests/wav/some_300_file.wav
+
+# 9600 baud G3RUH
+cargo run --release -p benchmark -- 9600 tests/wav/some_9600_file.wav
+cargo run --release -p benchmark -- 9600-suite tests/wav/
+cargo run --release -p benchmark -- 9600-compare tests/wav/some_9600_file.wav
+cargo run --release -p benchmark -- 9600-multi tests/wav/some_9600_file.wav
 
 # Synthetic signal benchmark (no WAV files needed)
-cargo run --release -p benchmark -- --synthetic
+cargo run --release -p benchmark -- synthetic
 ```
 
 Test infrastructure lives in `tests/`:
 - `tests/common/mod.rs` — Signal generation, impairments, WAV I/O, analysis
 - `tests/demod_comparative.rs` — A/B comparison of demodulator paths
-- `tests/benchmark/main.rs` — TNC Test CD and synthetic benchmarks
+- `tests/benchmark/main.rs` — WA8LMF benchmark runner (18 subcommand modules)
 - `tests/wav/` — WAV files (not in git, see README.md for download links)
 
 - Dire Wolf source: https://github.com/wb2osz/direwolf (study demod_afsk.c)

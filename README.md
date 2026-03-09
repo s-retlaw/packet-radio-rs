@@ -4,8 +4,8 @@
 
 ## Project Goals
 
-- **Cross-platform core**: `no_std` library that runs on everything from desktop Linux to ESP32 to STM32
-- **High-performance AFSK modem**: Bell 202 (1200 baud) modulator/demodulator with multi-decoder support
+- **Cross-platform core**: `no_std` library that runs on everything from desktop Linux to ESP32 to RP2040
+- **Multi-baud AFSK/FSK modem**: 1200 baud Bell 202, 300 baud HF AFSK, 9600 baud G3RUH
 - **Full APRS support**: Parse and encode all common APRS packet types
 - **AX.25 protocol**: Complete HDLC framing and AX.25 header parsing
 - **Multiple deployment targets**: Desktop TNC, ESP32 IGate, embedded KISS TNC, library crate
@@ -27,8 +27,8 @@
 │              Shared Layer (optional std)           │
 │  ┌──────────────────────────────────────────┐     │
 │  │ APRS-IS client, IGate logic, config      │     │
-│  └──────────────────────────┬───────────────┘     │
-├─────────────────────────────┴────────────────────┤
+│  └──────────────────────┬───────────────┘     │
+├─────────────────────────┴────────────────────────┤
 │              Core Library (no_std)                 │
 │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐    │
 │  │ Modem  │ │ AX.25  │ │ APRS   │ │ KISS   │    │
@@ -43,51 +43,88 @@
 
 ```
 packet-radio-rs/
-├── Cargo.toml              # Workspace root
-├── core/                   # no_std core library
+├── Cargo.toml                  # Workspace root
+├── core/                       # no_std core library (packet-radio-core)
 │   └── src/
-│       ├── lib.rs
-│       ├── modem/          # AFSK modulation/demodulation
-│       │   ├── mod.rs
-│       │   ├── afsk.rs     # Bell 202 AFSK modem
-│       │   ├── demod.rs    # Demodulator implementations
-│       │   └── filter.rs   # DSP filters (bandpass, LPF, PLL)
-│       ├── ax25/           # AX.25 protocol
-│       │   ├── mod.rs
-│       │   ├── frame.rs    # HDLC framing, bit stuffing
-│       │   └── address.rs  # Callsign/SSID parsing
-│       ├── aprs/           # APRS encoding/decoding
-│       │   ├── mod.rs
-│       │   ├── position.rs # Position reports
-│       │   ├── message.rs  # APRS messages
-│       │   ├── weather.rs  # Weather reports
-│       │   ├── telemetry.rs
-│       │   └── mic_e.rs    # Mic-E encoding
-│       └── kiss/           # KISS TNC protocol
+│       ├── lib.rs              # Traits: SampleSource, SampleSink, FrameHandler
+│       ├── tnc.rs              # TNC engine (encode/decode pipeline)
+│       ├── modem/              # DSP: modulation/demodulation (19 files)
+│       │   ├── mod.rs, afsk.rs         # Bell 202 AFSK modem, NCO modulator
+│       │   ├── demod.rs                # Goertzel, DM, Correlation demodulators
+│       │   ├── filter.rs, hilbert.rs   # BPF, LPF, Hilbert transform
+│       │   ├── pll.rs, adaptive.rs     # Gardner PLL, adaptive retune
+│       │   ├── multi.rs                # MultiDecoder (38×), MiniDecoder (3×)
+│       │   ├── corr_slicer.rs          # Multi-slicer correlation decoder
+│       │   ├── binary_xor.rs           # Binary XOR correlator
+│       │   ├── soft_hdlc.rs            # SoftHdlcDecoder (LLR bit-flip recovery)
+│       │   ├── hdlc_bank.rs            # HdlcBank<N> (heap-allocated multi-HDLC)
+│       │   ├── demod_9600.rs, mod_9600.rs, multi_9600.rs  # 9600 baud G3RUH
+│       │   ├── scrambler.rs            # G3RUH scrambler/descrambler
+│       │   ├── delay_multiply.rs       # Delay-multiply discriminator
+│       │   ├── fixed_vec.rs            # Fixed-capacity vector (no_std)
+│       │   └── frame_output.rs         # Frame output abstraction
+│       ├── ax25/               # AX.25 protocol
+│       │   ├── mod.rs          # Callsign/SSID parsing, address handling
+│       │   └── frame.rs        # HDLC framing, bit stuffing, CRC
+│       ├── aprs/               # APRS encoding/decoding
+│       │   ├── mod.rs          # Position, Mic-E, message, compressed parsing
+│       │   └── nmea.rs         # NMEA sentence handling
+│       └── kiss/               # KISS TNC protocol
 │           └── mod.rs
-├── shared/                 # Cross-platform std utilities
+├── shared/                     # Cross-platform std utilities
 │   └── src/
 │       ├── lib.rs
-│       ├── igate.rs        # APRS-IS client
-│       └── config.rs       # Configuration
-├── desktop/                # Desktop binary
+│       ├── aprs_is.rs          # APRS-IS client (TNC-2 parser, TCP connection)
+│       ├── igate.rs            # IGate logic
+│       └── config.rs           # Configuration
+├── desktop/                    # Desktop binary (packet-radio-desktop)
 │   └── src/
-│       ├── main.rs
-│       ├── audio.rs        # Sound card I/O via cpal
-│       └── network.rs      # TCP KISS, AGW interfaces
-├── esp32/                  # ESP32 firmware
+│       ├── main.rs, cli.rs     # Entry point, CLI argument parsing
+│       ├── audio.rs            # Sound card I/O via cpal
+│       ├── decoder.rs          # Decoder mode selection
+│       ├── kiss_server.rs      # KISS TCP server (tokio)
+│       ├── tx.rs               # TX audio generation
+│       ├── headless.rs         # Headless (non-TUI) mode
+│       ├── config.rs           # TOML config (packet-radio.toml)
+│       ├── frame_fmt.rs        # Frame formatting
+│       ├── processing.rs       # Audio processing pipeline
+│       └── tui/                # Terminal UI (ratatui)
+│           ├── mod.rs, state.rs, event.rs
+│           ├── ui/             # Tab views: packets, aprs, settings
+│           └── widgets/        # Dialog, file picker, text input
+├── reference/                  # Reference data crate (FCC callsign DB)
 │   └── src/
-│       ├── main.rs
-│       ├── audio.rs        # I2S / ADC+DAC audio
-│       └── wifi.rs         # WiFi for IGate
-├── docs/                   # Design documentation
-│   ├── ARCHITECTURE.md
-│   ├── MODEM_DESIGN.md
-│   ├── HARDWARE.md
-│   ├── ESP32_GUIDE.md
-│   └── GETTING_STARTED.md
-└── tests/                  # Integration test assets
-    └── wav/                # Test WAV files with known packets
+│       ├── lib.rs, db.rs, geo.rs, source.rs
+├── aprs-viewer/                # APRS packet viewer utility
+│   └── src/
+│       ├── main.rs, lib.rs, models.rs
+├── tests/                      # Integration tests & benchmarks
+│   ├── benchmark/              # WA8LMF TNC Test CD benchmark (18 modules)
+│   │   ├── main.rs             # CLI: wav, suite, diff, attribution, 9600-*...
+│   │   └── *.rs                # Subcommands per mode/baud rate
+│   ├── common/                 # Signal generation, impairments, WAV I/O
+│   ├── demod_comparative.rs    # A/B demodulator comparison
+│   └── wav/                    # Test WAV files (not in git)
+├── esp32/                      # ESP32 firmware (I2S audio, WiFi IGate)
+├── esp32c3-host/               # ESP32-C3 host-side tools
+├── esp32c3-test/               # ESP32-C3 test harness
+├── esp32c6-test/               # ESP32-C6 test harness
+├── rp2040-test/                # RP2040 test harness (USB-CDC, ADC decode)
+├── pico2w-test/                # Pico 2 W (RP2350) test harness (Embassy)
+├── tools/                      # Utilities (kiss-dump)
+├── docs/                       # Design documentation (13 files)
+│   ├── ARCHITECTURE.md         # System design, traits, memory budget
+│   ├── MODEM_DESIGN.md         # AFSK demodulator/modulator algorithms
+│   ├── MULTI_BAUD.md           # 300/1200/9600 baud support
+│   ├── SAMPLE_RATE_ANALYSIS.md # Sample rate trade-offs
+│   ├── NOVEL_STRATEGIES.md     # Advanced optimization ideas
+│   ├── OPTIMIZATION_LOG.md     # Performance tuning history
+│   ├── HARDWARE.md, HARDWARE_DEVICE.md  # Audio interfaces, BOM
+│   ├── ESP32_GUIDE.md          # ESP32 toolchain, I2S, WiFi
+│   ├── MCU_DEMOD_REVIEW.md, MCU_TEST_TOOLS.md  # MCU-specific docs
+│   ├── GETTING_STARTED.md      # Implementation order, dev workflow
+│   └── TEST_PLAN.md            # Test strategy, WA8LMF benchmark
+└── fcc-data/                   # FCC license database files
 ```
 
 ## Target Platforms
@@ -99,7 +136,7 @@ packet-radio-rs/
 | ESP32 / ESP32-S3 | Xtensa 240MHz, FPU | I2S codec, built-in DAC/ADC | WiFi built-in | Standalone WiFi IGate |
 | ESP32-C3 / C6 | RISC-V 160MHz | I2S, ADC | WiFi built-in | Cheap WiFi TNC (no FPU) |
 | STM32F4 | Cortex-M4 168MHz, FPU | I2S + codec | UART KISS | Standalone KISS TNC |
-| RP2040 | Dual Cortex-M0+ 133MHz | PIO I2S, ADC | UART KISS | Ultra-cheap $1 TNC |
+| RP2040 | Dual Cortex-M0+ 133MHz | PIO I2S, ADC | UART KISS, USB-CDC | Ultra-cheap $1 TNC |
 | nRF52840 | Cortex-M4 64MHz, FPU | I2S, PDM | BLE | Low-power BLE TNC |
 
 ## Quick Start
@@ -108,20 +145,44 @@ packet-radio-rs/
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_USER/packet-radio-rs.git
+git clone https://github.com/s-retlaw/packet-radio-rs.git
 cd packet-radio-rs
 
 # Build the core library
-cargo build -p core
+cargo build -p packet-radio-core
 
-# Run tests
-cargo test -p core
+# Run tests (use --features multi-decoder for full test suite)
+cargo test -p packet-radio-core
+cargo test -p packet-radio-core --features multi-decoder
 
 # Build the desktop TNC
-cargo build -p desktop --release
+cargo build -p packet-radio-desktop --release
 
-# Run the desktop TNC
-cargo run -p desktop -- --help
+# Run the desktop TNC (TUI mode by default)
+cargo run -p packet-radio-desktop -- --help
+```
+
+### Benchmark
+
+```bash
+# 1200 baud WA8LMF benchmark suite
+cargo run --release -p benchmark -- suite tests/wav/
+
+# Single WAV file
+cargo run --release -p benchmark -- wav tests/wav/01_track1.wav
+
+# Compare demodulator approaches
+cargo run --release -p benchmark -- compare-approaches tests/wav/01_track1.wav
+
+# 9600 baud G3RUH
+cargo run --release -p benchmark -- 9600 tests/wav/some_9600_file.wav
+cargo run --release -p benchmark -- 9600-suite tests/wav/
+
+# 300 baud HF AFSK
+cargo run --release -p benchmark -- pll-300 tests/wav/some_300_file.wav
+
+# Other modes: diff, attribution, smart3, corr, corr-slicer, dm, xor, twist-mini
+cargo run --release -p benchmark -- --help
 ```
 
 ### ESP32 Development
@@ -144,38 +205,41 @@ See [docs/ESP32_GUIDE.md](docs/ESP32_GUIDE.md) for detailed hardware setup.
 ## Roadmap
 
 ### Phase 1: Core Foundation
-- [ ] Bell 202 AFSK demodulator (single decoder)
-- [ ] Bell 202 AFSK modulator
-- [ ] HDLC framing (flag detect, bit unstuffing, CRC-16)
-- [ ] AX.25 frame parsing (callsigns, SSID, digipeater path)
-- [ ] KISS protocol encode/decode
-- [ ] WAV file test harness
+- [x] Bell 202 AFSK demodulator (single decoder)
+- [x] Bell 202 AFSK modulator
+- [x] HDLC framing (flag detect, bit unstuffing, CRC-16, soft bit-flip recovery)
+- [x] AX.25 frame parsing (callsigns, SSID, digipeater path)
+- [x] KISS protocol encode/decode
+- [x] WAV file test harness
 
 ### Phase 2: APRS
-- [ ] Position report parsing (plain and compressed)
-- [ ] Mic-E decoding
-- [ ] Message parsing and encoding
+- [x] Position report parsing (plain and compressed)
+- [x] Mic-E decoding
+- [x] Message parsing and encoding
 - [ ] Weather report parsing
 - [ ] Object/Item parsing
 - [ ] Telemetry
 
 ### Phase 3: Desktop TNC
-- [ ] Sound card audio I/O via cpal
-- [ ] KISS TCP server
+- [x] Sound card audio I/O via cpal
+- [x] KISS TCP server (bidirectional, TX WAV generation)
+- [x] Multi-decoder (38× parallel: 32 Goertzel + 6 DM)
+- [x] Configuration file support (TOML)
+- [x] Terminal UI (ratatui — Packets/APRS/Settings tabs)
+- [x] Multiple decoder modes (fast, quality, multi, smart3, dm, corr, corr-slicer, combined)
 - [ ] AGW port emulator
-- [ ] APRS-IS client (IGate)
-- [ ] Multi-decoder (parallel demodulators with varied parameters)
-- [ ] Configuration file support
+- [ ] APRS-IS IGate mode
 
 ### Phase 4: Embedded Targets
-- [ ] ESP32 firmware with I2S audio
-- [ ] ESP32 WiFi IGate
-- [ ] STM32F4 KISS TNC
-- [ ] RP2040 KISS TNC
+- [x] ESP32 test harness (I2S audio decode)
+- [x] RP2040 test harness (USB-CDC, ADC live decode)
+- [x] Pico 2 W (RP2350) test harness (Embassy async)
+- [ ] ESP32 full firmware (WiFi IGate)
 - [ ] Fixed-point DSP option for chips without FPU
 
 ### Phase 5: Advanced Features
-- [ ] 9600 baud G3RUH/GMSK modem
+- [x] 9600 baud G3RUH modem (modulator + demodulator + multi-decoder)
+- [x] 300 baud HF AFSK modem
 - [ ] FX.25 forward error correction
 - [ ] Digipeater logic
 - [ ] Web UI for configuration/monitoring
