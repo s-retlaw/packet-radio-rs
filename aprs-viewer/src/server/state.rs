@@ -16,4 +16,6 @@ pub struct AppState {
     pub config_notify: Arc<tokio::sync::watch::Sender<()>>,
     /// Reference database for enriching packets with static station data (CWOP, etc.).
     pub reference_db: Option<Arc<reference::ReferenceDb>>,
+    /// FCC callsign database for licensee info enrichment.
+    pub fcc_db: Option<Arc<fcc_data::FccDb>>,
 }

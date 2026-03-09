@@ -127,6 +127,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "fcc-data",
  "futures",
  "open",
  "packet-radio-core",

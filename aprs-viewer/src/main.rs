@@ -1,7 +1,7 @@
 use axum::routing::{delete, get, put};
 use axum::Router;
 use aprs_viewer::server::{
-    aprs_is, cleanup, config::WebConfig, ingest, state::AppState, tiles, ws,
+    aprs_is, cleanup, config::WebConfig, fcc, ingest, state::AppState, tiles, ws,
 };
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -64,6 +64,31 @@ async fn main() {
         }
     };
 
+    // Open FCC callsign database (licensee info enrichment)
+    let fcc_db = {
+        let fcc_config = &config.fcc;
+        let fcc_path = if fcc_config.db_path.is_empty() {
+            fcc_data::default_db_path()
+        } else {
+            std::path::PathBuf::from(&fcc_config.db_path)
+        };
+        if fcc_path.exists() {
+            match fcc_data::FccDb::open(&fcc_path).await {
+                Ok(db) => {
+                    tracing::info!("FCC DB: {}", fcc_path.display());
+                    Some(Arc::new(db))
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to open FCC DB at {}: {}", fcc_path.display(), e);
+                    None
+                }
+            }
+        } else {
+            tracing::info!("FCC DB not found at {} (FCC enrichment disabled)", fcc_path.display());
+            None
+        }
+    };
+
     // Create app state
     let config_arc = Arc::new(RwLock::new(config));
     let app_state = AppState {
@@ -73,6 +98,7 @@ async fn main() {
         config_path: config_path.to_string(),
         config_notify: Arc::new(config_notify_tx),
         reference_db: reference_db.clone(),
+        fcc_db,
     };
 
     // Spawn KISS TNC ingest task
@@ -240,6 +266,10 @@ async fn main() {
         .route("/api/maps", get(api_list_maps))
         .route("/api/maps/{name}", delete(api_delete_map))
         .route("/api/maps/download", put(api_download_map))
+        // FCC callsign enrichment
+        .route("/api/stations/{call}/fcc", get(fcc::fcc_lookup))
+        .route("/api/stations/{call}/fcc/history", get(fcc::fcc_history))
+        .route("/api/fcc/bbox", get(fcc::fcc_bbox))
         // Static files fallback
         .fallback(static_handler)
         .with_state(app_state);

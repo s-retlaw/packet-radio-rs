@@ -271,6 +271,34 @@ impl FccDb {
             .collect())
     }
 
+    /// Find stations within a bounding box.
+    pub async fn stations_in_bbox(
+        &self,
+        south: f64,
+        north: f64,
+        west: f64,
+        east: f64,
+    ) -> Result<Vec<LicenseRecord>> {
+        let sql = concat!(
+            "SELECT ", license_columns!(),
+            " FROM hd h
+             JOIN geocodes g ON g.usi = h.usi
+             LEFT JOIN en e ON e.usi = h.usi
+             LEFT JOIN am a ON a.usi = h.usi
+             WHERE g.lat BETWEEN ?1 AND ?2 AND g.lon BETWEEN ?3 AND ?4"
+        );
+
+        let records = sqlx::query_as::<_, LicenseRecord>(sql)
+            .bind(south)
+            .bind(north)
+            .bind(west)
+            .bind(east)
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(records)
+    }
+
     // ── History ──────────────────────────────────────────────────────
 
     /// Get comments for a USI. Returns (date, comment, status_code).

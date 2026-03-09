@@ -154,6 +154,9 @@
         html += '<div class="detail-field"><span class="label">Last heard:</span> ' + esc(timeAgo(s.last_heard)) + '</div>';
         html += '</div>';
 
+        // FCC info placeholder
+        html += '<div id="detail-fcc"></div>';
+
         // Path display (fetch most recent packet)
         html += '<div class="detail-path" id="detail-path"><span class="label">Path:</span> <span class="text-muted">Loading...</span></div>';
 
@@ -172,6 +175,9 @@
                 setTimeout(function() { el.classList.remove('copied'); }, 1000);
             });
         });
+
+        // Fetch FCC licensee info
+        fetchFccInfo(s);
 
         // Fetch path from most recent packet
         fetchStationPath(s);
@@ -224,6 +230,76 @@
             } else if (pathEl) {
                 pathEl.innerHTML = '<span class="label">Path:</span> <span class="text-muted">No path data</span>';
             }
+        } catch(e) { /* ignore */ }
+    }
+
+    // === FCC Lookup ===
+    async function fetchFccInfo(station) {
+        var el = document.getElementById('detail-fcc');
+        if (!el) return;
+
+        var call = station.ssid > 0 ? station.callsign + '-' + station.ssid : station.callsign;
+        try {
+            var resp = await fetch('/api/stations/' + encodeURIComponent(call) + '/fcc');
+            if (resp.status === 404 || resp.status === 503) {
+                // No FCC record or DB not loaded — show nothing
+                return;
+            }
+            if (!resp.ok) return;
+            var fcc = await resp.json();
+
+            var classBadge = '';
+            var cls = fcc.operator_class || '';
+            if (cls === 'Extra') classBadge = 'fcc-class-extra';
+            else if (cls === 'General') classBadge = 'fcc-class-general';
+            else if (cls === 'Technician') classBadge = 'fcc-class-tech';
+            else if (cls === 'Advanced') classBadge = 'fcc-class-advanced';
+            else if (cls === 'Novice') classBadge = 'fcc-class-novice';
+
+            var html = '<div class="fcc-info">';
+            html += '<div class="fcc-name">' + esc(fcc.name) + '</div>';
+            html += '<div class="fcc-details">';
+            if (cls) {
+                html += '<span class="fcc-class-badge ' + classBadge + '">' + esc(cls) + '</span> ';
+            }
+            var location = [fcc.city, fcc.state].filter(function(x) { return x; }).join(', ');
+            if (fcc.zip_code) location += ' ' + fcc.zip_code;
+            if (location.trim()) {
+                html += '<span class="fcc-location">' + esc(location.trim()) + '</span>';
+            }
+            html += '</div>';
+            if (fcc.grant_date || fcc.expired_date) {
+                html += '<div class="fcc-dates text-muted">';
+                html += 'Licensed: ' + esc(fcc.grant_date || '?') + ' \u2014 ' + esc(fcc.expired_date || '?');
+                html += '</div>';
+            }
+            if (fcc.previous_call_sign) {
+                html += '<div class="fcc-prev text-muted">Previous: <a href="#" class="fcc-prev-link" data-call="' + esc(fcc.previous_call_sign) + '">' + esc(fcc.previous_call_sign) + '</a></div>';
+            }
+            html += '</div>';
+
+            el.innerHTML = html;
+
+            // Make previous callsign clickable
+            el.querySelectorAll('.fcc-prev-link').forEach(function(link) {
+                link.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    lookupFccCall(link.dataset.call);
+                });
+            });
+        } catch(e) { /* ignore */ }
+    }
+
+    // Quick FCC lookup for a clicked previous callsign — show in a mini popup
+    async function lookupFccCall(call) {
+        try {
+            var resp = await fetch('/api/stations/' + encodeURIComponent(call) + '/fcc');
+            if (!resp.ok) return;
+            var fcc = await resp.json();
+            var msg = fcc.callsign + ': ' + fcc.name;
+            if (fcc.operator_class) msg += ' (' + fcc.operator_class + ')';
+            if (fcc.city) msg += ' \u2014 ' + fcc.city + ', ' + fcc.state;
+            alert(msg);
         } catch(e) { /* ignore */ }
     }
 

@@ -11,6 +11,8 @@ pub struct WebConfig {
     pub aprs_is: AprsIsConfig,
     #[serde(default)]
     pub reference: ReferenceConfig,
+    #[serde(default)]
+    pub fcc: FccConfig,
     #[serde(default = "default_maps_dir")]
     pub maps_dir: String,
     #[serde(default = "default_db_path")]
@@ -61,6 +63,23 @@ pub struct ReferenceConfig {
     pub cwop_sync_interval_hours: u32,
 }
 
+/// FCC callsign database configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FccConfig {
+    /// Path to the FCC database. Empty string = XDG default
+    /// (`~/.local/share/packet-radio/fcc.db`).
+    #[serde(default)]
+    pub db_path: String,
+}
+
+impl Default for FccConfig {
+    fn default() -> Self {
+        Self {
+            db_path: String::new(),
+        }
+    }
+}
+
 impl Default for ReferenceConfig {
     fn default() -> Self {
         Self {
@@ -81,6 +100,7 @@ impl Default for WebConfig {
             tnc: TncConnection::default(),
             aprs_is: AprsIsConfig::default(),
             reference: ReferenceConfig::default(),
+            fcc: FccConfig::default(),
             maps_dir: default_maps_dir(),
             db_path: default_db_path(),
             max_station_age_hours: default_max_station_age_hours(),

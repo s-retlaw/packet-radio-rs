@@ -27,6 +27,7 @@
         packetCount: document.getElementById('packet-count'),
         searchInput: document.getElementById('search-input'),
         showTracks: document.getElementById('show-tracks'),
+        showFccNearby: document.getElementById('show-fcc-nearby'),
         statusDot: document.getElementById('status-dot'),
         statusText: document.getElementById('status-text'),
         btnSettings: document.getElementById('btn-settings'),
@@ -653,6 +654,13 @@
         dom.showTracks.addEventListener('change', () => {
             state.showTracks = dom.showTracks.checked;
             setTracksVisible(state.showTracks);
+        });
+
+        // Show FCC nearby hams toggle
+        dom.showFccNearby.addEventListener('change', () => {
+            if (typeof setFccNearbyVisible === 'function') {
+                setFccNearbyVisible(dom.showFccNearby.checked);
+            }
         });
 
         // Settings

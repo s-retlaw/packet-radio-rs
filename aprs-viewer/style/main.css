@@ -337,6 +337,7 @@ body {
 .map-container {
     grid-area: map;
     position: relative;
+    overflow: hidden;
     background: #09090b;
 }
 
@@ -1187,4 +1188,119 @@ body {
     .source-filter {
         display: none;
     }
+}
+
+/* === FCC Licensee Info === */
+.fcc-info {
+    margin: 8px 0;
+    padding: 8px 10px;
+    background: var(--surface-elevated, #1e1e21);
+    border-radius: 6px;
+    border-left: 3px solid #fbbf24;
+    font-size: 13px;
+}
+
+.fcc-name {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 2px;
+}
+
+.fcc-details {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 2px;
+}
+
+.fcc-class-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.fcc-class-extra    { background: #78350f; color: #fbbf24; }
+.fcc-class-general  { background: #374151; color: #d1d5db; }
+.fcc-class-tech     { background: #7c2d12; color: #fb923c; }
+.fcc-class-advanced { background: #3b0764; color: #c084fc; }
+.fcc-class-novice   { background: #14532d; color: #86efac; }
+
+.fcc-location {
+    color: var(--text-secondary, #a1a1aa);
+}
+
+.fcc-dates, .fcc-prev {
+    font-size: 12px;
+}
+
+.fcc-prev-link {
+    color: #60a5fa;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.fcc-prev-link:hover {
+    text-decoration: underline;
+}
+
+/* FCC map popup — dark theme */
+.fcc-map-popup .maplibregl-popup-content {
+    background: #1e1e21;
+    color: #e4e4e7;
+    border: 1px solid #3f3f46;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 14px;
+    min-width: 140px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.fcc-map-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip {
+    border-top-color: #1e1e21;
+}
+
+.fcc-map-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip {
+    border-bottom-color: #1e1e21;
+}
+
+.fcc-map-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip {
+    border-right-color: #1e1e21;
+}
+
+.fcc-map-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip {
+    border-left-color: #1e1e21;
+}
+
+.fcc-map-popup .maplibregl-popup-close-button {
+    color: #a1a1aa;
+    font-size: 18px;
+    padding: 2px 6px;
+    right: 2px;
+    top: 2px;
+}
+
+.fcc-map-popup .maplibregl-popup-close-button:hover {
+    color: #fff;
+    background: transparent;
+}
+
+.fcc-popup-call {
+    font-weight: 700;
+    font-size: 15px;
+    color: #fbbf24;
+    margin-bottom: 2px;
+}
+
+.fcc-popup-name {
+    margin-bottom: 2px;
+}
+
+.fcc-popup-class {
+    color: #a1a1aa;
+    font-style: italic;
 }

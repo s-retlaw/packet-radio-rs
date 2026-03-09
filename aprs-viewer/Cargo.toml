@@ -24,6 +24,9 @@ packet-radio-shared = { path = "../shared" }
 # Reference data (CWOP station positions, etc.)
 reference = { path = "../reference" }
 
+# FCC callsign database (optional enrichment)
+fcc-data = { path = "../fcc-data" }
+
 # WebSocket support
 futures = "0.3"
 

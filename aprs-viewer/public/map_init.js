@@ -197,6 +197,12 @@ function addAprsLayers() {
         data: { type: 'FeatureCollection', features: [] }
     });
 
+    // FCC nearby licensees source
+    map.addSource('fcc-nearby', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
     // RF coverage fill polygon
     map.addLayer({
         id: 'coverage-fill',
@@ -230,6 +236,28 @@ function addAprsLayers() {
             'line-width': 1.5,
             'line-opacity': 0.6,
             'line-dasharray': [2, 3],
+        }
+    });
+
+    // FCC nearby licensees — small translucent dots
+    map.addLayer({
+        id: 'fcc-nearby-dots',
+        type: 'circle',
+        source: 'fcc-nearby',
+        layout: { visibility: 'none' },
+        paint: {
+            'circle-radius': 7,
+            'circle-color': [
+                'match', ['get', 'class'],
+                'Extra', '#fbbf24',
+                'General', '#a3a3a3',
+                'Advanced', '#c084fc',
+                'Technician', '#fb923c',
+                'Novice', '#86efac',
+                '#6b7280'
+            ],
+            'circle-opacity': 0.5,
+            'circle-stroke-width': 0,
         }
     });
 
@@ -421,9 +449,30 @@ function addAprsLayers() {
         });
     });
 
+    // FCC nearby click — show popup with licensee info
+    map.on('click', 'fcc-nearby-dots', function(e) {
+        if (e.features.length === 0) return;
+        var p = e.features[0].properties;
+        var html = '<div class="fcc-popup">';
+        html += '<div class="fcc-popup-call">' + p.callsign + '</div>';
+        if (p.name) html += '<div class="fcc-popup-name">' + p.name + '</div>';
+        if (p.class) html += '<div class="fcc-popup-class">' + p.class + '</div>';
+        html += '</div>';
+        new maplibregl.Popup({ offset: 10, closeButton: true, className: 'fcc-map-popup' })
+            .setLngLat(e.lngLat)
+            .setHTML(html)
+            .addTo(map);
+    });
+    map.on('mouseenter', 'fcc-nearby-dots', function() {
+        map.getCanvas().style.cursor = 'pointer';
+    });
+    map.on('mouseleave', 'fcc-nearby-dots', function() {
+        map.getCanvas().style.cursor = '';
+    });
+
     // Click on empty map
     map.on('click', function(e) {
-        var features = map.queryRenderedFeatures(e.point, { layers: clickLayers });
+        var features = map.queryRenderedFeatures(e.point, { layers: clickLayers.concat(['fcc-nearby-dots']) });
         if (features.length === 0 && mapClickCallback) {
             mapClickCallback(e.lngLat.lng, e.lngLat.lat);
         }
@@ -651,6 +700,8 @@ function createMap(containerId, lng, lat, zoom, style) {
         console.error('Map error:', e.error || e);
     });
 
+    map.on('moveend', onFccMapMove);
+
     map.on('load', addAprsLayers);
 }
 
@@ -789,6 +840,68 @@ function clearTracks() {
         }
     } catch(e) {}
     setTracksVisible(false);
+}
+
+// FCC nearby hams layer
+var fccNearbyVisible = false;
+var fccNearbyDebounce = null;
+
+function setFccNearbyVisible(visible) {
+    fccNearbyVisible = visible;
+    if (!map) return;
+    var layer = map.getLayer('fcc-nearby-dots');
+    if (layer) {
+        map.setLayoutProperty('fcc-nearby-dots', 'visibility', visible ? 'visible' : 'none');
+    }
+    if (visible) {
+        fetchFccNearby();
+    }
+}
+
+function fetchFccNearby() {
+    if (!map || !fccNearbyVisible) return;
+
+    // Don't fetch when zoomed out too far — too many results, dots meaningless at that scale
+    if (map.getZoom() < 8) {
+        try {
+            var source = map.getSource('fcc-nearby');
+            if (source) source.setData({ type: 'FeatureCollection', features: [] });
+        } catch(e) {}
+        return;
+    }
+
+    var bounds = map.getBounds();
+
+    fetch('/api/fcc/bbox?south=' + bounds.getSouth().toFixed(5) +
+          '&north=' + bounds.getNorth().toFixed(5) +
+          '&west=' + bounds.getWest().toFixed(5) +
+          '&east=' + bounds.getEast().toFixed(5))
+        .then(function(resp) {
+            if (!resp.ok) return null;
+            return resp.json();
+        })
+        .then(function(data) {
+            if (!data || !map) return;
+            var features = data.map(function(s) {
+                return {
+                    type: 'Feature',
+                    geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
+                    properties: { callsign: s.callsign, name: s.name, class: s.operator_class }
+                };
+            });
+            var geojson = { type: 'FeatureCollection', features: features };
+            try {
+                var source = map.getSource('fcc-nearby');
+                if (source) source.setData(geojson);
+            } catch(e) {}
+        })
+        .catch(function() {});
+}
+
+function onFccMapMove() {
+    if (!fccNearbyVisible) return;
+    if (fccNearbyDebounce) clearTimeout(fccNearbyDebounce);
+    fccNearbyDebounce = setTimeout(fetchFccNearby, 500);
 }
 
 // Show RF coverage on the map.

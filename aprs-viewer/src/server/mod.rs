@@ -2,6 +2,7 @@ pub mod config;
 pub mod convert;
 pub mod db;
 pub mod error;
+pub mod fcc;
 pub mod state;
 pub mod ingest;
 pub mod aprs_is;
