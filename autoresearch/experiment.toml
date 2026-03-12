@@ -1,0 +1,35 @@
+# Autoresearch Experiment Config
+# Modify parameters below, then run:
+#   cargo run --release -p benchmark -- autoresearch autoresearch/experiment.toml tests/wav/
+
+[preprocessing]
+pre_emphasis_alpha_q15 = 0    # 0=off, 31130=standard 6dB/oct compensation
+dc_block = false
+rms_normalize_target = 0      # 0=off, e.g. 3000 = target RMS
+highpass_hz = 0.0             # 0=off
+lowpass_hz = 0.0              # 0=off
+
+[demod]
+type = "goertzel"             # goertzel (only type currently supported)
+mark_freq = 1200
+space_freq = 2200
+freq_offset = 0               # Hz shift on both tones
+
+[filter_cfg]
+bpf_bandwidth = 1600.0        # Hz (1200=narrow, 1600=std, 2000=wide)
+bpf_center = 0.0              # 0=auto (midpoint of mark+space+offset)
+cascade_bpf = false
+window = "rectangular"         # rectangular, hann, hamming, blackman, edgetaper
+
+[timing]
+phase_offset = 0              # 0, 1, 2 (thirds of symbol period)
+
+[gain]
+space_gain_q8 = 256           # 64-4057 (256=unity)
+agc = false
+energy_llr = true
+adaptive_retune = false
+adaptive_gain = true
+
+[soft_decode]
+enabled = true
