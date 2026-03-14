@@ -741,12 +741,12 @@ impl FastAdapter {
 
 impl Demodulate for FastAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; ADAPTER_SYMBOL_BUF];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; ADAPTER_SYMBOL_BUF];
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame) = self.hdlc.feed(sym.bit, sym.llr) {
+                if let Some((frame, _cost)) = self.hdlc.feed(sym.bit, sym.llr) {
                     handler(frame);
                 }
             }
@@ -772,12 +772,12 @@ impl QualityAdapter {
 
 impl Demodulate for QualityAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; ADAPTER_SYMBOL_BUF];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; ADAPTER_SYMBOL_BUF];
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame) = self.hdlc.feed(sym.bit, sym.llr) {
+                if let Some((frame, _cost)) = self.hdlc.feed(sym.bit, sym.llr) {
                     handler(frame);
                 }
             }
@@ -803,12 +803,12 @@ impl DmAdapter {
 
 impl Demodulate for DmAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; ADAPTER_SYMBOL_BUF];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; ADAPTER_SYMBOL_BUF];
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame) = self.hdlc.feed(sym.bit, sym.llr) {
+                if let Some((frame, _cost)) = self.hdlc.feed(sym.bit, sym.llr) {
                     handler(frame);
                 }
             }
@@ -834,12 +834,12 @@ impl CorrAdapter {
 
 impl Demodulate for CorrAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; ADAPTER_SYMBOL_BUF];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; ADAPTER_SYMBOL_BUF];
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame) = self.hdlc.feed(sym.bit, sym.llr) {
+                if let Some((frame, _cost)) = self.hdlc.feed(sym.bit, sym.llr) {
                     handler(frame);
                 }
             }
@@ -868,12 +868,12 @@ impl CorrPllAdapter {
 
 impl Demodulate for CorrPllAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; ADAPTER_SYMBOL_BUF];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; ADAPTER_SYMBOL_BUF];
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame) = self.hdlc.feed(sym.bit, sym.llr) {
+                if let Some((frame, _cost)) = self.hdlc.feed(sym.bit, sym.llr) {
                     handler(frame);
                 }
             }
@@ -899,12 +899,12 @@ impl XorAdapter {
 
 impl Demodulate for XorAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; ADAPTER_SYMBOL_BUF];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; ADAPTER_SYMBOL_BUF];
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame) = self.hdlc.feed(sym.bit, sym.llr) {
+                if let Some((frame, _cost)) = self.hdlc.feed(sym.bit, sym.llr) {
                     handler(frame);
                 }
             }

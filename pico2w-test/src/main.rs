@@ -351,7 +351,7 @@ async fn run_usb_protocol<'d, D: embassy_usb::driver::Driver<'d>>(
 
     // Reusable buffers
     let mut sample_buf = [0i16; MAX_CHUNK_SAMPLES];
-    let mut symbol_buf = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut symbol_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
 
     // Packet read buffer (max 64 bytes per USB packet)
     let mut pkt_buf = [0u8; 64];

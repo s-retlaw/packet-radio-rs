@@ -18,7 +18,7 @@
 use super::filter::BiquadFilter;
 use super::frame_output::FrameOutputBuffer;
 use super::DemodConfig;
-use super::DedupRing;
+use super::{DedupRing, DedupAction};
 use super::SIN_TABLE_Q15;
 use super::hilbert::{HilbertTransform, InstFreqDetector, hilbert_31};
 use super::adaptive::AdaptiveTracker;
@@ -247,7 +247,7 @@ pub struct CorrSlicerDecoder {
     adaptive: Option<CorrAdaptiveState>,
     /// Whether preamble phase scoring is enabled.
     phase_scoring: bool,
-    /// Time-windowed deduplication ring.
+    /// Time-windowed deduplication ring (full frame hash).
     dedup: DedupRing<DEDUP_RING_SIZE>,
     /// Total frames decoded (including duplicates).
     pub total_decoded: u64,
@@ -320,7 +320,7 @@ impl CorrSlicerDecoder {
             energy_llr: true,
             adaptive: None,
             phase_scoring: false,
-            dedup: DedupRing::new(),
+            dedup: DedupRing::with_overlap_from_config(config.samples_per_symbol()),
             total_decoded: 0,
             total_unique: 0,
         }
@@ -416,10 +416,10 @@ impl CorrSlicerDecoder {
     ///
     /// Returns a `SlicerOutput` containing unique decoded frames.
     pub fn process_samples(&mut self, samples: &[i16]) -> SlicerOutput {
-        self.dedup.advance_generation();
         let mut output = SlicerOutput::new();
         let sample_rate = self.config.sample_rate;
         let baud_rate = self.config.baud_rate;
+
         let num_channels = self.num_channels;
         let num_slicers = self.num_slicers;
         let energy_llr = self.energy_llr;
@@ -654,16 +654,25 @@ impl CorrSlicerDecoder {
                     } else {
                         -64
                     };
-                    if let Some(frame_bytes) = slicer.hdlc.feed(decoded_bit, llr) {
+                    if let Some((frame_bytes, cost)) = slicer.hdlc.feed(decoded_bit, llr) {
                         let len = frame_bytes.len().min(330);
                         let mut frame_copy = [0u8; 330];
                         frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                         *total_decoded += 1;
                         let hash = super::frame_hash(&frame_copy[..len]);
-                        if !dedup.is_duplicate(hash) {
-                            dedup.record(hash);
-                            *total_unique += 1;
-                            output.push(&frame_copy[..len]);
+                        let start = self.samples_processed;
+                        match dedup.check(hash, start, cost) {
+                            DedupAction::New => {
+                                if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                    dedup.record_with_info(hash, start, cost, slot);
+                                    *total_unique += 1;
+                                }
+                            }
+                            DedupAction::Replace(old_slot) => {
+                                output.replace(old_slot, &frame_copy[..len], cost);
+                                dedup.update_entry(old_slot, cost, old_slot);
+                            }
+                            DedupAction::Duplicate => {}
                         }
                     }
                 }

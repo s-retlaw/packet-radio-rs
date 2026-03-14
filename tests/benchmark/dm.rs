@@ -199,7 +199,7 @@ fn decode_dm_pll_counted(samples: &[i16], sample_rate: u32, alpha: i16, beta: i1
     let mut demod = DmDemodulator::with_bpf_pll_custom(config, alpha, beta);
     let mut hdlc = HdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
     let mut total_syms = 0usize;
     let mut flags = 0u32;
     let mut shift_reg: u8 = 0;
@@ -243,7 +243,7 @@ pub fn run_dm_pll(path: &str) {
         let demod = DmDemodulator::with_bpf(config).with_adaptive();
         let mut hdlc = HdlcDecoder::new();
         let mut frames: Vec<Vec<u8>> = Vec::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
         let mut dm = demod;
         for chunk in samples.chunks(1024) {
             let n = dm.process_samples(chunk, &mut symbols);
@@ -275,7 +275,7 @@ pub fn run_dm_pll(path: &str) {
     {
         let config = config_for_rate(sample_rate, get_baud());
         let mut demod = DmDemodulator::with_bpf(config);
-        let mut symbols_buf = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        let mut symbols_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
         let mut bres_syms = 0usize;
         let mut bres_flags = 0u32;
         let mut shift: u8 = 0;
@@ -423,7 +423,7 @@ fn decode_dm_pll_tuned(
         .with_pll_smoothing(smooth_shift)
         .with_llr_shift(llr_shift);
 
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
 
     if use_soft {
         let mut soft_hdlc = SoftHdlcDecoder::new();

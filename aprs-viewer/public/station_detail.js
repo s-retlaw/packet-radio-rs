@@ -579,6 +579,10 @@
         var panel = document.getElementById('tab-track');
         if (!panel) return;
 
+        var tracked = window.isStationTracked ? window.isStationTracked(station.callsign, station.ssid) : false;
+        var trackBtnLabel = tracked ? 'Untrack' : 'Track Station';
+        var trackBtnCls = tracked ? 'btn-danger' : 'btn-secondary';
+
         panel.innerHTML = '<div class="time-range-btns" id="track-range-btns">' +
             '<button class="range-btn" data-hours="3">3h</button>' +
             '<button class="range-btn" data-hours="6">6h</button>' +
@@ -587,7 +591,11 @@
             '<button class="range-btn" data-hours="48">48h</button>' +
             '</div>' +
             '<div id="track-stats"></div>' +
-            '<div style="margin-top:8px"><button class="btn btn-primary btn-sm" id="btn-track-map">Show on Map</button></div>' +
+            '<div style="margin-top:8px">' +
+            '<button class="btn btn-primary btn-sm" id="btn-track-map">Show on Map</button>' +
+            ' <button class="btn btn-sm ' + trackBtnCls + '" id="btn-track-station-modal">' + trackBtnLabel + '</button>' +
+            ' <button class="btn btn-sm btn-secondary" id="btn-play-track">Play</button>' +
+            '</div>' +
             '<div id="altitude-container"></div>';
 
         panel.querySelectorAll('.range-btn').forEach(function(btn) {
@@ -602,6 +610,34 @@
         document.getElementById('btn-track-map').addEventListener('click', function() {
             fetchAndShowTrackOnMap(station);
         });
+
+        var trackStaBtn = document.getElementById('btn-track-station-modal');
+        if (trackStaBtn) {
+            trackStaBtn.addEventListener('click', function() {
+                var isTracked = window.isStationTracked
+                    ? window.isStationTracked(station.callsign, station.ssid) : false;
+                if (isTracked) {
+                    var call = station.ssid > 0
+                        ? station.callsign + '-' + station.ssid : station.callsign;
+                    if (window.removeStationTrack) window.removeStationTrack(call);
+                } else {
+                    if (window.addStationTrack) window.addStationTrack(station.callsign, station.ssid, 48);
+                }
+                // Re-render tab to update button label
+                loadTrackTab(station);
+            });
+        }
+
+        var playTrackBtn = document.getElementById('btn-play-track');
+        if (playTrackBtn) {
+            playTrackBtn.addEventListener('click', async function() {
+                // First add track if not already tracked, await data load
+                if (window.addStationTrack && !window.isStationTracked(station.callsign, station.ssid)) {
+                    await window.addStationTrack(station.callsign, station.ssid, 48);
+                }
+                if (typeof startPlayback === 'function') startPlayback();
+            });
+        }
 
         fetchAndRenderTrack(station);
     }
@@ -725,10 +761,11 @@
     }
 
     function speedColor(speed) {
-        if (speed < 5) return '#10b981';   // green (slow/stopped)
-        if (speed < 30) return '#84cc16';  // lime
-        if (speed < 60) return '#f59e0b';  // amber
-        return '#ef4444';                   // red (fast)
+        if (speed < 5) return '#10b981';    // green (stopped/slow)
+        if (speed < 15) return '#84cc16';   // lime
+        if (speed < 35) return '#eab308';   // yellow
+        if (speed < 55) return '#f97316';   // orange
+        return '#ef4444';                    // red (fast)
     }
 
     function haversine(lat1, lon1, lat2, lon2) {

@@ -213,8 +213,29 @@ pub fn run_diff(wav_path: &str, reference: Option<&str>) {
         println!("  Of {} DW-only frames (vs multi), how many does each mode find?", dw_only.len());
         for mode in &modes {
             let mode_set: std::collections::HashSet<&str> = mode.tnc2_frames.iter().map(|s| s.as_str()).collect();
-            let recovered = dw_only.iter().filter(|p| mode_set.contains(p.as_str())).count();
-            println!("    {:<14}: {} of {}", mode.name, recovered, dw_only.len());
+            let recovered_frames: Vec<&&String> = dw_only.iter().filter(|p| mode_set.contains(p.as_str())).collect();
+            println!("    {:<14}: {} of {}", mode.name, recovered_frames.len(), dw_only.len());
+            if !recovered_frames.is_empty() && recovered_frames.len() <= 10 {
+                for f in &recovered_frames {
+                    println!("      >> {}", f);
+                    // Search multi's output for near-matches (same source callsign)
+                    if mode.name != "multi" {
+                        let src = f.split('>').next().unwrap_or("");
+                        let multi_mode = modes.last().unwrap(); // multi is last
+                        let near: Vec<&String> = multi_mode.tnc2_frames.iter()
+                            .filter(|m| m.starts_with(src) && m.as_str() != f.as_str())
+                            .collect();
+                        if !near.is_empty() {
+                            println!("         multi has {} variant(s) from {}:", near.len(), src);
+                            for n in &near {
+                                println!("           {}", n);
+                            }
+                        } else {
+                            println!("         multi has NO frames from {}", src);
+                        }
+                    }
+                }
+            }
         }
         println!();
     }

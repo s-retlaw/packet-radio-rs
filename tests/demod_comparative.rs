@@ -274,7 +274,7 @@ fn test_fast_demod_on_all_scenarios() {
     for scenario in standard_test_scenarios() {
         let impaired = scenario.apply(&clean, 11025);
         let mut demod = FastDemodulator::new(config);
-        let mut symbols = vec![DemodSymbol { bit: false, llr: 0 }; 2000];
+        let mut symbols = vec![DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 2000];
 
         // Should never panic, regardless of signal quality
         let n = demod.process_samples(&impaired, &mut symbols);
@@ -294,7 +294,7 @@ fn test_quality_demod_on_all_scenarios() {
     for scenario in standard_test_scenarios() {
         let impaired = scenario.apply(&clean, 11025);
         let mut demod = QualityDemodulator::new(config);
-        let mut symbols = vec![DemodSymbol { bit: false, llr: 0 }; 2000];
+        let mut symbols = vec![DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 2000];
 
         let n = demod.process_samples(&impaired, &mut symbols);
         println!("Quality path, '{}': {} symbols", scenario.name, n);
@@ -310,7 +310,7 @@ fn test_adaptive_tracker_locks_on_preamble() {
     let audio = generate_afsk(&preamble_bits, 11025, 1200.0, 2200.0, 1200.0, 16000.0);
 
     let mut demod = QualityDemodulator::new(config);
-    let mut symbols = vec![DemodSymbol { bit: false, llr: 0 }; 1000];
+    let mut symbols = vec![DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1000];
     demod.process_samples(&audio, &mut symbols);
 
     assert!(demod.is_tracking(), "Tracker should lock during preamble");
@@ -341,7 +341,7 @@ fn test_adaptive_tracker_handles_offset_transmitter() {
     );
 
     let mut demod = QualityDemodulator::new(config);
-    let mut symbols = vec![DemodSymbol { bit: false, llr: 0 }; 1000];
+    let mut symbols = vec![DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1000];
     demod.process_samples(&audio, &mut symbols);
 
     let tracker = demod.tracker();
@@ -372,12 +372,12 @@ fn test_quality_path_outperforms_fast_on_noise() {
 
     // Run fast path
     let mut fast_demod = FastDemodulator::new(config);
-    let mut fast_syms = vec![DemodSymbol { bit: false, llr: 0 }; 100000];
+    let mut fast_syms = vec![DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 100000];
     let fast_count = fast_demod.process_samples(&noisy, &mut fast_syms);
 
     // Run quality path
     let mut qual_demod = QualityDemodulator::new(config);
-    let mut qual_syms = vec![DemodSymbol { bit: false, llr: 0 }; 100000];
+    let mut qual_syms = vec![DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 100000];
     let qual_count = qual_demod.process_samples(&noisy, &mut qual_syms);
 
     println!("At 6dB SNR: fast={} symbols, quality={} symbols", fast_count, qual_count);

@@ -32,7 +32,8 @@ pub enum FrameResult<'a> {
     /// Frame decoded successfully on first try (hard decision was correct)
     Valid(&'a [u8]),
     /// Frame recovered by flipping bits. `flips` = number of bits corrected.
-    Recovered { data: &'a [u8], flips: u8 },
+    /// `cost` = quality metric (lower is better): syndrome=1, flip=sum of |LLR|s.
+    Recovered { data: &'a [u8], flips: u8, cost: u16 },
 }
 
 /// Soft HDLC decoder.
@@ -71,6 +72,15 @@ pub struct SoftHdlcDecoder {
     byte_bit_count: u8,
     /// Bytes written to frame_buf
     frame_len: usize,
+
+    // --- Configurable thresholds ---
+
+    /// Max candidates for flip recovery (default: MAX_FLIP_CANDIDATES = 12)
+    max_flip_candidates: usize,
+    /// Confidence threshold for candidate inclusion (default: FLIP_CONFIDENCE_THRESHOLD = 96)
+    flip_confidence_threshold: u8,
+    /// Max candidates for triple-flip search (default: TRIPLE_FLIP_LIMIT = 8)
+    triple_flip_limit: usize,
 
     // --- Statistics (per recovery type) ---
 
@@ -123,6 +133,9 @@ impl SoftHdlcDecoder {
             current_byte: 0,
             byte_bit_count: 0,
             frame_len: 0,
+            max_flip_candidates: MAX_FLIP_CANDIDATES,
+            flip_confidence_threshold: FLIP_CONFIDENCE_THRESHOLD,
+            triple_flip_limit: TRIPLE_FLIP_LIMIT,
             stats_hard_decode: 0,
             stats_syndrome: 0,
             stats_single_flip: 0,
@@ -133,6 +146,19 @@ impl SoftHdlcDecoder {
             stats_crc_failures: 0,
             stats_false_positives: 0,
         }
+    }
+
+    /// Create with custom thresholds for soft decode tuning.
+    pub fn with_thresholds(
+        max_flip_candidates: usize,
+        flip_confidence_threshold: u8,
+        triple_flip_limit: usize,
+    ) -> Self {
+        let mut s = Self::new();
+        s.max_flip_candidates = max_flip_candidates.min(MAX_FLIP_CANDIDATES);
+        s.flip_confidence_threshold = flip_confidence_threshold;
+        s.triple_flip_limit = triple_flip_limit.min(MAX_FLIP_CANDIDATES);
+        s
     }
 
     /// Total soft-recovered frames across all recovery types.
@@ -187,19 +213,27 @@ impl SoftHdlcDecoder {
 
     // --- Private methods ---
 
-    /// Lightweight AX.25 address sanity check for soft-recovered frames.
-    /// Validates that source and destination callsign bytes contain only
-    /// valid characters (A-Z, 0-9, space) and are non-empty.
-    /// Returns false for garbage frames that passed CRC by chance.
+    /// AX.25 frame validation for soft-recovered frames.
+    ///
+    /// Checks:
+    /// 1. Minimum length (≥ 16: 14 addr + ctrl + PID)
+    /// 2. Destination and source callsign chars (A-Z, 0-9, space), non-empty
+    /// 3. Walk extension bits to find end of address fields
+    /// 4. Validate digipeater callsigns if present (same char check)
+    /// 5. Control byte: UI (0x03) or UI+P (0x13)
+    /// 6. PID byte: 0xF0 (no L3) or 0xCF (NET/ROM)
     fn is_valid_ax25_frame(data: &[u8]) -> bool {
-        if data.len() < 14 {
+        // Minimum: 14 address + 1 control + 1 PID = 16
+        if data.len() < 16 {
             return false;
         }
-        // Check dest (bytes 0-5) and src (bytes 7-12) callsign chars
-        for &(start, end) in &[(0usize, 6usize), (7usize, 13usize)] {
+
+        // Validate callsign characters in a 7-byte address field (6 callsign + 1 SSID).
+        // Returns false if any callsign char is invalid or all are spaces.
+        fn validate_callsign(data: &[u8], start: usize) -> bool {
             let mut has_nonspace = false;
             let mut i = start;
-            while i < end {
+            while i < start + 6 {
                 let ch = data[i] >> 1; // AX.25 chars are shifted left by 1
                 match ch {
                     0x20 => {}                          // space (padding)
@@ -209,10 +243,59 @@ impl SoftHdlcDecoder {
                 }
                 i += 1;
             }
-            if !has_nonspace {
-                return false; // all spaces = empty callsign
-            }
+            has_nonspace
         }
+
+        // Check destination (bytes 0-5) and source (bytes 7-12) callsigns
+        if !validate_callsign(data, 0) || !validate_callsign(data, 7) {
+            return false;
+        }
+
+        // Walk extension bits to find the end of address fields.
+        // Bit 0 of the SSID byte (byte 6, 13, 20, ...) is 0 for "more addresses"
+        // and 1 for "last address".
+        let mut addr_end = 14; // minimum: dest + src = 14 bytes
+        if data[13] & 0x01 == 0 {
+            // Digipeater addresses follow — walk in 7-byte chunks
+            let mut pos = 14;
+            loop {
+                if pos + 7 > data.len() {
+                    return false; // truncated digipeater address
+                }
+                // Validate digipeater callsign
+                if !validate_callsign(data, pos) {
+                    return false;
+                }
+                pos += 7;
+                // Check extension bit on the SSID byte (last byte of this address)
+                if data[pos - 1] & 0x01 != 0 {
+                    break; // last address
+                }
+                // Sanity: max 8 digipeaters (56 bytes) to prevent runaway
+                if pos > 70 {
+                    return false;
+                }
+            }
+            addr_end = pos;
+        }
+
+        // Need at least 2 more bytes after addresses (control + PID)
+        if data.len() < addr_end + 2 {
+            return false;
+        }
+
+        // Control byte: accept UI (0x03) or UI+P (0x13)
+        let ctrl = data[addr_end];
+        if ctrl != 0x03 && ctrl != 0x13 {
+            return false;
+        }
+
+        // PID byte: accept 0xF0 (no L3) or 0xCF (NET/ROM)
+        let pid = data[addr_end + 1];
+        if pid != 0xF0 && pid != 0xCF {
+            return false;
+        }
+
         true
     }
 
@@ -280,12 +363,12 @@ impl SoftHdlcDecoder {
 
             if crc_valid {
                 self.stats_hard_decode += 1;
-                Some((data_len, false, 0u8)) // (len, is_recovered, flips)
+                Some((data_len, false, 0u8, 0u16)) // (len, is_recovered, flips, cost)
             } else {
                 // CRC failed — try soft recovery
                 // try_bit_flip_recovery may update frame_buf and frame_len
                 self.try_bit_flip_recovery_info()
-                    .map(|(len, flips)| (len, true, flips))
+                    .map(|(len, flips, cost)| (len, true, flips, cost))
             }
         } else {
             None
@@ -301,13 +384,14 @@ impl SoftHdlcDecoder {
 
         // Now construct the return value borrowing from frame_buf
         match frame_result_info {
-            Some((data_len, false, _)) => {
+            Some((data_len, false, _, _)) => {
                 Some(FrameResult::Valid(&self.frame_buf[..data_len]))
             }
-            Some((data_len, true, flips)) => {
+            Some((data_len, true, flips, cost)) => {
                 Some(FrameResult::Recovered {
                     data: &self.frame_buf[..data_len],
                     flips,
+                    cost,
                 })
             }
             None => None,
@@ -330,8 +414,8 @@ impl SoftHdlcDecoder {
     /// each bit position for a matching single-bit error pattern. O(n) with
     /// ~5 ops per bit, no trial CRC checks needed.
     ///
-    /// Returns `(data_len, 1)` on success, updating `frame_buf` in place.
-    fn try_syndrome_correction(&mut self) -> Option<(usize, u8)> {
+    /// Returns `(data_len, 1, cost)` on success, updating `frame_buf` in place.
+    fn try_syndrome_correction(&mut self) -> Option<(usize, u8, u16)> {
         if self.frame_len < 17 {
             return None;
         }
@@ -369,7 +453,7 @@ impl SoftHdlcDecoder {
                     }
                     self.stats_syndrome += 1;
                     let data_len = self.frame_len - 2;
-                    return Some((data_len, 1));
+                    return Some((data_len, 1, 1));
                 } else {
                     // Flip back — shouldn't happen if math is correct
                     self.frame_buf[byte_idx] ^= 1 << bit_in_byte;
@@ -388,10 +472,10 @@ impl SoftHdlcDecoder {
         None
     }
 
-    /// Try bit-flip recovery. Returns `(data_len, flips)` on success, updating
+    /// Try bit-flip recovery. Returns `(data_len, flips, cost)` on success, updating
     /// `frame_buf` and `frame_len` in place. Returns `None` on failure.
     #[allow(clippy::needless_range_loop)] // Index-based loops clearer for candidate bit-flip DSP
-    fn try_bit_flip_recovery_info(&mut self) -> Option<(usize, u8)> {
+    fn try_bit_flip_recovery_info(&mut self) -> Option<(usize, u8, u16)> {
         // Phase 1: CRC syndrome-based single-bit correction (fastest, any position)
         if let Some(result) = self.try_syndrome_correction() {
             return Some(result);
@@ -439,13 +523,13 @@ impl SoftHdlcDecoder {
 
             self.hard_bits[bit_idx] ^= 1;
         }
-        if let Some((k, _)) = best_single {
+        if let Some((k, cost)) = best_single {
             self.hard_bits[candidates[k].0] ^= 1;
             self.reassemble_and_check_crc();
             self.hard_bits[candidates[k].0] ^= 1;
             self.stats_single_flip += 1;
             let data_len = self.frame_len - 2;
-            return Some((data_len, 1));
+            return Some((data_len, 1, cost as u16));
         }
 
         // Phase 3: Confidence-based pair flips (top-12 candidates, C(12,2)=66)
@@ -470,7 +554,7 @@ impl SoftHdlcDecoder {
                 self.hard_bits[candidates[j].0] ^= 1;
             }
         }
-        if let Some((i, j, _)) = best_pair {
+        if let Some((i, j, cost)) = best_pair {
             self.hard_bits[candidates[i].0] ^= 1;
             self.hard_bits[candidates[j].0] ^= 1;
             self.reassemble_and_check_crc();
@@ -478,7 +562,7 @@ impl SoftHdlcDecoder {
             self.hard_bits[candidates[j].0] ^= 1;
             self.stats_pair_flip += 1;
             let data_len = self.frame_len - 2;
-            return Some((data_len, 2));
+            return Some((data_len, 2, cost));
         }
 
         // Phase 4: NRZI pair-flip — a single raw (pre-NRZI) bit error causes two
@@ -519,7 +603,7 @@ impl SoftHdlcDecoder {
                 self.hard_bits[idx] ^= 1;
             }
         }
-        if let Some((b1, b2, _)) = best_nrzi_pair {
+        if let Some((b1, b2, cost)) = best_nrzi_pair {
             self.hard_bits[b1] ^= 1;
             self.hard_bits[b2] ^= 1;
             self.reassemble_and_check_crc();
@@ -527,7 +611,7 @@ impl SoftHdlcDecoder {
             self.hard_bits[b2] ^= 1;
             self.stats_nrzi_pair += 1;
             let data_len = self.frame_len - 2;
-            return Some((data_len, 2));
+            return Some((data_len, 2, cost));
         }
 
         // Phase 5: Confidence-based triple flips (top-8 candidates, C(8,3)=56)
@@ -560,7 +644,7 @@ impl SoftHdlcDecoder {
                 }
             }
         }
-        if let Some((i, j, k, _)) = best_triple {
+        if let Some((i, j, k, cost)) = best_triple {
             self.hard_bits[candidates[i].0] ^= 1;
             self.hard_bits[candidates[j].0] ^= 1;
             self.hard_bits[candidates[k].0] ^= 1;
@@ -570,7 +654,7 @@ impl SoftHdlcDecoder {
             self.hard_bits[candidates[k].0] ^= 1;
             self.stats_triple_flip += 1;
             let data_len = self.frame_len - 2;
-            return Some((data_len, 3));
+            return Some((data_len, 3, cost));
         }
 
         // Phase 6: NRZI-aware triple flips — two adjacent pre-NRZI errors cause
@@ -600,7 +684,7 @@ impl SoftHdlcDecoder {
                 self.hard_bits[idx + 1] ^= 1;
             }
         }
-        if let Some((k, _)) = best_nrzi_triple {
+        if let Some((k, cost)) = best_nrzi_triple {
             let idx = candidates[k].0;
             self.hard_bits[idx - 1] ^= 1;
             self.hard_bits[idx] ^= 1;
@@ -611,7 +695,7 @@ impl SoftHdlcDecoder {
             self.hard_bits[idx + 1] ^= 1;
             self.stats_nrzi_triple += 1;
             let data_len = self.frame_len - 2;
-            return Some((data_len, 3));
+            return Some((data_len, 3, cost));
         }
 
         self.stats_crc_failures += 1;
@@ -725,21 +809,21 @@ mod tests {
 
     #[test]
     fn test_ax25_frame_validation() {
-        // Valid callsigns: "N0CALL" (dest) and "W1AW  " (src), shifted left by 1
+        // Valid frame: "N0CALL" (dest) and "W1AW  " (src), UI control, PID 0xF0
         let mut frame = [0u8; 17];
-        // Dest: "N0CALL" -> bytes 0..6, each char << 1
         let dest = b"N0CALL";
         for i in 0..6 {
             frame[i] = dest[i] << 1;
         }
-        // Byte 6: SSID byte (doesn't matter for validation)
-        frame[6] = 0xE0;
-        // Src: "W1AW  " -> bytes 7..13
+        frame[6] = 0xE0; // SSID
         let src = b"W1AW  ";
         for i in 0..6 {
             frame[7 + i] = src[i] << 1;
         }
         frame[13] = 0xE1; // SSID with end-of-address bit
+        frame[14] = 0x03; // Control: UI
+        frame[15] = 0xF0; // PID: no L3
+        frame[16] = b'!';  // payload
         assert!(SoftHdlcDecoder::is_valid_ax25_frame(&frame));
 
         // Invalid: lowercase in destination
@@ -759,8 +843,42 @@ mod tests {
         }
         assert!(!SoftHdlcDecoder::is_valid_ax25_frame(&bad3));
 
-        // Invalid: too short
-        assert!(!SoftHdlcDecoder::is_valid_ax25_frame(&frame[..13]));
+        // Invalid: too short (< 16 bytes)
+        assert!(!SoftHdlcDecoder::is_valid_ax25_frame(&frame[..15]));
+
+        // Invalid: wrong control byte
+        let mut bad4 = frame;
+        bad4[14] = 0x00;
+        assert!(!SoftHdlcDecoder::is_valid_ax25_frame(&bad4));
+
+        // Invalid: wrong PID byte
+        let mut bad5 = frame;
+        bad5[15] = 0x01;
+        assert!(!SoftHdlcDecoder::is_valid_ax25_frame(&bad5));
+
+        // Valid: UI+P control byte
+        let mut uip = frame;
+        uip[14] = 0x13;
+        assert!(SoftHdlcDecoder::is_valid_ax25_frame(&uip));
+
+        // Valid: NET/ROM PID
+        let mut netrom = frame;
+        netrom[15] = 0xCF;
+        assert!(SoftHdlcDecoder::is_valid_ax25_frame(&netrom));
+
+        // Valid: frame with one digipeater
+        let mut digi_frame = [0u8; 24];
+        digi_frame[..14].copy_from_slice(&frame[..14]);
+        digi_frame[13] = 0xE0; // source SSID: extension bit 0 (more addresses)
+        let digi = b"RELAY ";
+        for i in 0..6 {
+            digi_frame[14 + i] = digi[i] << 1;
+        }
+        digi_frame[20] = 0xE1; // digi SSID with end-of-address bit
+        digi_frame[21] = 0x03; // Control
+        digi_frame[22] = 0xF0; // PID
+        digi_frame[23] = b'!';  // payload
+        assert!(SoftHdlcDecoder::is_valid_ax25_frame(&digi_frame));
     }
 
     #[test]

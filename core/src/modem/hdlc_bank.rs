@@ -56,21 +56,22 @@ impl AnyHdlc {
     /// On `alloc`: uses `feed_soft_bit(llr)` for error recovery.
     /// On bare-metal: uses `feed_bit(bit)`, ignoring the LLR.
     ///
-    /// Returns the frame bytes if a complete valid frame was decoded.
-    pub fn feed(&mut self, bit: bool, llr: i8) -> Option<&[u8]> {
+    /// Returns `(frame_bytes, cost)` if a complete valid frame was decoded.
+    /// Cost: 0 = hard decode, 1 = syndrome, higher = flip recovery |LLR| sum.
+    pub fn feed(&mut self, bit: bool, llr: i8) -> Option<(&[u8], u16)> {
         #[cfg(feature = "alloc")]
         {
             let _ = bit; // soft decoder derives bit from LLR sign
             match self.0.feed_soft_bit(llr) {
-                Some(FrameResult::Valid(d)) => Some(d),
-                Some(FrameResult::Recovered { data, .. }) => Some(data),
+                Some(FrameResult::Valid(d)) => Some((d, 0)),
+                Some(FrameResult::Recovered { data, cost, .. }) => Some((data, cost)),
                 None => None,
             }
         }
         #[cfg(not(feature = "alloc"))]
         {
             let _ = llr;
-            self.0.feed_bit(bit)
+            self.0.feed_bit(bit).map(|d| (d, 0u16))
         }
     }
 
@@ -119,8 +120,8 @@ impl<const N: usize> HdlcBank<N> {
         }
     }
 
-    /// Feed a bit+LLR to the decoder at `idx`. Returns frame bytes on success.
-    pub fn feed(&mut self, idx: usize, bit: bool, llr: i8) -> Option<&[u8]> {
+    /// Feed a bit+LLR to the decoder at `idx`. Returns `(frame_bytes, cost)` on success.
+    pub fn feed(&mut self, idx: usize, bit: bool, llr: i8) -> Option<(&[u8], u16)> {
         self.inner[idx].feed(bit, llr)
     }
 

@@ -229,7 +229,7 @@ fn decode_twist(
         .with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
 
     let start = Instant::now();
     for chunk in samples.chunks(1024) {

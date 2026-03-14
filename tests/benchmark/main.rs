@@ -239,6 +239,11 @@ enum Command {
         /// Path to WAV file
         file: PathBuf,
     },
+    /// Test adaptive pre-emphasis single decoder
+    Preemph {
+        /// Path to WAV file
+        file: PathBuf,
+    },
 }
 
 fn main() {
@@ -349,6 +354,16 @@ fn main() {
         }
         Command::Baud9600Attribution { file } => {
             baud9600::run_9600_attribution(&file.to_string_lossy());
+        }
+        Command::Preemph { file } => {
+            let path = file.to_string_lossy();
+            let (sr, samples) = common::read_wav_file(&path).unwrap();
+            let fast = common::decode_fast(&samples, sr);
+            let (quality, _) = common::decode_quality(&samples, sr);
+            let (preemph, soft_p) = common::decode_fast_preemph(&samples, sr);
+            println!("Fast:       {} frames", fast.frames.len());
+            println!("Quality:    {} frames", quality.frames.len());
+            println!("Preemph:    {} frames ({} soft)", preemph.frames.len(), soft_p);
         }
     }
 }

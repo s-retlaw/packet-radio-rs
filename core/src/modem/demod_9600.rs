@@ -477,6 +477,8 @@ pub struct Demod9600Direwolf {
     prev_nrzi: bool,
     /// Optional slicer threshold offset (for multi-slicer diversity)
     threshold: i16,
+    /// Running sample counter for per-symbol position tracking.
+    sample_count: u32,
 }
 
 impl Demod9600Direwolf {
@@ -492,6 +494,7 @@ impl Demod9600Direwolf {
             llr_ring: DescramblerLlrRing::new(),
             prev_nrzi: false,
             threshold: 0,
+            sample_count: 0,
         }
     }
 
@@ -557,6 +560,8 @@ impl Demod9600Direwolf {
         let mut sym_count = 0;
 
         for &sample in samples {
+            self.sample_count = self.sample_count.wrapping_add(1);
+
             // 1. LPF
             let filtered = self.lpf.process(sample);
 
@@ -589,7 +594,7 @@ impl Demod9600Direwolf {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr };
+                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count };
                     sym_count += 1;
                 }
             }
@@ -606,6 +611,7 @@ impl Demod9600Direwolf {
         self.descrambler.reset();
         self.llr_ring.reset();
         self.prev_nrzi = false;
+        self.sample_count = 0;
     }
 }
 
@@ -626,6 +632,8 @@ pub struct Demod9600Gardner {
     llr_ring: DescramblerLlrRing,
     prev_nrzi: bool,
     threshold: i16,
+    /// Running sample counter for per-symbol position tracking.
+    sample_count: u32,
 }
 
 impl Demod9600Gardner {
@@ -646,6 +654,7 @@ impl Demod9600Gardner {
             llr_ring: DescramblerLlrRing::new(),
             prev_nrzi: false,
             threshold: 0,
+            sample_count: 0,
         }
     }
 
@@ -715,6 +724,7 @@ impl Demod9600Gardner {
         let mut sym_count = 0;
 
         for &sample in samples {
+            self.sample_count = self.sample_count.wrapping_add(1);
             let filtered = self.lpf.process(sample);
             let agc_out = self.agc.process(filtered);
 
@@ -730,7 +740,7 @@ impl Demod9600Gardner {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr };
+                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count };
                     sym_count += 1;
                 }
             }
@@ -747,6 +757,7 @@ impl Demod9600Gardner {
         self.descrambler.reset();
         self.llr_ring.reset();
         self.prev_nrzi = false;
+        self.sample_count = 0;
     }
 }
 
@@ -767,6 +778,7 @@ pub struct Demod9600EarlyLate {
     llr_ring: DescramblerLlrRing,
     prev_nrzi: bool,
     threshold: i16,
+    sample_count: u32,
 }
 
 impl Demod9600EarlyLate {
@@ -785,6 +797,7 @@ impl Demod9600EarlyLate {
             llr_ring: DescramblerLlrRing::new(),
             prev_nrzi: false,
             threshold: 0,
+            sample_count: 0,
         }
     }
 
@@ -809,6 +822,7 @@ impl Demod9600EarlyLate {
         let mut sym_count = 0;
 
         for &sample in samples {
+            self.sample_count = self.sample_count.wrapping_add(1);
             let filtered = self.lpf.process(sample);
             let agc_out = self.agc.process(filtered);
 
@@ -824,7 +838,7 @@ impl Demod9600EarlyLate {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr };
+                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count };
                     sym_count += 1;
                 }
             }
@@ -841,6 +855,7 @@ impl Demod9600EarlyLate {
         self.descrambler.reset();
         self.llr_ring.reset();
         self.prev_nrzi = false;
+        self.sample_count = 0;
     }
 }
 
@@ -861,6 +876,7 @@ pub struct Demod9600MuellerMuller {
     llr_ring: DescramblerLlrRing,
     prev_nrzi: bool,
     threshold: i16,
+    sample_count: u32,
 }
 
 impl Demod9600MuellerMuller {
@@ -879,6 +895,7 @@ impl Demod9600MuellerMuller {
             llr_ring: DescramblerLlrRing::new(),
             prev_nrzi: false,
             threshold: 0,
+            sample_count: 0,
         }
     }
 
@@ -903,6 +920,7 @@ impl Demod9600MuellerMuller {
         let mut sym_count = 0;
 
         for &sample in samples {
+            self.sample_count = self.sample_count.wrapping_add(1);
             let filtered = self.lpf.process(sample);
             let agc_out = self.agc.process(filtered);
 
@@ -918,7 +936,7 @@ impl Demod9600MuellerMuller {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr };
+                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count };
                     sym_count += 1;
                 }
             }
@@ -935,6 +953,7 @@ impl Demod9600MuellerMuller {
         self.descrambler.reset();
         self.llr_ring.reset();
         self.prev_nrzi = false;
+        self.sample_count = 0;
     }
 }
 
@@ -964,6 +983,7 @@ pub struct Demod9600Rrc {
     llr_ring: DescramblerLlrRing,
     prev_nrzi: bool,
     threshold: i16,
+    sample_count: u32,
 }
 
 impl Demod9600Rrc {
@@ -997,6 +1017,7 @@ impl Demod9600Rrc {
             llr_ring: DescramblerLlrRing::new(),
             prev_nrzi: false,
             threshold: 0,
+            sample_count: 0,
         }
     }
 
@@ -1035,6 +1056,7 @@ impl Demod9600Rrc {
         let mut sym_count = 0;
 
         for &sample in samples {
+            self.sample_count = self.sample_count.wrapping_add(1);
             // RRC matched filter (replaces LPF)
             let filtered = self.rrc_filter(sample);
             let agc_out = self.agc.process(filtered);
@@ -1051,7 +1073,7 @@ impl Demod9600Rrc {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr };
+                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count };
                     sym_count += 1;
                 }
             }
@@ -1069,6 +1091,7 @@ impl Demod9600Rrc {
         self.descrambler.reset();
         self.llr_ring.reset();
         self.prev_nrzi = false;
+        self.sample_count = 0;
     }
 }
 
@@ -1307,7 +1330,7 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 300];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
         // Should produce approximately 200 symbols
@@ -1329,7 +1352,7 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 300];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
         assert!(n > 150 && n < 250,
@@ -1350,7 +1373,7 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 300];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
         assert!(n > 150 && n < 250,
@@ -1371,7 +1394,7 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 300];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
         assert!(n > 150 && n < 250,
@@ -1392,7 +1415,7 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 300];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
         assert!(n > 100 && n < 300,

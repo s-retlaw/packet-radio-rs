@@ -269,16 +269,45 @@ pub fn frame_hash(data: &[u8]) -> u32 {
     hash
 }
 
-/// Time-windowed dedup ring buffer for multi-decoder frame deduplication.
+/// Result of checking a frame against the dedup ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DedupAction {
+    /// No overlapping frame — emit this frame.
+    New,
+    /// An overlapping frame exists with equal or better cost — drop this one.
+    Duplicate,
+    /// An overlapping frame exists with worse cost — replace it at the given output slot.
+    Replace(u8),
+}
+
+/// Dedup ring entry: hash, start sample, cost, and output buffer slot.
+#[derive(Clone, Copy)]
+struct DedupEntry {
+    hash: u32,
+    start_sample: u64,
+    cost: u16,
+    slot: u8,
+}
+
+impl Default for DedupEntry {
+    fn default() -> Self {
+        Self { hash: 0, start_sample: 0, cost: 0, slot: 0 }
+    }
+}
+
+/// Time-window-based dedup ring buffer for multi-decoder frame deduplication.
 ///
-/// Tracks (hash, generation) pairs in a fixed-size ring. Hashes expire
-/// after `DEDUP_WINDOW` generations to allow re-decoding of repeated
-/// transmissions.
+/// Tracks frame start samples in a fixed-size ring. Frames whose start
+/// samples overlap (within a duration window) are considered from the same
+/// physical transmission. Among overlapping frames, only the one with the
+/// lowest cost (best quality) is kept.
 pub struct DedupRing<const N: usize> {
-    entries: [(u32, u32); N],
+    entries: [DedupEntry; N],
     write_idx: usize,
     count: usize,
-    generation: u32,
+    /// Maximum sample distance for two frames to be considered overlapping.
+    /// Set via `set_overlap_window()` or defaults to `MAX_OVERLAP_SAMPLES`.
+    overlap_window: u64,
 }
 
 impl<const N: usize> Default for DedupRing<N> {
@@ -287,56 +316,139 @@ impl<const N: usize> Default for DedupRing<N> {
     }
 }
 
-impl<const N: usize> DedupRing<N> {
-    /// Number of generations a hash is considered "recent".
-    const DEDUP_WINDOW: u32 = 4;
+/// Default overlap window in samples for time-based dedup.
+/// ~80 symbols at 1200 baud/11025 Hz = 720 samples. Tight enough to avoid
+/// merging consecutive packets, wide enough to catch same-TX decodes
+/// with slightly different frame lengths from different decoders.
+const DEFAULT_OVERLAP_SAMPLES: u64 = 800;
 
+/// Number of symbol periods used to compute the overlap window.
+/// overlap_window = OVERLAP_SYMBOLS * samples_per_symbol.
+/// 89 symbols ≈ 801 samples at 1200 baud / 11025 Hz, matching the legacy default.
+/// (samples_per_symbol = 11025/1200 = 9 via integer division, so 89 × 9 = 801)
+const OVERLAP_SYMBOLS: u64 = 89;
+
+/// Expiry window: hash-based entries older than this many samples are ignored.
+/// ~0.45 seconds at 11025 Hz — matches the old 4-generation window (~4 × 1024 samples).
+/// Must be short enough to allow repeated transmissions of identical content.
+const EXPIRY_SAMPLES: u64 = 5000;
+
+impl<const N: usize> DedupRing<N> {
     /// Create a new empty dedup ring.
     pub fn new() -> Self {
         Self {
-            entries: [(0u32, 0u32); N],
+            entries: [DedupEntry::default(); N],
             write_idx: 0,
             count: 0,
-            generation: 0,
+            overlap_window: DEFAULT_OVERLAP_SAMPLES,
         }
     }
 
-    /// Advance to the next generation (call once per process_samples batch).
-    pub fn advance_generation(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
+    /// Create a dedup ring with overlap window scaled to samples-per-symbol.
+    ///
+    /// `overlap_window = OVERLAP_SYMBOLS * sps`, which adapts automatically
+    /// to any sample_rate / baud_rate combination.
+    pub fn with_overlap_from_config(sps: u32) -> Self {
+        Self {
+            entries: [DedupEntry::default(); N],
+            write_idx: 0,
+            count: 0,
+            overlap_window: OVERLAP_SYMBOLS * sps as u64,
+        }
     }
 
-    /// Current generation counter.
-    pub fn generation(&self) -> u32 {
-        self.generation
+    /// Set the overlap window in samples.
+    pub fn set_overlap_window(&mut self, window: u64) {
+        self.overlap_window = window;
     }
 
-    /// Check if a hash was seen recently (within the dedup window).
+    /// No-op for backward compatibility. Time-based dedup doesn't use generations.
+    pub fn advance_generation(&mut self) {}
+
+    /// Check if a hash was seen recently (backward-compatible wrapper).
+    /// Prefer `check()` for new code.
     pub fn is_duplicate(&self, hash: u32) -> bool {
+        // Legacy fallback: check by hash only, using most recent sample as reference
         let limit = self.count.min(N);
         for i in 0..limit {
-            let (h, gen) = self.entries[i];
-            if h == hash && self.generation.wrapping_sub(gen) <= Self::DEDUP_WINDOW {
+            let e = &self.entries[i];
+            if e.hash == hash {
                 return true;
             }
         }
         false
     }
 
-    /// Record a hash at the current generation.
+    /// Check a frame against existing entries using hash match and time-window overlap.
+    ///
+    /// Two matching strategies:
+    /// 1. **Hash match** (within expiry window): same frame content from different decoders
+    ///    or retransmissions. Compare costs to keep the best decode.
+    /// 2. **Time overlap** (tight window): different decoders may produce slightly different
+    ///    content for the same physical TX (e.g., soft recovery variants). Compare costs.
+    ///
+    /// Returns `New` if no match, `Duplicate` if an existing frame is
+    /// equal/better quality, or `Replace(slot)` if the new frame is better.
+    pub fn check(&self, hash: u32, start_sample: u64, cost: u16) -> DedupAction {
+        let limit = self.count.min(N);
+        for i in 0..limit {
+            let e = &self.entries[i];
+            // Compute time delta
+            let delta = if start_sample >= e.start_sample {
+                start_sample - e.start_sample
+            } else {
+                e.start_sample - start_sample
+            };
+            // Skip expired entries (neither hash nor time match matters)
+            if delta > EXPIRY_SAMPLES {
+                continue;
+            }
+            // Match on hash (same content from different decoders) or
+            // time overlap (different soft-recovery variants of the same TX).
+            let is_match = e.hash == hash || delta < self.overlap_window;
+            if is_match {
+                // Same physical TX — compare quality
+                if cost < e.cost {
+                    return DedupAction::Replace(e.slot);
+                } else {
+                    return DedupAction::Duplicate;
+                }
+            }
+        }
+        DedupAction::New
+    }
+
+    /// Record a frame in the ring.
     pub fn record(&mut self, hash: u32) {
-        self.entries[self.write_idx] = (hash, self.generation);
+        self.record_with_info(hash, 0, 0, 0);
+    }
+
+    /// Record a frame with full time-window info.
+    pub fn record_with_info(&mut self, hash: u32, start_sample: u64, cost: u16, slot: u8) {
+        self.entries[self.write_idx] = DedupEntry { hash, start_sample, cost, slot };
         self.write_idx = (self.write_idx + 1) % N;
         if self.count < N {
             self.count += 1;
         }
     }
 
+    /// Update an existing entry's cost and slot (after a Replace).
+    pub fn update_entry(&mut self, old_slot: u8, new_cost: u16, new_slot: u8) {
+        let limit = self.count.min(N);
+        for i in 0..limit {
+            if self.entries[i].slot == old_slot {
+                self.entries[i].cost = new_cost;
+                self.entries[i].slot = new_slot;
+                return;
+            }
+        }
+    }
+
     /// Reset all state.
     pub fn reset(&mut self) {
-        self.entries = [(0u32, 0u32); N];
+        self.entries = [DedupEntry::default(); N];
         self.write_idx = 0;
         self.count = 0;
-        self.generation = 0;
     }
 }
+

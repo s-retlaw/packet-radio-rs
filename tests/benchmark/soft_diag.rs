@@ -23,7 +23,7 @@ pub fn run_soft_diag(path: &str) {
     let mut demod = QualityDemodulator::new(config);
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
 
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);

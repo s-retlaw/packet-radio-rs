@@ -7,7 +7,10 @@ var mapClickCallback = null;
 var mapReady = false;
 var pendingStations = null;
 var pendingTracks = null;
+var pendingTrackDots = null;
+var pendingTrackArrows = null;
 var hoverPopup = null;
+var trackDotPopup = null;
 var pulseTimers = {};
 var coverageCache = {};
 
@@ -287,6 +290,80 @@ function addAprsLayers() {
         }
     });
 
+    // Track dots source and layer
+    map.addSource('aprs-track-dots', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    // Track arrows source and layer
+    map.addSource('aprs-track-arrows', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    // Playback marker source
+    map.addSource('aprs-playback-marker', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    // Direction arrows layer — rotated triangles at segment midpoints
+    map.addLayer({
+        id: 'track-arrows',
+        type: 'symbol',
+        source: 'aprs-track-arrows',
+        layout: {
+            'text-field': '\u25B6',
+            'text-size': 12,
+            'text-font': ['Noto Sans Regular'],
+            'text-rotation-alignment': 'map',
+            'text-rotate': ['get', 'bearing'],
+            'text-allow-overlap': true,
+            'text-ignore-placement': true,
+            visibility: 'none',
+        },
+        paint: {
+            'text-color': ['coalesce', ['get', 'color'], '#4fc3f7'],
+            'text-opacity': 0.7,
+        }
+    });
+
+    // Track dots layer — circles at each position
+    map.addLayer({
+        id: 'track-dots',
+        type: 'circle',
+        source: 'aprs-track-dots',
+        layout: { visibility: 'none' },
+        paint: {
+            'circle-radius': [
+                'case',
+                ['get', 'stopMarker'], 10,
+                ['get', 'stopped'], [
+                    'interpolate', ['linear'], ['zoom'],
+                    4, 4, 8, 5, 12, 7, 16, 8
+                ],
+                [
+                    'interpolate', ['linear'], ['zoom'],
+                    4, 2, 8, 3, 12, 5, 16, 6
+                ]
+            ],
+            'circle-color': ['coalesce', ['get', 'color'], '#4fc3f7'],
+            'circle-opacity': [
+                'case',
+                ['get', 'stopMarker'], 0.3,
+                0.8
+            ],
+            'circle-stroke-width': [
+                'case',
+                ['get', 'stopped'], 2,
+                0
+            ],
+            'circle-stroke-color': ['coalesce', ['get', 'color'], '#4fc3f7'],
+            'circle-stroke-opacity': 0.5,
+        }
+    });
+
     // RF/NET ring — colored ring around stations based on heard_via
     map.addLayer({
         id: 'stations-ring',
@@ -373,6 +450,20 @@ function addAprsLayers() {
         },
         paint: {
             'icon-opacity': 1,
+        }
+    });
+
+    // Playback marker layer — animated position dot
+    map.addLayer({
+        id: 'playback-marker',
+        type: 'circle',
+        source: 'aprs-playback-marker',
+        paint: {
+            'circle-radius': 8,
+            'circle-color': '#6366f1',
+            'circle-stroke-width': 3,
+            'circle-stroke-color': '#ffffff',
+            'circle-opacity': 0.9,
         }
     });
 
@@ -472,10 +563,44 @@ function addAprsLayers() {
 
     // Click on empty map
     map.on('click', function(e) {
-        var features = map.queryRenderedFeatures(e.point, { layers: clickLayers.concat(['fcc-nearby-dots']) });
+        var features = map.queryRenderedFeatures(e.point, { layers: clickLayers.concat(['fcc-nearby-dots', 'track-dots']) });
         if (features.length === 0 && mapClickCallback) {
             mapClickCallback(e.lngLat.lng, e.lngLat.lat);
         }
+    });
+
+    // Track dots hover popup
+    trackDotPopup = new maplibregl.Popup({
+        closeButton: false,
+        closeOnClick: false,
+        className: 'station-popup',
+        offset: 12,
+    });
+
+    map.on('mouseenter', 'track-dots', function(e) {
+        map.getCanvas().style.cursor = 'pointer';
+        if (e.features.length === 0) return;
+        var props = e.features[0].properties;
+        var coords = e.features[0].geometry.coordinates.slice();
+        var time = props.time || '';
+        if (time) {
+            var ts = time.replace(' ', 'T');
+            var d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+            if (!isNaN(d)) time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+        var html = '<div class="popup-content">';
+        html += '<div class="popup-call">' + escHtml(props.callsign) + '</div>';
+        if (props.speed > 0) html += '<div class="popup-type">Speed: ' + parseFloat(props.speed).toFixed(0) + ' mph</div>';
+        if (props.altitude) html += '<div class="popup-type">Alt: ' + parseFloat(props.altitude).toFixed(0) + ' ft</div>';
+        if (time) html += '<div class="popup-age">' + time + '</div>';
+        if (props.stopMarker) html += '<div class="popup-age" style="color:#f97316">Stop (' + escHtml(props.stopCount) + ' pts)</div>';
+        html += '</div>';
+        trackDotPopup.setLngLat(coords).setHTML(html).addTo(map);
+    });
+
+    map.on('mouseleave', 'track-dots', function() {
+        map.getCanvas().style.cursor = '';
+        trackDotPopup.remove();
     });
 
     // Hover popup
@@ -619,6 +744,14 @@ function addAprsLayers() {
     if (pendingTracks) {
         try { map.getSource('aprs-tracks').setData(pendingTracks); } catch(e) {}
         pendingTracks = null;
+    }
+    if (pendingTrackDots) {
+        try { map.getSource('aprs-track-dots').setData(pendingTrackDots); } catch(e) {}
+        pendingTrackDots = null;
+    }
+    if (pendingTrackArrows) {
+        try { map.getSource('aprs-track-arrows').setData(pendingTrackArrows); } catch(e) {}
+        pendingTrackArrows = null;
     }
 }
 
@@ -823,21 +956,78 @@ function destroyMap() {
     }
 }
 
+function updateTrackDots(geojsonStr) {
+    if (!map) return;
+    var data = JSON.parse(geojsonStr);
+    if (!mapReady) {
+        pendingTrackDots = data;
+        return;
+    }
+    try {
+        var source = map.getSource('aprs-track-dots');
+        if (source) source.setData(data);
+    } catch (e) {
+        console.error('Failed to update track dots:', e);
+    }
+}
+
+function updateTrackArrows(geojsonStr) {
+    if (!map) return;
+    var data = JSON.parse(geojsonStr);
+    if (!mapReady) {
+        pendingTrackArrows = data;
+        return;
+    }
+    try {
+        var source = map.getSource('aprs-track-arrows');
+        if (source) source.setData(data);
+    } catch (e) {
+        console.error('Failed to update track arrows:', e);
+    }
+}
+
+function updatePlaybackMarker(lon, lat) {
+    if (!map || !mapReady) return;
+    try {
+        var source = map.getSource('aprs-playback-marker');
+        if (source) {
+            if (lon == null || lat == null) {
+                source.setData({ type: 'FeatureCollection', features: [] });
+            } else {
+                source.setData({
+                    type: 'FeatureCollection',
+                    features: [{
+                        type: 'Feature',
+                        geometry: { type: 'Point', coordinates: [lon, lat] },
+                        properties: {},
+                    }]
+                });
+            }
+        }
+    } catch(e) {}
+}
+
 function setTracksVisible(visible) {
     if (!map) return;
-    var layer = map.getLayer('tracks-line');
-    if (layer) {
-        map.setLayoutProperty('tracks-line', 'visibility', visible ? 'visible' : 'none');
+    var vis = visible ? 'visible' : 'none';
+    var layers = ['tracks-line', 'track-dots', 'track-arrows'];
+    for (var i = 0; i < layers.length; i++) {
+        if (map.getLayer(layers[i])) {
+            map.setLayoutProperty(layers[i], 'visibility', vis);
+        }
     }
 }
 
 function clearTracks() {
     if (!map) return;
+    var empty = { type: 'FeatureCollection', features: [] };
     try {
-        var source = map.getSource('aprs-tracks');
-        if (source) {
-            source.setData({ type: 'FeatureCollection', features: [] });
-        }
+        var s1 = map.getSource('aprs-tracks');
+        if (s1) s1.setData(empty);
+        var s2 = map.getSource('aprs-track-dots');
+        if (s2) s2.setData(empty);
+        var s3 = map.getSource('aprs-track-arrows');
+        if (s3) s3.setData(empty);
     } catch(e) {}
     setTracksVisible(false);
 }

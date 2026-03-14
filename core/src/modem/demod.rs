@@ -33,6 +33,9 @@ pub struct DemodSymbol {
     /// +127 = definitely mark, −127 = definitely space.
     /// Only meaningful when using the quality path.
     pub llr: i8,
+    /// Absolute sample index when this symbol was detected.
+    /// Used by multi-decoders for precise time-window deduplication.
+    pub sample_idx: u32,
 }
 
 /// Right-shift applied to Goertzel energies before AGC peak tracking/comparison.
@@ -153,6 +156,25 @@ pub struct FastDemodulator {
     /// When set, the symbol timing uses this rate instead of config.baud_rate.
     /// Used for baud-rate diversity in multi-decoder (300 baud variable speed).
     timing_baud_rate: u32,
+    /// Whether adaptive pre-emphasis compensation is enabled.
+    /// Detects de-emphasized audio during preamble and applies pre-emphasis
+    /// filter to boost high frequencies, improving space tone detection.
+    adaptive_preemph_enabled: bool,
+    /// Pre-emphasis coefficient in Q15. Set during preamble when de-emphasis is detected.
+    /// y[n] = x[n] - (alpha * x[n-1]) >> 15
+    preemph_alpha_q15: i16,
+    /// Previous sample for pre-emphasis filter.
+    preemph_prev_sample: i16,
+    /// Early/late gate: saved Goertzel state from 1 sample before boundary.
+    early_mark_s1: i64,
+    early_mark_s2: i64,
+    early_space_s1: i64,
+    early_space_s2: i64,
+    /// Accumulated timing error (leaky integrator for early/late gate).
+    /// Positive = sampling too late, negative = sampling too early.
+    timing_error_accum: i32,
+    /// Whether early/late gate timing is enabled.
+    early_late_enabled: bool,
     /// Q8 window coefficients for windowed Goertzel (256 = 1.0).
     /// Pre-multiplying input samples by these weights reduces ISI when
     /// Bresenham timing is slightly misaligned with symbol boundaries.
@@ -210,6 +232,15 @@ impl FastDemodulator {
             symbols_since_last_flag: SYMBOLS_COUNTER_RESET,
             pll: None,
             timing_baud_rate,
+            adaptive_preemph_enabled: false,
+            preemph_alpha_q15: 0,
+            preemph_prev_sample: 0,
+            early_mark_s1: 0,
+            early_mark_s2: 0,
+            early_space_s1: 0,
+            early_space_s2: 0,
+            timing_error_accum: 0,
+            early_late_enabled: false,
         }
     }
 
@@ -383,6 +414,52 @@ impl FastDemodulator {
         self
     }
 
+    /// Enable early/late gate timing error detection.
+    ///
+    /// At each symbol boundary, compares Goertzel energy at the current
+    /// sample vs 1 sample earlier. If the "early" energy is higher, the
+    /// boundary should shift earlier; if "on-time" energy is higher, shift
+    /// later. Uses a leaky integrator to smooth corrections.
+    ///
+    /// Cost: ~4 extra state saves per sample (32 bytes), one energy
+    /// computation and leaky integrator update per symbol boundary.
+    #[must_use]
+    pub fn with_early_late_gate(mut self) -> Self {
+        self.early_late_enabled = true;
+        self
+    }
+
+    /// Enable adaptive pre-emphasis from preamble measurement.
+    ///
+    /// During the HDLC flag preamble, measures relative mark and space energy.
+    /// If de-emphasis is detected (space significantly weaker than mark), applies
+    /// a first-order pre-emphasis filter (y[n] = x[n] - α·x[n-1]) to boost
+    /// high frequencies before the BPF. This improves both Goertzel detection
+    /// and LLR quality for de-emphasized audio.
+    ///
+    /// One-time per-frame decision during preamble. ~2 extra ops/sample after
+    /// activation (one multiply + one subtract).
+    #[must_use]
+    pub fn with_adaptive_preemph(mut self) -> Self {
+        self.adaptive_preemph_enabled = true;
+        // Also need flag tracking for preamble detection
+        self.adaptive_gain_enabled = true;
+        self
+    }
+
+    /// Set a fixed pre-emphasis filter coefficient (Q15).
+    ///
+    /// Unlike `with_adaptive_preemph()` which detects de-emphasis during preamble,
+    /// this applies pre-emphasis unconditionally from the start.
+    /// y[n] = x[n] - (alpha * x[n-1]) >> 15
+    ///
+    /// Typical values: 3000 for mild compensation, 6000 for moderate.
+    #[must_use]
+    pub fn with_fixed_preemph(mut self, alpha_q15: i16) -> Self {
+        self.preemph_alpha_q15 = alpha_q15;
+        self
+    }
+
     /// Reset demodulator state.
     pub fn reset(&mut self) {
         self.bpf.reset();
@@ -409,6 +486,11 @@ impl FastDemodulator {
             self.preamble_space_count = 0;
             self.preamble_flag_count = 0;
             self.symbols_since_last_flag = SYMBOLS_COUNTER_RESET;
+        }
+        // Reset adaptive pre-emphasis
+        if self.adaptive_preemph_enabled {
+            self.preemph_alpha_q15 = 0;
+            self.preemph_prev_sample = 0;
         }
         // Reset adaptive state and restore original Goertzel coefficients
         if let Some(ref mut adaptive) = self.adaptive {
@@ -440,6 +522,19 @@ impl FastDemodulator {
 
         for &sample in samples {
             self.samples_processed += 1;
+
+            // 0. Adaptive pre-emphasis filter (if activated by preamble detection)
+            let sample = if self.preemph_alpha_q15 != 0 {
+                let prev = self.preemph_prev_sample;
+                self.preemph_prev_sample = sample;
+                let y = sample as i32 - ((self.preemph_alpha_q15 as i32 * prev as i32) >> 15);
+                y.clamp(-32768, 32767) as i16
+            } else {
+                if self.adaptive_preemph_enabled {
+                    self.preemph_prev_sample = sample;
+                }
+                sample
+            };
 
             // 1. Bandpass filter (optionally cascaded for -12 dB/oct rolloff)
             let bpf1_out = self.bpf.process(sample);
@@ -475,6 +570,14 @@ impl FastDemodulator {
                         adaptive.retuned = true;
                     }
                 }
+            }
+
+            // 1c. Save Goertzel state for early/late gate (1 sample delay)
+            if self.early_late_enabled {
+                self.early_mark_s1 = self.mark_s1;
+                self.early_mark_s2 = self.mark_s2;
+                self.early_space_s1 = self.space_s1;
+                self.early_space_s2 = self.space_s2;
             }
 
             // 2. Apply window (if enabled) and Goertzel iteration
@@ -525,6 +628,36 @@ impl FastDemodulator {
                 let space_energy = self.space_s1 * self.space_s1
                     + self.space_s2 * self.space_s2
                     - ((self.space_coeff as i64 * self.space_s1 * self.space_s2) >> 14);
+
+                // 4b. Early/late gate timing correction
+                if self.early_late_enabled && self.pll.is_none() {
+                    // Compute "early" energy (from 1 sample before boundary)
+                    let early_mark = self.early_mark_s1 * self.early_mark_s1
+                        + self.early_mark_s2 * self.early_mark_s2
+                        - ((self.mark_coeff as i64 * self.early_mark_s1 * self.early_mark_s2) >> 14);
+                    let early_space = self.early_space_s1 * self.early_space_s1
+                        + self.early_space_s2 * self.early_space_s2
+                        - ((self.space_coeff as i64 * self.early_space_s1 * self.early_space_s2) >> 14);
+
+                    let on_time_total = (mark_energy + space_energy) >> 20;
+                    let early_total = (early_mark + early_space) >> 20;
+
+                    // Error: positive = early has more energy → sampling too late
+                    let error = (early_total - on_time_total) as i32;
+
+                    // Very gentle leaky integrator: 7/8 old + 1/8 new
+                    self.timing_error_accum =
+                        ((self.timing_error_accum as i64 * 7 + error as i64) >> 3) as i32;
+
+                    // Ultra-conservative correction: nudge by 1/128 of symbol period
+                    // only when error is strongly biased in one direction
+                    let threshold = (on_time_total as i32).max(200) >> 1;
+                    if self.timing_error_accum > threshold {
+                        self.bit_phase = self.bit_phase.saturating_add(timing_baud >> 7);
+                    } else if self.timing_error_accum < -threshold {
+                        self.bit_phase = self.bit_phase.saturating_sub(timing_baud >> 7);
+                    }
+                }
 
                 // Bit decision: AGC normalizes by tracked peak levels,
                 // otherwise apply static space gain (multi-slicer).
@@ -593,6 +726,20 @@ impl FastDemodulator {
                             let excess = (measured - UNITY_GAIN_Q8 as i64).max(0);
                             let gain = UNITY_GAIN_Q8 as i64 + (excess >> 2);
                             self.space_gain_q8 = (gain as u16).min(512);
+
+                            // 5d. Adaptive pre-emphasis: detect de-emphasized audio
+                            // and apply first-order pre-emphasis filter to boost space tone.
+                            // Only activate when space is clearly weaker (ratio > 3.0).
+                            if self.adaptive_preemph_enabled && self.preemph_alpha_q15 == 0 {
+                                // mark/space ratio > 3.0 (Q8=768) = heavily de-emphasized
+                                if measured > 768 {
+                                    // Conservative alpha: scale gently from the excess
+                                    // ratio 3.0→alpha~2560, ratio 5.0→alpha~5120
+                                    let alpha = ((measured - 768) * 10)
+                                        .clamp(0, 12000) as i16;
+                                    self.preemph_alpha_q15 = alpha;
+                                }
+                            }
                         }
                         self.preamble_mark_energy = 0;
                         self.preamble_space_energy = 0;
@@ -629,6 +776,7 @@ impl FastDemodulator {
                     symbols_out[sym_count] = DemodSymbol {
                         bit: decoded_bit,
                         llr,
+                        sample_idx: self.samples_processed as u32,
                     };
                     sym_count += 1;
                 }
@@ -1054,6 +1202,7 @@ impl QualityDemodulator {
                     symbols_out[sym_count] = DemodSymbol {
                         bit: decoded_bit,
                         llr: decoded_llr,
+                        sample_idx: self.samples_processed as u32,
                     };
                     sym_count += 1;
                 }
@@ -1676,6 +1825,7 @@ impl DmDemodulator {
                     symbols_out[sym_count] = DemodSymbol {
                         bit: decoded_bit,
                         llr,
+                        sample_idx: self.samples_processed as u32,
                     };
                     sym_count += 1;
                 }
@@ -2105,6 +2255,7 @@ impl CorrelationDemodulator {
                     symbols_out[sym_count] = DemodSymbol {
                         bit: decoded_bit,
                         llr,
+                        sample_idx: self.samples_processed as u32,
                     };
                     sym_count += 1;
                 }
@@ -2139,7 +2290,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 200];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         // Silence should produce some symbols (PLL runs, but data is garbage)
@@ -2152,7 +2303,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = QualityDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 200];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         assert!(n < 200);
@@ -2163,7 +2314,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
         let noise = [1000i16; 100];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 50];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 50];
 
         demod.process_samples(&noise, &mut symbols);
         demod.reset();
@@ -2182,7 +2333,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = CorrelationDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 200];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         assert!(n < 200);
@@ -2200,7 +2351,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = CorrelationDemodulator::new(config).with_pll();
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 200];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         // PLL should still produce symbols (at approximately baud rate)
@@ -2212,7 +2363,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = CorrelationDemodulator::new(config);
         let noise = [1000i16; 100];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 50];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 50];
 
         demod.process_samples(&noise, &mut symbols);
         demod.reset();
@@ -2430,7 +2581,7 @@ mod tests {
         // Demodulate with fast path
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 8192];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Feed demodulated bits into HDLC decoder
@@ -2482,7 +2633,7 @@ mod tests {
         // Demodulate with quality path
         let config = DemodConfig::default_1200();
         let mut demod = QualityDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 8192];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Feed into soft HDLC decoder
@@ -2532,7 +2683,7 @@ mod tests {
 
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config).with_agc();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 8192];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -2592,7 +2743,7 @@ mod tests {
         // AGC decoder should succeed on de-emphasized signal
         let config = DemodConfig::default_1200();
         let mut demod_agc = FastDemodulator::new(config).with_agc();
-        let mut symbols_agc = [DemodSymbol { bit: false, llr: 0 }; 8192];
+        let mut symbols_agc = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 8192];
         let num_agc = demod_agc.process_samples(&audio[..audio_len], &mut symbols_agc);
 
         let mut decoder_agc = HdlcDecoder::new();
@@ -2649,7 +2800,7 @@ mod tests {
         // Demodulate
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 8192];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Decode
@@ -2748,7 +2899,7 @@ mod tests {
 
         let config = DemodConfig::default_1200_22k();
         let mut demod = DmDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 256];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 256];
         let num = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut shift_reg: u8 = 0;
@@ -2783,7 +2934,7 @@ mod tests {
 
         let config = DemodConfig::default_1200_22k();
         let mut demod = DmDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 256];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 256];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Check for flags
@@ -2817,7 +2968,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = DmDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 200];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         // Silence should produce some symbols (PLL runs), no panics/overflow
@@ -2829,7 +2980,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = DmDemodulator::new(config);
         let noise = [1000i16; 100];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 50];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 50];
 
         demod.process_samples(&noise, &mut symbols);
         demod.reset();
@@ -2876,7 +3027,7 @@ mod tests {
         // Demodulate with DM path at 22050 Hz
         let config = DemodConfig::default_1200_22k();
         let mut demod = DmDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 16384];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Feed demodulated bits into HDLC decoder
@@ -2971,7 +3122,7 @@ mod tests {
 
         let config = DemodConfig::default_1200();
         let mut demod = CorrelationDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 8192];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3028,7 +3179,7 @@ mod tests {
 
         let config = DemodConfig::default_1200_22k();
         let mut demod = DmDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 16384];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3084,7 +3235,7 @@ mod tests {
 
         let config = DemodConfig::default_300();
         let mut demod = FastDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 16384];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3136,7 +3287,7 @@ mod tests {
 
         let config = DemodConfig::default_300();
         let mut demod = DmDemodulator::with_bpf(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 16384];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3188,7 +3339,7 @@ mod tests {
 
         let config = DemodConfig::default_300();
         let mut demod = CorrelationDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 16384];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();

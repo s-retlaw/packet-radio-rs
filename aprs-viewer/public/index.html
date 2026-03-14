@@ -38,9 +38,7 @@
                     <button class="source-btn" data-source="tnc">RF</button>
                     <button class="source-btn" data-source="aprs-is">NET</button>
                 </div>
-                <label class="toggle-label">
-                    <input type="checkbox" id="show-tracks"> Tracks
-                </label>
+                <button class="toolbar-btn" id="btn-tracks">Tracks</button>
                 <label class="toggle-label">
                     <input type="checkbox" id="show-fcc-nearby"> Hams
                 </label>
@@ -76,6 +74,55 @@
         <!-- Map -->
         <div class="map-container">
             <div id="map-container"></div>
+
+            <!-- Track Management Panel -->
+            <div class="track-panel" id="track-panel" style="display:none">
+                <div class="track-panel-header">
+                    <span class="track-panel-title">Tracked Stations</span>
+                    <button class="modal-close" id="track-panel-close">&times;</button>
+                </div>
+                <div class="track-list" id="track-list">
+                    <div class="track-empty">Click "Track" on a station to add tracks</div>
+                </div>
+                <div id="track-stats-panel"></div>
+                <div class="track-time-section">
+                    <div class="track-time-presets">
+                        <button class="track-time-preset" data-hours="3">3h</button>
+                        <button class="track-time-preset" data-hours="6">6h</button>
+                        <button class="track-time-preset" data-hours="12">12h</button>
+                        <button class="track-time-preset active" data-hours="24">24h</button>
+                        <button class="track-time-preset" data-hours="48">48h</button>
+                    </div>
+                    <div class="track-slider-row">
+                        <span class="track-slider-label" id="track-time-start-label">-24h</span>
+                        <div class="track-slider-wrap">
+                            <input type="range" class="track-slider" id="track-time-start" min="0" max="48" value="24" step="1">
+                            <input type="range" class="track-slider" id="track-time-end" min="0" max="48" value="0" step="1">
+                        </div>
+                        <span class="track-slider-label" id="track-time-end-label">now</span>
+                    </div>
+                </div>
+                <div class="track-panel-footer">
+                    <button class="btn btn-sm btn-secondary" id="track-all-btn">Track All</button>
+                    <button class="btn btn-sm btn-secondary" id="track-clear-btn">Clear All</button>
+                    <button class="btn btn-sm btn-primary" id="track-play-btn">Play</button>
+                </div>
+            </div>
+
+            <!-- Playback Bar -->
+            <div class="playback-bar" id="playback-bar" style="display:none">
+                <button class="playback-btn" id="playback-toggle">&#x25B6;</button>
+                <input type="range" class="playback-slider" id="playback-slider" min="0" max="0" value="0">
+                <span class="playback-time" id="playback-time">--:-- UTC</span>
+                <select class="playback-speed" id="playback-speed">
+                    <option value="1">1x</option>
+                    <option value="2">2x</option>
+                    <option value="5" selected>5x</option>
+                    <option value="10">10x</option>
+                    <option value="50">50x</option>
+                </select>
+                <button class="playback-btn playback-close" id="playback-close">&times;</button>
+            </div>
         </div>
 
         <!-- Packet Log -->
@@ -202,6 +249,7 @@
     <script src="/aprs_symbols.js"></script>
     <script src="/map_init.js"></script>
     <script src="/station_detail.js"></script>
+    <script src="/playback.js"></script>
     <script src="/app.js"></script>
 </body>
 </html>

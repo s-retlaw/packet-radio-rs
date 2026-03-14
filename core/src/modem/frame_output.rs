@@ -13,6 +13,8 @@ const MAX_FRAME_SIZE: usize = 330;
 pub struct DecodedFrame {
     pub data: [u8; MAX_FRAME_SIZE],
     pub len: usize,
+    /// Quality metric: 0 = hard decode, 1 = syndrome, higher = soft recovery cost.
+    pub cost: u16,
 }
 
 /// Fixed-size output buffer holding up to `N` decoded frames.
@@ -38,6 +40,7 @@ impl<const N: usize> FrameOutputBuffer<N> {
             frames: core::array::from_fn(|_| DecodedFrame {
                 data: [0u8; MAX_FRAME_SIZE],
                 len: 0,
+                cost: 0,
             }),
             count: 0,
         }
@@ -63,15 +66,35 @@ impl<const N: usize> FrameOutputBuffer<N> {
         &self.frames[index].data[..self.frames[index].len]
     }
 
-    /// Append a frame to the buffer. Returns `true` if added, `false` if full.
-    pub fn push(&mut self, data: &[u8]) -> bool {
+    /// Append a frame to the buffer. Returns the slot index, or `None` if full.
+    pub fn push(&mut self, data: &[u8]) -> Option<u8> {
+        self.push_with_cost(data, 0)
+    }
+
+    /// Append a frame with its decode cost. Returns the slot index, or `None` if full.
+    pub fn push_with_cost(&mut self, data: &[u8], cost: u16) -> Option<u8> {
         if self.count >= N {
-            return false;
+            return None;
         }
+        let slot = self.count as u8;
         let len = data.len().min(MAX_FRAME_SIZE);
         self.frames[self.count].data[..len].copy_from_slice(&data[..len]);
         self.frames[self.count].len = len;
+        self.frames[self.count].cost = cost;
         self.count += 1;
+        Some(slot)
+    }
+
+    /// Replace a frame at the given slot with better data. Returns `true` on success.
+    pub fn replace(&mut self, slot: u8, data: &[u8], cost: u16) -> bool {
+        let idx = slot as usize;
+        if idx >= self.count {
+            return false;
+        }
+        let len = data.len().min(MAX_FRAME_SIZE);
+        self.frames[idx].data[..len].copy_from_slice(&data[..len]);
+        self.frames[idx].len = len;
+        self.frames[idx].cost = cost;
         true
     }
 }

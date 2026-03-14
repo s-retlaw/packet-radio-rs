@@ -56,7 +56,7 @@ pub fn run_hard_decode(
 ) -> DecodeResult {
     let mut hdlc = HdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; DECODE_CHUNK];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; DECODE_CHUNK];
 
     let start = Instant::now();
     for chunk in samples.chunks(DECODE_CHUNK) {
@@ -77,7 +77,7 @@ pub fn run_soft_decode(
 ) -> (DecodeResult, u32) {
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0 }; DECODE_CHUNK];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; DECODE_CHUNK];
 
     let start = Instant::now();
     for chunk in samples.chunks(DECODE_CHUNK) {
@@ -245,6 +245,15 @@ pub fn decode_best_single(samples: &[i16], sample_rate: u32) -> DecodeResult {
     run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms)).0
 }
 
+/// Decode using the fast demodulator with adaptive pre-emphasis + soft HDLC.
+pub fn decode_fast_preemph(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
+    let config = config_for_rate(sample_rate, get_baud());
+    let mut demod = FastDemodulator::new(config)
+        .with_adaptive_preemph()
+        .with_energy_llr();
+    run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
+}
+
 /// Decode with a custom single Goertzel decoder.
 pub fn decode_custom_goertzel(
     samples: &[i16],
@@ -336,7 +345,7 @@ pub fn decode_corr_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
         let mut demod = CorrelationDemodulator::new(config).with_adaptive_gain();
         demod.set_bit_phase(offset);
         let mut hdlc = HdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
         let mut frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
         let mut sample_pos: usize = 0;
 
@@ -380,7 +389,7 @@ pub fn decode_corr_3phase_quality(samples: &[i16], sample_rate: u32) -> (DecodeR
             offset,
         ).with_adaptive_gain().with_energy_llr();
         let mut soft_hdlc = SoftHdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
         let mut frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
         let mut sample_pos: usize = 0;
 
@@ -932,6 +941,99 @@ pub fn apply_clock_drift(samples: &[i16], ratio: f64) -> Vec<i16> {
     }
 
     output
+}
+
+/// Apply de-emphasis filter: single-pole IIR lowpass that simulates radio
+/// de-emphasis (reduces high frequencies relative to low).
+/// `alpha` controls strength: 0.0 = no effect, 0.9 = heavy de-emphasis.
+pub fn apply_de_emphasis(samples: &[i16], alpha: f64) -> Vec<i16> {
+    if samples.is_empty() || alpha == 0.0 {
+        return samples.to_vec();
+    }
+    let mut output = Vec::with_capacity(samples.len());
+    let mut prev = samples[0] as f64;
+    output.push(samples[0]);
+    for &s in &samples[1..] {
+        let x = s as f64;
+        let y = (1.0 - alpha) * x + alpha * prev;
+        prev = y;
+        output.push(y.clamp(-32768.0, 32767.0) as i16);
+    }
+    output
+}
+
+/// Hard-clip samples at ±threshold. Simulates overdriven radio audio.
+pub fn apply_clipping(samples: &[i16], threshold: i16) -> Vec<i16> {
+    samples.iter().map(|&s| s.clamp(-threshold, threshold)).collect()
+}
+
+/// Scale signal amplitude.
+pub fn scale_amplitude(samples: &[i16], factor: f64) -> Vec<i16> {
+    samples.iter()
+        .map(|&s| (s as f64 * factor).clamp(-32768.0, 32767.0) as i16)
+        .collect()
+}
+
+/// Add per-symbol timing jitter to simulate transmitter PLL instability.
+/// `jitter_samples` is max jitter in samples (e.g., 0.5 or 1.0).
+pub fn add_timing_jitter(
+    samples: &[i16],
+    jitter_samples: f64,
+    samples_per_symbol: f64,
+    seed: u64,
+) -> Vec<i16> {
+    if jitter_samples == 0.0 || samples.is_empty() {
+        return samples.to_vec();
+    }
+    let mut rng = seed;
+    let mut next_rng = || -> f64 {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng & 0xFFFFFFFF) as f64 / 2147483648.0 - 1.0
+    };
+
+    let mut output = Vec::with_capacity(samples.len());
+    let mut src_pos: f64 = 0.0;
+    let mut next_boundary = samples_per_symbol;
+
+    while (src_pos as usize) < samples.len().saturating_sub(1) {
+        let idx = src_pos as usize;
+        let frac = src_pos - idx as f64;
+        if idx + 1 < samples.len() {
+            let s = samples[idx] as f64 * (1.0 - frac) + samples[idx + 1] as f64 * frac;
+            output.push(s.clamp(-32768.0, 32767.0) as i16);
+        } else {
+            output.push(samples[idx]);
+        }
+        src_pos += 1.0;
+        if src_pos >= next_boundary {
+            src_pos += next_rng() * jitter_samples;
+            src_pos = src_pos.max(0.0);
+            next_boundary += samples_per_symbol;
+        }
+    }
+    output
+}
+
+/// Add impulse noise (random clicks/pops) to simulate electrical interference.
+/// `density` is probability of impulse per sample (e.g., 0.001 = 0.1%).
+pub fn add_impulse_noise(samples: &[i16], density: f64, amplitude: i16, seed: u64) -> Vec<i16> {
+    let mut rng = seed;
+    let threshold = (density * 4294967296.0) as u64;
+    samples.iter()
+        .map(|&s| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            if (rng & 0xFFFFFFFF) < threshold {
+                let sign = if (rng >> 33) & 1 == 0 { 1i32 } else { -1i32 };
+                (s as i32 + sign * amplitude as i32).clamp(-32768, 32767) as i16
+            } else {
+                s
+            }
+        })
+        .collect()
 }
 
 // ─── Utility ───────────────────────────────────────────────────────────────

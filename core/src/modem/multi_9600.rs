@@ -20,7 +20,7 @@ use super::demod_9600::*;
 use super::fixed_vec::FixedVec;
 use super::frame_output::FrameOutputBuffer;
 use super::hdlc_bank::{AnyHdlc, HdlcBank};
-use super::DedupRing;
+use super::{DedupRing, DedupAction};
 
 #[cfg(feature = "attribution")]
 extern crate alloc;
@@ -101,6 +101,9 @@ pub struct Multi9600Decoder {
     // Deduplication
     dedup: DedupRing<DEDUP_RING_SIZE>,
 
+    // Time tracking
+    samples_processed: u64,
+
     // Stats
     pub total_decoded: u64,
     pub total_unique: u64,
@@ -118,7 +121,8 @@ impl Multi9600Decoder {
             frame_sources: Box::new([[false; MAX_9600_DECODERS]; 256]),
             #[cfg(feature = "attribution")]
             frame_count: 0,
-            dedup: DedupRing::new(),
+            dedup: DedupRing::with_overlap_from_config(config.samples_per_symbol()),
+            samples_processed: 0,
             total_decoded: 0,
             total_unique: 0,
         };
@@ -326,16 +330,16 @@ impl Multi9600Decoder {
 
     /// Process a buffer of audio samples through all decoders.
     pub fn process_samples(&mut self, samples: &[i16]) -> Multi9600Output {
+        self.samples_processed += samples.len() as u64;
         let mut output = Multi9600Output::new();
-        self.dedup.advance_generation();
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; MAX_SYMBOLS];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; MAX_SYMBOLS];
 
         for decoder_idx in 0..self.decoders.len() {
             let n_syms = self.decoders[decoder_idx].process_samples(samples, &mut symbols);
 
             for sym in &symbols[..n_syms] {
-                let Some(data) = self.hdlc.feed(decoder_idx, sym.bit, sym.llr) else {
+                let Some((data, cost)) = self.hdlc.feed(decoder_idx, sym.bit, sym.llr) else {
                     continue;
                 };
                 let mut frame_buf = [0u8; 330];
@@ -345,7 +349,6 @@ impl Multi9600Decoder {
                 {
                     self.total_decoded += 1;
                     let hash = super::frame_hash(&frame_buf[..frame_len]);
-                    let is_dup = self.dedup.is_duplicate(hash);
 
                     #[cfg(feature = "attribution")]
                     {
@@ -355,10 +358,19 @@ impl Multi9600Decoder {
                         }
                     }
 
-                    if !is_dup {
-                        self.dedup.record(hash);
-                        self.total_unique += 1;
-                        output.push(&frame_buf[..frame_len]);
+                    let start = sym.sample_idx as u64;
+                    match self.dedup.check(hash, start, cost) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_buf[..frame_len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_buf[..frame_len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
                     }
                 }
             }
@@ -480,7 +492,7 @@ impl Single9600Decoder {
     /// Returns all decoded frames (up to 4) found in this batch.
     pub fn process_samples(&mut self, samples: &[i16]) -> Single9600Output {
         let mut output = Single9600Output::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; MAX_SYMBOLS];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; MAX_SYMBOLS];
 
         let n_syms = match &mut self.algo {
             SingleAlgo::Direwolf(d) => d.process_samples(samples, &mut symbols),
@@ -491,7 +503,7 @@ impl Single9600Decoder {
         };
 
         for sym in &symbols[..n_syms] {
-            if let Some(data) = self.hdlc.feed(sym.bit, sym.llr) {
+            if let Some((data, _cost)) = self.hdlc.feed(sym.bit, sym.llr) {
                 if output.count < 4 {
                     let len = data.len().min(330);
                     output.frames[output.count].0[..len].copy_from_slice(&data[..len]);
@@ -526,6 +538,7 @@ pub struct Mini9600Decoder {
     decoders: FixedVec<Algo9600, MINI_9600_DECODERS>,
     hdlc: HdlcBank<MINI_9600_DECODERS>,
     dedup: DedupRing<32>,
+    samples_processed: u64,
     pub total_decoded: u64,
     pub total_unique: u64,
 }
@@ -555,7 +568,8 @@ impl Mini9600Decoder {
         Self {
             decoders,
             hdlc: HdlcBank::new(),
-            dedup: DedupRing::new(),
+            dedup: DedupRing::with_overlap_from_config(config.samples_per_symbol()),
+            samples_processed: 0,
             total_decoded: 0,
             total_unique: 0,
         }
@@ -665,26 +679,35 @@ impl Mini9600Decoder {
 
     /// Process a buffer of audio samples through all 6 decoders.
     pub fn process_samples(&mut self, samples: &[i16]) -> Multi9600Output {
+        self.samples_processed += samples.len() as u64;
         let mut output = Multi9600Output::new();
-        self.dedup.advance_generation();
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; MAX_SYMBOLS];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; MAX_SYMBOLS];
 
         for (slot, decoder) in self.decoders.iter_mut().enumerate() {
             let n_syms = decoder.process_samples(samples, &mut symbols);
 
             for sym in &symbols[..n_syms] {
-                if let Some(data) = self.hdlc.feed(slot, sym.bit, sym.llr) {
+                if let Some((data, cost)) = self.hdlc.feed(slot, sym.bit, sym.llr) {
                     let frame_len = data.len().min(330);
                     let mut frame_buf = [0u8; 330];
                     frame_buf[..frame_len].copy_from_slice(&data[..frame_len]);
 
                     self.total_decoded += 1;
                     let hash = super::frame_hash(&frame_buf[..frame_len]);
-                    if !self.dedup.is_duplicate(hash) {
-                        self.dedup.record(hash);
-                        self.total_unique += 1;
-                        output.push(&frame_buf[..frame_len]);
+                    let start = sym.sample_idx as u64;
+                    match self.dedup.check(hash, start, cost) {
+                        DedupAction::New => {
+                            if let Some(out_slot) = output.push_with_cost(&frame_buf[..frame_len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, out_slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_buf[..frame_len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
                     }
                 }
             }

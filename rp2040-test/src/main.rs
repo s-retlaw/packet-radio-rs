@@ -381,7 +381,7 @@ fn run_usb_protocol(
 
     // Reusable buffers
     let mut sample_buf = [0i16; MAX_CHUNK_SAMPLES];
-    let mut symbol_buf = [DemodSymbol { bit: false, llr: 0 }; 1024];
+    let mut symbol_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
 
     loop {
         // Poll USB for events

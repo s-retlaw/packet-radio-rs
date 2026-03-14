@@ -11,4 +11,6 @@ path = "main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
 packet-radio-core = { path = "../../core", features = ["std", "multi-decoder", "attribution", "9600-baud"] }

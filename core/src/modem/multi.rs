@@ -17,7 +17,7 @@ use super::demod::{DemodSymbol, DmDemodulator, FastDemodulator};
 use super::filter::BiquadFilter;
 use super::frame_output::FrameOutputBuffer;
 use super::hdlc_bank::HdlcBank;
-use super::DedupRing;
+use super::{DedupRing, DedupAction};
 #[cfg(feature = "std")]
 use super::pll::ClockRecoveryPll;
 use super::DemodConfig;
@@ -64,8 +64,10 @@ pub struct MultiDecoder {
     dm_decoders: [DmDemodulator; MAX_DM_DECODERS],
     dm_hdlc: HdlcBank<MAX_DM_DECODERS>,
     dm_active: usize,
-    /// Time-windowed deduplication ring.
+    /// Time-windowed deduplication ring (full frame hash).
     dedup: DedupRing<DEDUP_RING_SIZE>,
+    /// Total audio samples processed.
+    samples_processed: u64,
     /// Total frames decoded (including duplicates caught).
     pub total_decoded: u64,
     /// Total unique frames output.
@@ -112,6 +114,17 @@ impl MultiDecoder {
             }
         }
 
+        // Enable adaptive pre-emphasis on base timing-0 decoders
+        // These detect de-emphasized audio during preamble and compensate.
+        if config.baud_rate != 300 {
+            for i in (0..9).step_by(3) {
+                decoders[i] = core::mem::replace(
+                    &mut decoders[i],
+                    FastDemodulator::new(config),
+                ).with_adaptive_preemph();
+            }
+        }
+
         // Frequency-shifted decoders: shift both BPF center AND Goertzel
         // frequencies to handle transmitters with crystal offset.
         // Uses runtime-computed BPF when std is available.
@@ -122,7 +135,7 @@ impl MultiDecoder {
             let (freq_off, bpf_bw) = if config.baud_rate == 300 {
                 ([-10i32, 10, -25, 25], 500.0)
             } else {
-                ([-50, 50, -100, 100], 2000.0)
+                ([-50, 50, -100, 100], 1800.0)
             };
             let center_freq = (config.mark_freq + config.space_freq) as f64 / 2.0;
             for &offset in &freq_off {
@@ -308,6 +321,21 @@ impl MultiDecoder {
             }
         }
 
+        // Fixed pre-emphasis decoders: pre-emphasis alpha=3000 Q15 with timing diversity.
+        // Pre-emphasis compensates for de-emphasized audio (common on T02).
+        // Added ON TOP of existing gain diversity (not replacing anything).
+        #[cfg(feature = "std")]
+        if config.baud_rate != 300 {
+            for (_phase_idx, &phase) in offsets.iter().enumerate().take(3) {
+                if idx < MAX_DECODERS {
+                    decoders[idx] = FastDemodulator::new(config)
+                        .phase_offset(phase)
+                        .with_fixed_preemph(3000);
+                    idx += 1;
+                }
+            }
+        }
+
         // On std: enable energy-based LLR on all Goertzel decoders for soft decode
         #[cfg(feature = "std")]
         {
@@ -326,7 +354,9 @@ impl MultiDecoder {
             dm_decoders,
             dm_hdlc,
             dm_active: dm_idx,
-            dedup: DedupRing::new(),
+            dedup: DedupRing::with_overlap_from_config(config.samples_per_symbol()),
+            samples_processed: 0,
+
             total_decoded: 0,
             total_unique: 0,
             baud_rate: config.baud_rate,
@@ -363,7 +393,9 @@ impl MultiDecoder {
             dm_decoders,
             dm_hdlc,
             dm_active: 0, // no DM decoders in custom diversity mode
-            dedup: DedupRing::new(),
+            dedup: DedupRing::with_overlap_from_config(config.samples_per_symbol()),
+            samples_processed: 0,
+
             total_decoded: 0,
             total_unique: 0,
             baud_rate: config.baud_rate,
@@ -373,27 +405,36 @@ impl MultiDecoder {
     /// Process audio samples through all decoders.
     ///
     /// Returns a `MultiOutput` containing unique decoded frames.
-    /// Deduplication uses a time-windowed approach: only frames decoded
-    /// within the last ~4 chunks are considered duplicates.
+    /// Deduplication uses time-window best-frame selection: overlapping frames
+    /// from the same physical TX are deduplicated, keeping the lowest-cost decode.
     pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
-        self.dedup.advance_generation();
+        self.samples_processed += samples.len() as u64;
         let mut output = MultiOutput::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
 
         // Process fast (Goertzel) decoders
         for d in 0..self.num_active {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame_bytes) = self.hdlc.feed(d, sym.bit, sym.llr) {
+                if let Some((frame_bytes, cost)) = self.hdlc.feed(d, sym.bit, sym.llr) {
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                     self.total_decoded += 1;
                     let hash = super::frame_hash(&frame_copy[..len]);
-                    if !self.dedup.is_duplicate(hash) {
-                        self.dedup.record(hash);
-                        self.total_unique += 1;
-                        output.push(&frame_copy[..len]);
+                    let start = sym.sample_idx as u64;
+                    match self.dedup.check(hash, start, cost) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_copy[..len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
                     }
                 }
             }
@@ -403,16 +444,25 @@ impl MultiDecoder {
         for d in 0..self.dm_active {
             let n = self.dm_decoders[d].process_samples(samples, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame_bytes) = self.dm_hdlc.feed(d, sym.bit, sym.llr) {
+                if let Some((frame_bytes, cost)) = self.dm_hdlc.feed(d, sym.bit, sym.llr) {
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                     self.total_decoded += 1;
                     let hash = super::frame_hash(&frame_copy[..len]);
-                    if !self.dedup.is_duplicate(hash) {
-                        self.dedup.record(hash);
-                        self.total_unique += 1;
-                        output.push(&frame_copy[..len]);
+                    let start = sym.sample_idx as u64;
+                    match self.dedup.check(hash, start, cost) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_copy[..len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
                     }
                 }
             }
@@ -432,6 +482,7 @@ impl MultiDecoder {
             self.dm_hdlc.reset(d);
         }
         self.dedup.reset();
+        self.samples_processed = 0;
     }
 
     /// Number of active parallel decoders (fast + DM).
@@ -473,8 +524,11 @@ const MINI_DECODERS: usize = 3;
 pub struct MiniDecoder {
     decoders: [FastDemodulator; MINI_DECODERS],
     hdlc: HdlcBank<MINI_DECODERS>,
-    /// Time-windowed deduplication ring.
+    /// Time-windowed deduplication ring (full frame hash).
     dedup: DedupRing<DEDUP_RING_SIZE>,
+    /// Total audio samples processed.
+    samples_processed: u64,
+
     /// Total frames decoded (including duplicates caught).
     pub total_decoded: u64,
     /// Total unique frames output.
@@ -507,7 +561,7 @@ impl MiniDecoder {
             let shifted_bpf = {
                 let center_freq = (config.mark_freq + config.space_freq) as f64 / 2.0;
                 let center = center_freq + freq_shift as f64;
-                super::filter::bandpass_coeffs(config.sample_rate, center, 2000.0)
+                super::filter::bandpass_coeffs(config.sample_rate, center, 1800.0)
             };
             #[cfg(not(feature = "std"))]
             let shifted_bpf = match config.sample_rate {
@@ -517,18 +571,20 @@ impl MiniDecoder {
             };
             [
                 FastDemodulator::new(config).filter(shifted_bpf).phase_offset(offsets[2])
-                    .frequencies(mark_shifted, space_shifted).with_energy_llr(),
+                    .frequencies(mark_shifted, space_shifted).with_energy_llr().with_adaptive_preemph(),
                 FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[0])
-                    .with_energy_llr(),
+                    .with_energy_llr().with_adaptive_preemph(),
                 FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[1])
-                    .with_energy_llr(),
+                    .with_energy_llr().with_adaptive_preemph(),
             ]
         };
 
         Self {
             decoders,
             hdlc: HdlcBank::new(),
-            dedup: DedupRing::new(),
+            dedup: DedupRing::with_overlap_from_config(config.samples_per_symbol()),
+            samples_processed: 0,
+
             total_decoded: 0,
             total_unique: 0,
         }
@@ -536,23 +592,32 @@ impl MiniDecoder {
 
     /// Process audio samples through all 3 decoders.
     pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
-        self.dedup.advance_generation();
+        self.samples_processed += samples.len() as u64;
         let mut output = MultiOutput::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
 
         for d in 0..MINI_DECODERS {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame_bytes) = self.hdlc.feed(d, sym.bit, sym.llr) {
+                if let Some((frame_bytes, cost)) = self.hdlc.feed(d, sym.bit, sym.llr) {
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                     self.total_decoded += 1;
                     let hash = super::frame_hash(&frame_copy[..len]);
-                    if !self.dedup.is_duplicate(hash) {
-                        self.dedup.record(hash);
-                        self.total_unique += 1;
-                        output.push(&frame_copy[..len]);
+                    let start = sym.sample_idx as u64;
+                    match self.dedup.check(hash, start, cost) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_copy[..len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
                     }
                 }
             }
@@ -568,6 +633,7 @@ impl MiniDecoder {
             self.hdlc.reset(d);
         }
         self.dedup.reset();
+        self.samples_processed = 0;
     }
 
     /// Number of active parallel decoders.
@@ -609,8 +675,11 @@ const TWIST_DECODERS: usize = 6;
 pub struct TwistMiniDecoder {
     decoders: [FastDemodulator; TWIST_DECODERS],
     hdlc: HdlcBank<TWIST_DECODERS>,
-    /// Time-windowed deduplication ring.
+    /// Time-windowed deduplication ring (full frame hash).
     dedup: DedupRing<DEDUP_RING_SIZE>,
+    /// Total audio samples processed.
+    samples_processed: u64,
+
     /// Total frames decoded (including duplicates caught).
     pub total_decoded: u64,
     /// Total unique frames output.
@@ -705,7 +774,9 @@ impl TwistMiniDecoder {
         Self {
             decoders,
             hdlc: HdlcBank::new(),
-            dedup: DedupRing::new(),
+            dedup: DedupRing::with_overlap_from_config(config.samples_per_symbol()),
+            samples_processed: 0,
+
             total_decoded: 0,
             total_unique: 0,
         }
@@ -713,23 +784,32 @@ impl TwistMiniDecoder {
 
     /// Process audio samples through all 6 decoders.
     pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
-        self.dedup.advance_generation();
+        self.samples_processed += samples.len() as u64;
         let mut output = MultiOutput::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
 
         for d in 0..TWIST_DECODERS {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame_bytes) = self.hdlc.feed(d, sym.bit, sym.llr) {
+                if let Some((frame_bytes, cost)) = self.hdlc.feed(d, sym.bit, sym.llr) {
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                     self.total_decoded += 1;
                     let hash = super::frame_hash(&frame_copy[..len]);
-                    if !self.dedup.is_duplicate(hash) {
-                        self.dedup.record(hash);
-                        self.total_unique += 1;
-                        output.push(&frame_copy[..len]);
+                    let start = sym.sample_idx as u64;
+                    match self.dedup.check(hash, start, cost) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_copy[..len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
                     }
                 }
             }
@@ -745,6 +825,7 @@ impl TwistMiniDecoder {
             self.hdlc.reset(d);
         }
         self.dedup.reset();
+        self.samples_processed = 0;
     }
 
     /// Number of active parallel decoders.
@@ -1091,6 +1172,22 @@ impl MultiDecoder {
             }
         }
 
+        // Fixed pre-emphasis decoders (std only, 1200 baud)
+        #[cfg(feature = "std")]
+        if self.baud_rate != 300 {
+            for timing_name in &timing_names {
+                if idx < self.num_active {
+                    configs.push(DecoderConfig {
+                        index: idx,
+                        label: format!("G:preemph/{}", timing_name),
+                        algorithm: "goertzel",
+                        tags: vec!["goertzel", "preemph"],
+                    });
+                    idx += 1;
+                }
+            }
+        }
+
         // 300 baud variable speed diversity (baud-rate + PLL)
         #[cfg(feature = "std")]
         if self.baud_rate == 300 {
@@ -1170,9 +1267,9 @@ impl MultiDecoder {
         use alloc::vec::Vec;
         use alloc::collections::BTreeMap;
 
-        self.dedup.advance_generation();
+        self.samples_processed += samples.len() as u64;
         let mut output = MultiOutput::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
         let mut raw_hits: Vec<(usize, u32)> = Vec::new();
         // hash -> list of decoder indices
         let mut frame_decoder_map: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
@@ -1181,7 +1278,7 @@ impl MultiDecoder {
         for d in 0..self.num_active {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame_bytes) = self.hdlc.feed(d, sym.bit, sym.llr) {
+                if let Some((frame_bytes, cost)) = self.hdlc.feed(d, sym.bit, sym.llr) {
                     self.total_decoded += 1;
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
@@ -1189,10 +1286,19 @@ impl MultiDecoder {
                     let hash = super::frame_hash(&frame_copy[..len]);
                     raw_hits.push((d, hash));
                     frame_decoder_map.entry(hash).or_default().push(d);
-                    if !self.dedup.is_duplicate(hash) {
-                        self.dedup.record(hash);
-                        self.total_unique += 1;
-                        output.push(&frame_copy[..len]);
+                    let start = sym.sample_idx as u64;
+                    match self.dedup.check(hash, start, cost) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_copy[..len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
                     }
                 }
             }
@@ -1203,7 +1309,7 @@ impl MultiDecoder {
         for d in 0..self.dm_active {
             let n = self.dm_decoders[d].process_samples(samples, &mut symbols);
             for sym in &symbols[..n] {
-                if let Some(frame_bytes) = self.dm_hdlc.feed(d, sym.bit, sym.llr) {
+                if let Some((frame_bytes, cost)) = self.dm_hdlc.feed(d, sym.bit, sym.llr) {
                     self.total_decoded += 1;
                     let len = frame_bytes.len().min(330);
                     let mut frame_copy = [0u8; 330];
@@ -1211,10 +1317,19 @@ impl MultiDecoder {
                     let hash = super::frame_hash(&frame_copy[..len]);
                     raw_hits.push((dm_start + d, hash));
                     frame_decoder_map.entry(hash).or_default().push(dm_start + d);
-                    if !self.dedup.is_duplicate(hash) {
-                        self.dedup.record(hash);
-                        self.total_unique += 1;
-                        output.push(&frame_copy[..len]);
+                    let start = sym.sample_idx as u64;
+                    match self.dedup.check(hash, start, cost) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_copy[..len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
                     }
                 }
             }
@@ -1358,20 +1473,35 @@ mod tests {
 
     #[test]
     fn test_dedup_ring() {
+        use super::DedupAction;
+
         let mut ring = DedupRing::<64>::new();
 
-        // Set generation so dedup window works
-        ring.advance_generation();
-
-        // Test duplicate detection
+        // Test basic hash detection (backward-compatible API)
         ring.record(12345);
         assert!(ring.is_duplicate(12345));
         assert!(!ring.is_duplicate(67890));
 
-        // Test time-window expiry: advance generation past DEDUP_WINDOW
-        for _ in 0..10 {
-            ring.advance_generation();
-        }
-        assert!(!ring.is_duplicate(12345), "old hash should expire");
+        // Test hash-based check with cost comparison
+        let mut ring2 = DedupRing::<64>::new();
+        ring2.record_with_info(0xAAAA, 10000, 0, 0); // hard decode at sample 10000
+
+        // Different hash, same time window → Duplicate (time overlap matching enabled,
+        // existing cost=0 is better than new cost=5)
+        assert_eq!(ring2.check(0xBBBB, 10100, 5), DedupAction::Duplicate);
+
+        // Same hash, worse cost → Duplicate
+        assert_eq!(ring2.check(0xAAAA, 10200, 5), DedupAction::Duplicate);
+
+        // Same hash, better cost → Replace
+        ring2.record_with_info(0xCCCC, 50000, 10, 1); // soft decode cost=10
+        assert_eq!(ring2.check(0xCCCC, 50100, 3), DedupAction::Replace(1));
+
+        // Unknown hash → New
+        assert_eq!(ring2.check(0xEEEE, 200000, 0), DedupAction::New);
+
+        // Expired entry (beyond EXPIRY_SAMPLES) → New even for same hash
+        ring2.record_with_info(0xFFFF, 1000, 0, 2);
+        assert_eq!(ring2.check(0xFFFF, 100000, 0), DedupAction::New);
     }
 }
