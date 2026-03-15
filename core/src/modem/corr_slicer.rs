@@ -15,13 +15,13 @@
 //!                                              FNV-1a dedup → unique frames
 //! ```
 
+use super::adaptive::AdaptiveTracker;
 use super::filter::BiquadFilter;
 use super::frame_output::FrameOutputBuffer;
+use super::hilbert::{hilbert_31, HilbertTransform, InstFreqDetector};
 use super::DemodConfig;
-use super::{DedupRing, DedupAction};
 use super::SIN_TABLE_Q15;
-use super::hilbert::{HilbertTransform, InstFreqDetector, hilbert_31};
-use super::adaptive::AdaptiveTracker;
+use super::{DedupAction, DedupRing};
 
 use super::hdlc_bank::AnyHdlc;
 
@@ -156,7 +156,13 @@ struct FreqChannel {
 }
 
 impl FreqChannel {
-    fn new(mark_freq: u32, space_freq: u32, sample_rate: u32, lpf: BiquadFilter, effective_rate: u32) -> Self {
+    fn new(
+        mark_freq: u32,
+        space_freq: u32,
+        sample_rate: u32,
+        lpf: BiquadFilter,
+        effective_rate: u32,
+    ) -> Self {
         let mark_phase_inc = ((mark_freq as u64 * (1u64 << 24)) / sample_rate as u64) as u32;
         let space_phase_inc = ((space_freq as u64 * (1u64 << 24)) / sample_rate as u64) as u32;
         let slicers: [CorrSlicer; MAX_SLICERS] =
@@ -276,27 +282,40 @@ impl CorrSlicerDecoder {
 
         // Select LPF for effective (decimated) sample rate
         let lpf = super::filter::corr_lpf_for_config(
-            config.mark_freq, config.space_freq, config.baud_rate, effective_rate,
+            config.mark_freq,
+            config.space_freq,
+            config.baud_rate,
+            effective_rate,
         );
 
         // Narrower frequency offsets for 300 baud (200 Hz tone separation vs 1000 Hz)
         let freq_offsets_300: [i32; MAX_FREQ_CHANNELS] = {
             #[cfg(feature = "alloc")]
-            { [0, -10, 10] }
+            {
+                [0, -10, 10]
+            }
             #[cfg(not(feature = "alloc"))]
-            { [0] }
+            {
+                [0]
+            }
         };
 
-        let offsets = if config.baud_rate == 300 { &freq_offsets_300 } else { &FREQ_OFFSETS };
+        let offsets = if config.baud_rate == 300 {
+            &freq_offsets_300
+        } else {
+            &FREQ_OFFSETS
+        };
 
         #[cfg(feature = "alloc")]
         let channels: Box<[FreqChannel; MAX_FREQ_CHANNELS]> = {
-            let v: Vec<FreqChannel> = (0..MAX_FREQ_CHANNELS).map(|i| {
-                let offset = offsets[i];
-                let mark = (config.mark_freq as i32 + offset) as u32;
-                let space = (config.space_freq as i32 + offset) as u32;
-                FreqChannel::new(mark, space, config.sample_rate, lpf, effective_rate)
-            }).collect();
+            let v: Vec<FreqChannel> = (0..MAX_FREQ_CHANNELS)
+                .map(|i| {
+                    let offset = offsets[i];
+                    let mark = (config.mark_freq as i32 + offset) as u32;
+                    let space = (config.space_freq as i32 + offset) as u32;
+                    FreqChannel::new(mark, space, config.sample_rate, lpf, effective_rate)
+                })
+                .collect();
             v.into_boxed_slice().try_into().ok().unwrap()
         };
         #[cfg(not(feature = "alloc"))]
@@ -470,7 +489,10 @@ impl CorrSlicerDecoder {
                 let mark_delta = (mark_hz as i32 - mark_freq as i32).unsigned_abs();
                 let space_delta = (space_hz as i32 - space_freq as i32).unsigned_abs();
                 if mark_delta < 200 && space_delta < 200 && mark_hz > 0 && space_hz > 0 {
-                    for (ch, &offset) in self.channels[..num_channels].iter_mut().zip(FREQ_OFFSETS.iter()) {
+                    for (ch, &offset) in self.channels[..num_channels]
+                        .iter_mut()
+                        .zip(FREQ_OFFSETS.iter())
+                    {
                         let ch_mark = (mark_hz as i32 + offset) as u32;
                         let ch_space = (space_hz as i32 + offset) as u32;
                         ch.mark_phase_inc =
@@ -583,14 +605,15 @@ impl CorrSlicerDecoder {
 
                 // ── Symbol boundary ──
 
-                let mark_energy = (mark_i as i64) * (mark_i as i64)
-                    + (mark_q as i64) * (mark_q as i64);
-                let space_energy = (space_i as i64) * (space_i as i64)
-                    + (space_q as i64) * (space_q as i64);
+                let mark_energy =
+                    (mark_i as i64) * (mark_i as i64) + (mark_q as i64) * (mark_q as i64);
+                let space_energy =
+                    (space_i as i64) * (space_i as i64) + (space_q as i64) * (space_q as i64);
 
                 // Adaptive preamble gain (channel 0 slicer 0 only)
                 if adaptive_gain && ch_idx == 0 {
-                    let raw_bit_0 = mark_energy * 256 > space_energy * (ch.slicers[0].space_gain_q8 as i64);
+                    let raw_bit_0 =
+                        mark_energy * 256 > space_energy * (ch.slicers[0].space_gain_q8 as i64);
                     let decoded_bit_0 = raw_bit_0 == ch.slicers[0].prev_nrzi_bit;
                     ch.demod_shift_reg = (ch.demod_shift_reg << 1) | (decoded_bit_0 as u8);
 
@@ -645,7 +668,11 @@ impl CorrSlicerDecoder {
                         if total > 0 {
                             let energy_ratio = ((mark_energy - space_energy) * 127) / total;
                             let confidence = energy_ratio.unsigned_abs().clamp(1, 127) as i8;
-                            if decoded_bit { confidence } else { -confidence }
+                            if decoded_bit {
+                                confidence
+                            } else {
+                                -confidence
+                            }
                         } else {
                             0
                         }
@@ -663,7 +690,8 @@ impl CorrSlicerDecoder {
                         let start = self.samples_processed;
                         match dedup.check(hash, start, cost) {
                             DedupAction::New => {
-                                if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost)
+                                {
                                     dedup.record_with_info(hash, start, cost, slot);
                                     *total_unique += 1;
                                 }
@@ -681,7 +709,6 @@ impl CorrSlicerDecoder {
 
         output
     }
-
 }
 
 // frame_hash is now centralized in super::frame_hash
@@ -726,9 +753,14 @@ mod tests {
     fn test_corr_slicer_gains() {
         // Verify slicer gains are monotonically increasing
         for i in 1..SLICER_GAINS.len() {
-            assert!(SLICER_GAINS[i] > SLICER_GAINS[i - 1],
+            assert!(
+                SLICER_GAINS[i] > SLICER_GAINS[i - 1],
                 "Gains must be monotonically increasing: [{}]={} <= [{}]={}",
-                i, SLICER_GAINS[i], i - 1, SLICER_GAINS[i - 1]);
+                i,
+                SLICER_GAINS[i],
+                i - 1,
+                SLICER_GAINS[i - 1]
+            );
         }
     }
 
@@ -741,7 +773,8 @@ mod tests {
 
         // Channel 0 should have nominal frequencies
         let ch0 = &decoder.channels[0];
-        let expected_mark_inc = ((config.mark_freq as u64 * (1u64 << 24)) / config.sample_rate as u64) as u32;
+        let expected_mark_inc =
+            ((config.mark_freq as u64 * (1u64 << 24)) / config.sample_rate as u64) as u32;
         assert_eq!(ch0.mark_phase_inc, expected_mark_inc);
     }
 

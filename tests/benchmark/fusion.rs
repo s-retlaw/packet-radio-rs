@@ -2,7 +2,9 @@
 
 use std::time::Instant;
 
-use packet_radio_core::modem::demod::{CorrelationDemodulator, DemodSymbol, FastDemodulator, GoertzelWindow};
+use packet_radio_core::modem::demod::{
+    CorrelationDemodulator, DemodSymbol, FastDemodulator, GoertzelWindow,
+};
 use packet_radio_core::modem::soft_hdlc::{FrameResult, SoftHdlcDecoder};
 
 use crate::common::*;
@@ -22,12 +24,26 @@ fn decode_fusion(
 ) -> (DecodeResult, u32) {
     let config = config_for_rate(sample_rate, get_baud());
 
-    let mut goertzel = FastDemodulator::new(config).with_adaptive_gain().with_energy_llr();
-    let mut corr = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+    let mut goertzel = FastDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_energy_llr();
+    let mut corr = CorrelationDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut g_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
-    let mut c_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
+    let mut g_sym = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1];
+    let mut c_sym = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1];
 
     let start = Instant::now();
 
@@ -73,12 +89,26 @@ fn decode_fusion(
 fn decode_fusion_maxconf(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
     let config = config_for_rate(sample_rate, get_baud());
 
-    let mut goertzel = FastDemodulator::new(config).with_adaptive_gain().with_energy_llr();
-    let mut corr = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+    let mut goertzel = FastDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_energy_llr();
+    let mut corr = CorrelationDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut g_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
-    let mut c_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
+    let mut g_sym = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1];
+    let mut c_sym = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1];
 
     let start = Instant::now();
 
@@ -124,12 +154,26 @@ fn decode_fusion_maxconf(samples: &[i16], sample_rate: u32) -> (DecodeResult, u3
 fn decode_fusion_sum(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
     let config = config_for_rate(sample_rate, get_baud());
 
-    let mut goertzel = FastDemodulator::new(config).with_adaptive_gain().with_energy_llr();
-    let mut corr = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+    let mut goertzel = FastDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_energy_llr();
+    let mut corr = CorrelationDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut g_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
-    let mut c_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
+    let mut g_sym = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1];
+    let mut c_sym = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1];
 
     let start = Instant::now();
 
@@ -182,11 +226,23 @@ fn decode_fusion_windowed(
         .with_adaptive_gain()
         .with_energy_llr()
         .with_window(window);
-    let mut corr = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+    let mut corr = CorrelationDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut g_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
-    let mut c_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
+    let mut g_sym = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1];
+    let mut c_sym = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1];
 
     let start = Instant::now();
 
@@ -239,7 +295,12 @@ pub fn run_fusion(path: &str) {
     };
 
     let duration_secs = samples.len() as f64 / sample_rate as f64;
-    println!("Duration: {:.1}s, {} samples at {} Hz", duration_secs, samples.len(), sample_rate);
+    println!(
+        "Duration: {:.1}s, {} samples at {} Hz",
+        duration_secs,
+        samples.len(),
+        sample_rate
+    );
     println!();
 
     // Baselines
@@ -248,58 +309,119 @@ pub fn run_fusion(path: &str) {
     let (corr_q, corr_soft) = decode_corr_quality(&samples, sample_rate);
     println!("  Baselines:");
     println!("    Fast (hard):      {:>4}", fast.frames.len());
-    println!("    Quality (soft):   {:>4} (soft={})", quality.frames.len(), qual_soft);
-    println!("    Corr (soft):      {:>4} (soft={})", corr_q.frames.len(), corr_soft);
+    println!(
+        "    Quality (soft):   {:>4} (soft={})",
+        quality.frames.len(),
+        qual_soft
+    );
+    println!(
+        "    Corr (soft):      {:>4} (soft={})",
+        corr_q.frames.len(),
+        corr_soft
+    );
     println!();
 
     // Fusion strategies
-    println!("  {:>22}  {:>5} {:>+5} {:>4}", "Strategy", "Pkts", "ΔQlt", "Soft");
+    println!(
+        "  {:>22}  {:>5} {:>+5} {:>4}",
+        "Strategy", "Pkts", "ΔQlt", "Soft"
+    );
     println!("  {}", "─".repeat(42));
 
     // 1. Equal weight average
     let (avg, avg_soft) = decode_fusion(&samples, sample_rate, 1, 1);
     let delta = avg.frames.len() as i32 - quality.frames.len() as i32;
-    println!("  {:>22}  {:>5} {:>+5} {:>4}", "Average (1:1)", avg.frames.len(), delta, avg_soft);
+    println!(
+        "  {:>22}  {:>5} {:>+5} {:>4}",
+        "Average (1:1)",
+        avg.frames.len(),
+        delta,
+        avg_soft
+    );
 
     // 2. Goertzel-heavy
     let (g7c3, g7c3_soft) = decode_fusion(&samples, sample_rate, 7, 3);
     let delta = g7c3.frames.len() as i32 - quality.frames.len() as i32;
-    println!("  {:>22}  {:>5} {:>+5} {:>4}", "G-heavy (7:3)", g7c3.frames.len(), delta, g7c3_soft);
+    println!(
+        "  {:>22}  {:>5} {:>+5} {:>4}",
+        "G-heavy (7:3)",
+        g7c3.frames.len(),
+        delta,
+        g7c3_soft
+    );
 
     // 3. Corr-heavy
     let (g3c7, g3c7_soft) = decode_fusion(&samples, sample_rate, 3, 7);
     let delta = g3c7.frames.len() as i32 - quality.frames.len() as i32;
-    println!("  {:>22}  {:>5} {:>+5} {:>4}", "C-heavy (3:7)", g3c7.frames.len(), delta, g3c7_soft);
+    println!(
+        "  {:>22}  {:>5} {:>+5} {:>4}",
+        "C-heavy (3:7)",
+        g3c7.frames.len(),
+        delta,
+        g3c7_soft
+    );
 
     // 4. Max confidence
     let (maxc, maxc_soft) = decode_fusion_maxconf(&samples, sample_rate);
     let delta = maxc.frames.len() as i32 - quality.frames.len() as i32;
-    println!("  {:>22}  {:>5} {:>+5} {:>4}", "Max-confidence", maxc.frames.len(), delta, maxc_soft);
+    println!(
+        "  {:>22}  {:>5} {:>+5} {:>4}",
+        "Max-confidence",
+        maxc.frames.len(),
+        delta,
+        maxc_soft
+    );
 
     // 5. LLR sum (MRC-style)
     let (sum, sum_soft) = decode_fusion_sum(&samples, sample_rate);
     let delta = sum.frames.len() as i32 - quality.frames.len() as i32;
-    println!("  {:>22}  {:>5} {:>+5} {:>4}", "LLR sum (MRC)", sum.frames.len(), delta, sum_soft);
+    println!(
+        "  {:>22}  {:>5} {:>+5} {:>4}",
+        "LLR sum (MRC)",
+        sum.frames.len(),
+        delta,
+        sum_soft
+    );
 
     // 6. Weight sweep for best ratio
     println!();
     println!("  Weight sweep (G:C ratio):");
-    println!("  {:>6}:{:<6}  {:>5} {:>+5} {:>4}", "G", "C", "Pkts", "ΔQlt", "Soft");
+    println!(
+        "  {:>6}:{:<6}  {:>5} {:>+5} {:>4}",
+        "G", "C", "Pkts", "ΔQlt", "Soft"
+    );
     println!("  {}", "─".repeat(36));
     let weights: &[(i16, i16)] = &[
-        (9, 1), (8, 2), (7, 3), (6, 4), (5, 5),
-        (4, 6), (3, 7), (2, 8), (1, 9),
+        (9, 1),
+        (8, 2),
+        (7, 3),
+        (6, 4),
+        (5, 5),
+        (4, 6),
+        (3, 7),
+        (2, 8),
+        (1, 9),
     ];
     for &(gw, cw) in weights {
         let (res, soft) = decode_fusion(&samples, sample_rate, gw, cw);
         let delta = res.frames.len() as i32 - quality.frames.len() as i32;
-        println!("  {:>6}:{:<6}  {:>5} {:>+5} {:>4}", gw, cw, res.frames.len(), delta, soft);
+        println!(
+            "  {:>6}:{:<6}  {:>5} {:>+5} {:>4}",
+            gw,
+            cw,
+            res.frames.len(),
+            delta,
+            soft
+        );
     }
 
     // 7. Best fusion strategy with window types
     println!();
     println!("  Windowed Goertzel + Corr fusion (equal weight):");
-    println!("  {:>12}  {:>5} {:>+5} {:>4}", "Window", "Pkts", "ΔQlt", "Soft");
+    println!(
+        "  {:>12}  {:>5} {:>+5} {:>4}",
+        "Window", "Pkts", "ΔQlt", "Soft"
+    );
     println!("  {}", "─".repeat(36));
     let windows = [
         (GoertzelWindow::Rectangular, "Rectangular"),
@@ -311,7 +433,13 @@ pub fn run_fusion(path: &str) {
     for &(window, name) in &windows {
         let (res, soft) = decode_fusion_windowed(&samples, sample_rate, window, 1, 1);
         let delta = res.frames.len() as i32 - quality.frames.len() as i32;
-        println!("  {:>12}  {:>5} {:>+5} {:>4}", name, res.frames.len(), delta, soft);
+        println!(
+            "  {:>12}  {:>5} {:>+5} {:>4}",
+            name,
+            res.frames.len(),
+            delta,
+            soft
+        );
     }
     println!();
 }

@@ -110,7 +110,11 @@ impl Modulator9600 {
         let amp = self.config.amplitude;
 
         // Helper closure to emit one bit
-        let emit_bit = |bit: bool, prev_nrzi: &mut bool, scrambler: &mut Scrambler, output: &mut [i16], pos: &mut usize| {
+        let emit_bit = |bit: bool,
+                        prev_nrzi: &mut bool,
+                        scrambler: &mut Scrambler,
+                        output: &mut [i16],
+                        pos: &mut usize| {
             let nrzi = if bit { *prev_nrzi } else { !*prev_nrzi };
             *prev_nrzi = nrzi;
             let scrambled = scrambler.scramble(nrzi);
@@ -126,7 +130,13 @@ impl Modulator9600 {
         // Opening flag (no bit-stuffing for flags)
         let flag = [false, true, true, true, true, true, true, false];
         for &bit in &flag {
-            emit_bit(bit, &mut self.prev_nrzi, &mut self.scrambler, output, &mut pos);
+            emit_bit(
+                bit,
+                &mut self.prev_nrzi,
+                &mut self.scrambler,
+                output,
+                &mut pos,
+            );
         }
 
         // Data bytes with bit-stuffing
@@ -134,13 +144,25 @@ impl Modulator9600 {
         for &byte in data {
             for bit_idx in 0..8 {
                 let bit = (byte >> bit_idx) & 1 == 1;
-                emit_bit(bit, &mut self.prev_nrzi, &mut self.scrambler, output, &mut pos);
+                emit_bit(
+                    bit,
+                    &mut self.prev_nrzi,
+                    &mut self.scrambler,
+                    output,
+                    &mut pos,
+                );
 
                 if bit {
                     ones_count += 1;
                     if ones_count == 5 {
                         // Insert stuffed 0
-                        emit_bit(false, &mut self.prev_nrzi, &mut self.scrambler, output, &mut pos);
+                        emit_bit(
+                            false,
+                            &mut self.prev_nrzi,
+                            &mut self.scrambler,
+                            output,
+                            &mut pos,
+                        );
                         ones_count = 0;
                     }
                 } else {
@@ -151,7 +173,13 @@ impl Modulator9600 {
 
         // Closing flag
         for &bit in &flag {
-            emit_bit(bit, &mut self.prev_nrzi, &mut self.scrambler, output, &mut pos);
+            emit_bit(
+                bit,
+                &mut self.prev_nrzi,
+                &mut self.scrambler,
+                output,
+                &mut pos,
+            );
         }
 
         pos
@@ -190,8 +218,12 @@ mod tests {
 
         // All samples should be non-zero (amplitude)
         for &s in &output[..n] {
-            assert!(s == config.amplitude || s == -config.amplitude,
-                "Expected ±{}, got {}", config.amplitude, s);
+            assert!(
+                s == config.amplitude || s == -config.amplitude,
+                "Expected ±{}, got {}",
+                config.amplitude,
+                s
+            );
         }
     }
 

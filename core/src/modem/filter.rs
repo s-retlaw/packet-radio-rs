@@ -24,7 +24,15 @@ pub struct BiquadFilter {
 impl BiquadFilter {
     /// Create a biquad with given Q15 coefficients.
     pub const fn new(b0: i32, b1: i32, b2: i32, a1: i32, a2: i32) -> Self {
-        Self { b0, b1, b2, a1, a2, s1: 0, s2: 0 }
+        Self {
+            b0,
+            b1,
+            b2,
+            a1,
+            a2,
+            s1: 0,
+            s2: 0,
+        }
     }
 
     /// Identity (passthrough) filter.
@@ -530,7 +538,12 @@ pub fn corr_lpf(sample_rate: u32) -> BiquadFilter {
 ///
 /// For Bell 202 (mark=1200, space=2200, baud=1200): max(500, 480) = 500 Hz.
 /// For V.23 (mark=1300, space=2100, baud=1200): max(400, 480) = 480 Hz.
-pub fn corr_lpf_for_config(mark_freq: u32, space_freq: u32, baud_rate: u32, sample_rate: u32) -> BiquadFilter {
+pub fn corr_lpf_for_config(
+    mark_freq: u32,
+    space_freq: u32,
+    baud_rate: u32,
+    sample_rate: u32,
+) -> BiquadFilter {
     let tone_sep = space_freq.abs_diff(mark_freq);
     let cutoff = core::cmp::max(tone_sep / 2, baud_rate * 2 / 5);
 
@@ -762,13 +775,21 @@ pub fn corr_300_needs_cascade(sample_rate: u32) -> bool {
 /// Falls back to runtime computation on `std`, or 500 Hz on `no_std`.
 pub fn corr_lpf_by_cutoff(sample_rate: u32, cutoff_hz: u32) -> BiquadFilter {
     // Snap to nearest supported cutoff
-    let snapped = if cutoff_hz <= 110 { 100 }
-        else if cutoff_hz <= 260 { 120 }
-        else if cutoff_hz <= 425 { 400 }
-        else if cutoff_hz <= 475 { 450 }
-        else if cutoff_hz <= 525 { 500 }
-        else if cutoff_hz <= 575 { 550 }
-        else { 600 };
+    let snapped = if cutoff_hz <= 110 {
+        100
+    } else if cutoff_hz <= 260 {
+        120
+    } else if cutoff_hz <= 425 {
+        400
+    } else if cutoff_hz <= 475 {
+        450
+    } else if cutoff_hz <= 525 {
+        500
+    } else if cutoff_hz <= 575 {
+        550
+    } else {
+        600
+    };
 
     match (sample_rate, snapped) {
         // 300 baud cutoffs
@@ -864,8 +885,11 @@ mod tests {
             last_output = filt.process(10000);
         }
         // Output should be near zero (DC rejected)
-        assert!(last_output.abs() < 500,
-            "Bandpass should reject DC, got {}", last_output);
+        assert!(
+            last_output.abs() < 500,
+            "Bandpass should reject DC, got {}",
+            last_output
+        );
     }
 }
 

@@ -9,7 +9,12 @@ use packet_radio_core::modem::soft_hdlc::SoftHdlcDecoder;
 use crate::common::*;
 
 /// Decode with DM using a specific delay value and optional BPF/LPF.
-fn decode_dm_custom(samples: &[i16], sample_rate: u32, delay: usize, use_bpf: bool) -> DecodeResult {
+fn decode_dm_custom(
+    samples: &[i16],
+    sample_rate: u32,
+    delay: usize,
+    use_bpf: bool,
+) -> DecodeResult {
     use packet_radio_core::modem::delay_multiply::DelayMultiplyDetector;
     use packet_radio_core::modem::filter::BiquadFilter;
 
@@ -63,9 +68,9 @@ fn decode_dm_custom(samples: &[i16], sample_rate: u32, delay: usize, use_bpf: bo
             bit_phase -= sample_rate;
 
             let raw_bit = if mark_is_negative {
-                accumulator < 0  // mark gives negative output
+                accumulator < 0 // mark gives negative output
             } else {
-                accumulator > 0  // mark gives positive output
+                accumulator > 0 // mark gives positive output
             };
 
             let decoded_bit = raw_bit == prev_nrzi_bit;
@@ -79,7 +84,10 @@ fn decode_dm_custom(samples: &[i16], sample_rate: u32, delay: usize, use_bpf: bo
         }
     }
 
-    DecodeResult { frames, elapsed: start.elapsed() }
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
 }
 
 pub fn run_dm_single(path: &str) {
@@ -97,26 +105,40 @@ pub fn run_dm_single(path: &str) {
     let duration_secs = samples.len() as f64 / sample_rate as f64;
     println!(
         "Duration: {:.1}s, {} samples at {} Hz",
-        duration_secs, samples.len(), sample_rate
+        duration_secs,
+        samples.len(),
+        sample_rate
     );
     println!();
 
     let fast = decode_fast(&samples, sample_rate);
     let (multi, _) = decode_multi(&samples, sample_rate);
-    println!("  Fast:   {:>4}   Multi: {:>4}", fast.frames.len(), multi.frames.len());
+    println!(
+        "  Fast:   {:>4}   Multi: {:>4}",
+        fast.frames.len(),
+        multi.frames.len()
+    );
     println!();
 
     // Sweep delays with BPF+LPF
     println!("  Delay sweep at {} Hz — BPF+LPF:", sample_rate);
     for delay in 1..16 {
         let tau_us = delay as f64 / sample_rate as f64 * 1e6;
-        let mark_cos = (2.0 * std::f64::consts::PI * 1200.0 * delay as f64 / sample_rate as f64).cos();
-        let space_cos = (2.0 * std::f64::consts::PI * 2200.0 * delay as f64 / sample_rate as f64).cos();
+        let mark_cos =
+            (2.0 * std::f64::consts::PI * 1200.0 * delay as f64 / sample_rate as f64).cos();
+        let space_cos =
+            (2.0 * std::f64::consts::PI * 2200.0 * delay as f64 / sample_rate as f64).cos();
         let sep = (mark_cos - space_cos).abs();
         let polarity = if mark_cos < 0.0 { "M-" } else { "M+" };
         let result = decode_dm_custom(&samples, sample_rate, delay, true);
-        println!("    d={:>2} τ={:>5.0}μs sep={:.2} {} → {:>4} packets",
-            delay, tau_us, sep, polarity, result.frames.len());
+        println!(
+            "    d={:>2} τ={:>5.0}μs sep={:.2} {} → {:>4} packets",
+            delay,
+            tau_us,
+            sep,
+            polarity,
+            result.frames.len()
+        );
     }
     println!();
 
@@ -124,13 +146,21 @@ pub fn run_dm_single(path: &str) {
     println!("  Delay sweep at {} Hz — no filters:", sample_rate);
     for delay in 1..16 {
         let tau_us = delay as f64 / sample_rate as f64 * 1e6;
-        let mark_cos = (2.0 * std::f64::consts::PI * 1200.0 * delay as f64 / sample_rate as f64).cos();
-        let space_cos = (2.0 * std::f64::consts::PI * 2200.0 * delay as f64 / sample_rate as f64).cos();
+        let mark_cos =
+            (2.0 * std::f64::consts::PI * 1200.0 * delay as f64 / sample_rate as f64).cos();
+        let space_cos =
+            (2.0 * std::f64::consts::PI * 2200.0 * delay as f64 / sample_rate as f64).cos();
         let sep = (mark_cos - space_cos).abs();
         let polarity = if mark_cos < 0.0 { "M-" } else { "M+" };
         let result = decode_dm_custom(&samples, sample_rate, delay, false);
-        println!("    d={:>2} τ={:>5.0}μs sep={:.2} {} → {:>4} packets",
-            delay, tau_us, sep, polarity, result.frames.len());
+        println!(
+            "    d={:>2} τ={:>5.0}μs sep={:.2} {} → {:>4} packets",
+            delay,
+            tau_us,
+            sep,
+            polarity,
+            result.frames.len()
+        );
     }
 }
 
@@ -194,12 +224,22 @@ pub fn decode_dm_pll(samples: &[i16], sample_rate: u32) -> DecodeResult {
 }
 
 /// Decode DM+PLL with symbol counting for diagnostics.
-fn decode_dm_pll_counted(samples: &[i16], sample_rate: u32, alpha: i16, beta: i16) -> (DecodeResult, usize, u32) {
+fn decode_dm_pll_counted(
+    samples: &[i16],
+    sample_rate: u32,
+    alpha: i16,
+    beta: i16,
+) -> (DecodeResult, usize, u32) {
     let config = config_for_rate(sample_rate, get_baud());
     let mut demod = DmDemodulator::with_bpf_pll_custom(config, alpha, beta);
     let mut hdlc = HdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+    let mut symbols = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1024];
     let mut total_syms = 0usize;
     let mut flags = 0u32;
     let mut shift_reg: u8 = 0;
@@ -210,13 +250,22 @@ fn decode_dm_pll_counted(samples: &[i16], sample_rate: u32, alpha: i16, beta: i1
         total_syms += n;
         for sym in &symbols[..n] {
             shift_reg = (shift_reg >> 1) | if sym.bit { 0x80 } else { 0 };
-            if shift_reg == 0x7E { flags += 1; }
+            if shift_reg == 0x7E {
+                flags += 1;
+            }
             if let Some(frame) = hdlc.feed_bit(sym.bit) {
                 frames.push(frame.to_vec());
             }
         }
     }
-    (DecodeResult { frames, elapsed: start.elapsed() }, total_syms, flags)
+    (
+        DecodeResult {
+            frames,
+            elapsed: start.elapsed(),
+        },
+        total_syms,
+        flags,
+    )
 }
 
 // ─── DM+PLL Single File Analysis ────────────────────────────────────────
@@ -227,11 +276,19 @@ pub fn run_dm_pll(path: &str) {
 
     let (sample_rate, samples) = match read_wav_file(path) {
         Ok(v) => v,
-        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
     };
 
     let duration_secs = samples.len() as f64 / sample_rate as f64;
-    println!("Duration: {:.1}s, {} samples at {} Hz\n", duration_secs, samples.len(), sample_rate);
+    println!(
+        "Duration: {:.1}s, {} samples at {} Hz\n",
+        duration_secs,
+        samples.len(),
+        sample_rate
+    );
 
     // Baselines
     let fast = decode_fast(&samples, sample_rate);
@@ -243,7 +300,12 @@ pub fn run_dm_pll(path: &str) {
         let demod = DmDemodulator::with_bpf(config).with_adaptive();
         let mut hdlc = HdlcDecoder::new();
         let mut frames: Vec<Vec<u8>> = Vec::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 1024];
         let mut dm = demod;
         for chunk in samples.chunks(1024) {
             let n = dm.process_samples(chunk, &mut symbols);
@@ -258,7 +320,10 @@ pub fn run_dm_pll(path: &str) {
 
     println!("  Baselines:");
     println!("    Fast (Goertzel+Bresenham):  {:>5}", fast.frames.len());
-    println!("    DM+Bresenham:               {:>5}", dm_bres.frames.len());
+    println!(
+        "    DM+Bresenham:               {:>5}",
+        dm_bres.frames.len()
+    );
     println!("    DM+Bres+adaptive:           {:>5}", dm_bres_adapt);
     println!("    Multi (38 decoders):         {:>5}", multi.frames.len());
     println!();
@@ -267,7 +332,10 @@ pub fn run_dm_pll(path: &str) {
     let (r_diag, sym_count, flag_count) = decode_dm_pll_counted(&samples, sample_rate, 400, 30);
     let expected_syms = (samples.len() as u64 * 1200 / sample_rate as u64) as usize;
     println!("  PLL diagnostics (a=400, b=30):");
-    println!("    Symbols produced: {} (expected ~{})", sym_count, expected_syms);
+    println!(
+        "    Symbols produced: {} (expected ~{})",
+        sym_count, expected_syms
+    );
     println!("    Flags detected:   {}", flag_count);
     println!("    Frames decoded:   {}", r_diag.frames.len());
 
@@ -275,7 +343,12 @@ pub fn run_dm_pll(path: &str) {
     {
         let config = config_for_rate(sample_rate, get_baud());
         let mut demod = DmDemodulator::with_bpf(config);
-        let mut symbols_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+        let mut symbols_buf = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 1024];
         let mut bres_syms = 0usize;
         let mut bres_flags = 0u32;
         let mut shift: u8 = 0;
@@ -284,7 +357,9 @@ pub fn run_dm_pll(path: &str) {
             bres_syms += n;
             for sym in &symbols_buf[..n] {
                 shift = (shift >> 1) | if sym.bit { 0x80 } else { 0 };
-                if shift == 0x7E { bres_flags += 1; }
+                if shift == 0x7E {
+                    bres_flags += 1;
+                }
             }
         }
         println!("    Bresenham syms:   {} flags: {}", bres_syms, bres_flags);
@@ -295,20 +370,20 @@ pub fn run_dm_pll(path: &str) {
     println!("  DM+PLL variants (alpha=936):");
     let variants: &[(&str, i16, bool, i16, i16)] = &[
         // (name, beta, adaptive, preemph, hysteresis)
-        ("DM+PLL b=0",                         0,  false, 0,     0),
-        ("DM+PLL b=10",                        10, false, 0,     0),
-        ("DM+PLL b=30",                        30, false, 0,     0),
-        ("DM+PLL b=0 +adaptive",               0,  true,  0,     0),
-        ("DM+PLL b=0 +preemph(0.90)",          0,  false, 29491, 0),
-        ("DM+PLL b=0 +preemph(0.95)",          0,  false, 31130, 0),
-        ("DM+PLL b=0 +adapt+preemph(0.90)",    0,  true,  29491, 0),
-        ("DM+PLL b=0 +adapt+preemph(0.95)",    0,  true,  31130, 0),
-        ("DM+PLL b=10 +adapt+preemph(0.95)",   10, true,  31130, 0),
+        ("DM+PLL b=0", 0, false, 0, 0),
+        ("DM+PLL b=10", 10, false, 0, 0),
+        ("DM+PLL b=30", 30, false, 0, 0),
+        ("DM+PLL b=0 +adaptive", 0, true, 0, 0),
+        ("DM+PLL b=0 +preemph(0.90)", 0, false, 29491, 0),
+        ("DM+PLL b=0 +preemph(0.95)", 0, false, 31130, 0),
+        ("DM+PLL b=0 +adapt+preemph(0.90)", 0, true, 29491, 0),
+        ("DM+PLL b=0 +adapt+preemph(0.95)", 0, true, 31130, 0),
+        ("DM+PLL b=10 +adapt+preemph(0.95)", 10, true, 31130, 0),
         // With hysteresis
-        ("DM+PLL b=10 hyst=50",                10, false, 0,     50),
-        ("DM+PLL b=30 hyst=50",                30, false, 0,     50),
-        ("DM+PLL b=10 hyst=100",               10, false, 0,     100),
-        ("DM+PLL b=30 hyst=100",               30, false, 0,     100),
+        ("DM+PLL b=10 hyst=50", 10, false, 0, 50),
+        ("DM+PLL b=30 hyst=50", 30, false, 0, 50),
+        ("DM+PLL b=10 hyst=100", 10, false, 0, 100),
+        ("DM+PLL b=30 hyst=100", 30, false, 0, 100),
     ];
 
     for &(name, beta, adaptive, preemph, hyst) in variants {
@@ -321,16 +396,22 @@ pub fn run_dm_pll(path: &str) {
     println!("  DM+PLL+Soft (Gardner + SoftHdlcDecoder, alpha=936):");
     let soft_variants: &[(&str, i16, bool, i16, i16)] = &[
         // (name, beta, adaptive, preemph, hysteresis)
-        ("DM+PLL+Soft b=0",              0,  false, 0, 0),
-        ("DM+PLL+Soft b=10",             10, false, 0, 0),
-        ("DM+PLL+Soft b=30",             30, false, 0, 0),
-        ("DM+PLL+Soft b=74",             74, false, 0, 0),
-        ("DM+PLL+Soft b=74 +adaptive",   74, true,  0, 0),
+        ("DM+PLL+Soft b=0", 0, false, 0, 0),
+        ("DM+PLL+Soft b=10", 10, false, 0, 0),
+        ("DM+PLL+Soft b=30", 30, false, 0, 0),
+        ("DM+PLL+Soft b=74", 74, false, 0, 0),
+        ("DM+PLL+Soft b=74 +adaptive", 74, true, 0, 0),
     ];
 
     for &(name, beta, adaptive, preemph, hyst) in soft_variants {
-        let (r, saves) = decode_dm_pll_soft(&samples, sample_rate, 936, beta, adaptive, preemph, hyst);
-        println!("    {:<38} {:>5} ({} soft saves)", name, r.frames.len(), saves);
+        let (r, saves) =
+            decode_dm_pll_soft(&samples, sample_rate, 936, beta, adaptive, preemph, hyst);
+        println!(
+            "    {:<38} {:>5} ({} soft saves)",
+            name,
+            r.frames.len(),
+            saves
+        );
     }
     println!();
 
@@ -354,7 +435,10 @@ pub fn run_dm_pll_sweep(path: &str) {
 
     let (sample_rate, samples) = match read_wav_file(path) {
         Ok(v) => v,
-        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
     };
 
     let duration_secs = samples.len() as f64 / sample_rate as f64;
@@ -365,7 +449,9 @@ pub fn run_dm_pll_sweep(path: &str) {
 
     // Header
     print!("  {:>6}", "a\\b");
-    for &b in &betas { print!(" {:>5}", b); }
+    for &b in &betas {
+        print!(" {:>5}", b);
+    }
     println!();
     println!("  {}", "─".repeat(6 + betas.len() * 6));
 
@@ -388,7 +474,10 @@ pub fn run_dm_pll_sweep(path: &str) {
         println!();
     }
 
-    println!("\n  Best: alpha={}, beta={} → {} frames", best_a, best_b, best_count);
+    println!(
+        "\n  Best: alpha={}, beta={} → {} frames",
+        best_a, best_b, best_count
+    );
 
     // Now sweep with adaptive + best alpha/beta
     println!("\n  Best alpha/beta with adaptive + pre-emphasis:");
@@ -397,8 +486,12 @@ pub fn run_dm_pll_sweep(path: &str) {
     for (i, &pe) in preemphs.iter().enumerate() {
         let r_plain = decode_dm_pll_opts(&samples, sample_rate, best_a, best_b, false, pe, 0);
         let r_adapt = decode_dm_pll_opts(&samples, sample_rate, best_a, best_b, true, pe, 0);
-        println!("    preemph={:<5}  plain={:>5}  adaptive={:>5}",
-            preemph_names[i], r_plain.frames.len(), r_adapt.frames.len());
+        println!(
+            "    preemph={:<5}  plain={:>5}  adaptive={:>5}",
+            preemph_names[i],
+            r_plain.frames.len(),
+            r_adapt.frames.len()
+        );
     }
 }
 
@@ -423,7 +516,12 @@ fn decode_dm_pll_tuned(
         .with_pll_smoothing(smooth_shift)
         .with_llr_shift(llr_shift);
 
-    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+    let mut symbols = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1024];
 
     if use_soft {
         let mut soft_hdlc = SoftHdlcDecoder::new();
@@ -478,7 +576,11 @@ pub fn run_dm_pll_tune(path: &str) {
     // Baselines
     let fast = decode_fast(&samples, sample_rate);
     let (multi, _) = decode_multi(&samples, sample_rate);
-    println!("  Baselines: fast={}, multi={}", fast.frames.len(), multi.frames.len());
+    println!(
+        "  Baselines: fast={}, multi={}",
+        fast.frames.len(),
+        multi.frames.len()
+    );
     println!();
 
     // ── Stage 1: Gardner error shift × smoothing × beta ──
@@ -503,9 +605,8 @@ pub fn run_dm_pll_tune(path: &str) {
     for &es in error_shifts {
         for &ss in smooth_shifts {
             for &b in betas {
-                let (frames, _) = decode_dm_pll_tuned(
-                    &samples, sample_rate, 936, b, es, ss, 6, false,
-                );
+                let (frames, _) =
+                    decode_dm_pll_tuned(&samples, sample_rate, 936, b, es, ss, 6, false);
                 stage1_results.push(Stage1Result {
                     error_shift: es,
                     smooth_shift: ss,
@@ -530,7 +631,11 @@ pub fn run_dm_pll_tune(path: &str) {
     for (i, r) in stage1_results.iter().take(show_top).enumerate() {
         println!(
             "  {:>3}  {:>9}  {:>6}  {:>4}  {:>6}",
-            i + 1, r.error_shift, r.smooth_shift, r.beta, r.frames
+            i + 1,
+            r.error_shift,
+            r.smooth_shift,
+            r.beta,
+            r.frames
         );
     }
     println!("  Top {} shown (of {}).", show_top, total_combos);
@@ -573,10 +678,24 @@ pub fn run_dm_pll_tune(path: &str) {
     for &a in alphas {
         for &ls in llr_shifts {
             let (hard, _) = decode_dm_pll_tuned(
-                &samples, sample_rate, a, best_beta, best_es, best_ss, ls, false,
+                &samples,
+                sample_rate,
+                a,
+                best_beta,
+                best_es,
+                best_ss,
+                ls,
+                false,
             );
             let (soft, soft_saves) = decode_dm_pll_tuned(
-                &samples, sample_rate, a, best_beta, best_es, best_ss, ls, true,
+                &samples,
+                sample_rate,
+                a,
+                best_beta,
+                best_es,
+                best_ss,
+                ls,
+                true,
             );
             stage2_results.push(Stage2Result {
                 alpha: a,
@@ -590,9 +709,7 @@ pub fn run_dm_pll_tune(path: &str) {
     eprintln!(" done.");
 
     // Sort descending by soft frame count (primary), then hard (tiebreak)
-    stage2_results.sort_by(|a, b| {
-        b.soft.cmp(&a.soft).then(b.hard.cmp(&a.hard))
-    });
+    stage2_results.sort_by(|a, b| b.soft.cmp(&a.soft).then(b.hard.cmp(&a.hard)));
 
     println!(
         "  {:>3}  {:>5}  {:>9}  {:>5}  {:>5}  {:>10}",
@@ -604,7 +721,12 @@ pub fn run_dm_pll_tune(path: &str) {
     for (i, r) in stage2_results.iter().take(show_s2).enumerate() {
         println!(
             "  {:>3}  {:>5}  {:>9}  {:>5}  {:>5}  {:>10}",
-            i + 1, r.alpha, r.llr_shift, r.hard, r.soft, r.soft_saves
+            i + 1,
+            r.alpha,
+            r.llr_shift,
+            r.hard,
+            r.soft,
+            r.soft_saves
         );
     }
     println!("  Top {} shown (of {}).", show_s2, total_s2);
@@ -619,7 +741,10 @@ pub fn run_dm_pll_tune(path: &str) {
     println!("  alpha:            {}", best_s2.alpha);
     println!("  llr_shift:        {}", best_s2.llr_shift);
     println!("  hard frames:      {}", best_s2.hard);
-    println!("  soft frames:      {} ({} soft saves)", best_s2.soft, best_s2.soft_saves);
+    println!(
+        "  soft frames:      {} ({} soft saves)",
+        best_s2.soft, best_s2.soft_saves
+    );
 }
 
 // ─── DM Debug Diagnostics ──────────────────────────────────────────────
@@ -632,7 +757,10 @@ pub fn run_dm_debug(path: &str) {
 
     let (sample_rate, samples) = match read_wav_file(path) {
         Ok(v) => v,
-        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
     };
 
     // Limit to first 5 seconds for manageable output
@@ -648,9 +776,7 @@ pub fn run_dm_debug(path: &str) {
         _ => packet_radio_core::modem::filter::afsk_bandpass_11025(),
     };
 
-    let mut pll = packet_radio_core::modem::pll::ClockRecoveryPll::new(
-        sample_rate, 1200, 400, 30,
-    );
+    let mut pll = packet_radio_core::modem::pll::ClockRecoveryPll::new(sample_rate, 1200, 400, 30);
 
     let csv_path = format!("{}.dm_debug.csv", path);
     let mut csv = String::from("sample,disc_out,leaky,pll_phase,pll_locked,symbol_boundary\n");
@@ -666,8 +792,12 @@ pub fn run_dm_debug(path: &str) {
         let pll_input = leaky.clamp(-32000, 32000) as i16;
         let sym = pll.update(pll_input);
 
-        csv.push_str(&format!("{},{},{},{},{},{}\n",
-            i, disc_out, leaky, pll.phase,
+        csv.push_str(&format!(
+            "{},{},{},{},{},{}\n",
+            i,
+            disc_out,
+            leaky,
+            pll.phase,
             if pll.locked { 1 } else { 0 },
             if sym.is_some() { 1 } else { 0 },
         ));

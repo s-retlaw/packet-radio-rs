@@ -56,7 +56,11 @@ impl AfskModulator {
             self.nrzi_state = !self.nrzi_state;
         }
 
-        let step = if self.nrzi_state { self.mark_step } else { self.space_step };
+        let step = if self.nrzi_state {
+            self.mark_step
+        } else {
+            self.space_step
+        };
         // Bresenham-style fractional timing: accumulate sample_rate,
         // divide by baud_rate, keep remainder. This produces symbol lengths
         // of floor(sr/br) or ceil(sr/br) samples that average exactly sr/br.
@@ -126,8 +130,10 @@ mod tests {
         let n = m.modulate_bit(true, &mut buf);
         assert_eq!(n, 11025 / 1200);
         // Should have non-zero samples (sine wave)
-        assert!(buf[..n].iter().any(|&s| s != 0),
-            "Modulated output should contain non-zero samples");
+        assert!(
+            buf[..n].iter().any(|&s| s != 0),
+            "Modulated output should contain non-zero samples"
+        );
     }
 
     #[test]
@@ -137,8 +143,12 @@ mod tests {
         m.modulate_bit(true, &mut buf);
 
         for &s in &buf[..m.samples_per_symbol()] {
-            assert!(s.abs() <= m.config.amplitude,
-                "Sample {} exceeds amplitude {}", s, m.config.amplitude);
+            assert!(
+                s.abs() <= m.config.amplitude,
+                "Sample {} exceeds amplitude {}",
+                s,
+                m.config.amplitude
+            );
         }
     }
 
@@ -176,8 +186,11 @@ mod tests {
         let jump = (buf2[0] as i32 - buf1[n1 - 1] as i32).abs();
         // At 11025 Hz, one sample step is ~1/11025 seconds
         // Maximum expected jump depends on frequency, but should be modest
-        assert!(jump < 10000,
-            "Phase discontinuity at symbol boundary: jump = {}", jump);
+        assert!(
+            jump < 10000,
+            "Phase discontinuity at symbol boundary: jump = {}",
+            jump
+        );
     }
 
     #[test]
@@ -212,12 +225,20 @@ mod tests {
         }
 
         assert_eq!(n_flag, n_bits, "Flag and individual bit counts differ");
-        assert_eq!(&buf_flag[..n_flag], &buf_bits[..n_bits],
-            "Flag output differs from individual bit output");
-        assert_eq!(m1.nrzi_state(), m2.nrzi_state(),
-            "NRZI state differs after flag vs individual bits");
-        assert_eq!(m1.phase, m2.phase,
-            "Phase differs after flag vs individual bits");
+        assert_eq!(
+            &buf_flag[..n_flag],
+            &buf_bits[..n_bits],
+            "Flag output differs from individual bit output"
+        );
+        assert_eq!(
+            m1.nrzi_state(),
+            m2.nrzi_state(),
+            "NRZI state differs after flag vs individual bits"
+        );
+        assert_eq!(
+            m1.phase, m2.phase,
+            "Phase differs after flag vs individual bits"
+        );
     }
 
     #[test]
@@ -230,7 +251,10 @@ mod tests {
         m.modulate_flag(&mut buf);
         // 0x7E LSB first: 0,1,1,1,1,1,1,0
         // Two 0-bits toggle NRZI, net effect: no change (toggled twice)
-        assert_eq!(m.nrzi_state(), initial,
-            "Two toggles in flag should return to original NRZI state");
+        assert_eq!(
+            m.nrzi_state(),
+            initial,
+            "Two toggles in flag should return to original NRZI state"
+        );
     }
 }

@@ -24,7 +24,9 @@ pub fn run_twist_mini(path: &str) {
     let duration_secs = samples.len() as f64 / sample_rate as f64;
     println!(
         "Duration: {:.1}s, {} samples at {} Hz\n",
-        duration_secs, samples.len(), sample_rate
+        duration_secs,
+        samples.len(),
+        sample_rate
     );
 
     // --- Native sample rate ---
@@ -34,18 +36,30 @@ pub fn run_twist_mini(path: &str) {
     let (multi, _) = decode_multi(&samples, sample_rate);
 
     println!("At {} Hz:", sample_rate);
-    println!("  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
-        fast.frames.len(), fast.elapsed.as_secs_f64(),
-        duration_secs / fast.elapsed.as_secs_f64());
-    println!("  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
-        smart3.frames.len(), smart3.elapsed.as_secs_f64(),
-        duration_secs / smart3.elapsed.as_secs_f64());
-    println!("  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
-        twist_mini.frames.len(), twist_mini.elapsed.as_secs_f64(),
-        duration_secs / twist_mini.elapsed.as_secs_f64());
-    println!("  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
-        multi.frames.len(), multi.elapsed.as_secs_f64(),
-        duration_secs / multi.elapsed.as_secs_f64());
+    println!(
+        "  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
+        fast.frames.len(),
+        fast.elapsed.as_secs_f64(),
+        duration_secs / fast.elapsed.as_secs_f64()
+    );
+    println!(
+        "  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+        smart3.frames.len(),
+        smart3.elapsed.as_secs_f64(),
+        duration_secs / smart3.elapsed.as_secs_f64()
+    );
+    println!(
+        "  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
+        twist_mini.frames.len(),
+        twist_mini.elapsed.as_secs_f64(),
+        duration_secs / twist_mini.elapsed.as_secs_f64()
+    );
+    println!(
+        "  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+        multi.frames.len(),
+        multi.elapsed.as_secs_f64(),
+        duration_secs / multi.elapsed.as_secs_f64()
+    );
 
     let gain_vs_smart3 = twist_mini.frames.len() as i64 - smart3.frames.len() as i64;
     let gain_vs_multi = twist_mini.frames.len() as i64 - multi.frames.len() as i64;
@@ -72,23 +86,38 @@ pub fn run_twist_mini(path: &str) {
         let (multi_13k, _) = decode_multi(&samples_13k, rate_13k);
 
         let dur_13k = samples_13k.len() as f64 / rate_13k as f64;
-        println!("  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
-            fast_13k.frames.len(), fast_13k.elapsed.as_secs_f64(),
-            dur_13k / fast_13k.elapsed.as_secs_f64());
-        println!("  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
-            smart3_13k.frames.len(), smart3_13k.elapsed.as_secs_f64(),
-            dur_13k / smart3_13k.elapsed.as_secs_f64());
-        println!("  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
-            twist_mini_13k.frames.len(), twist_mini_13k.elapsed.as_secs_f64(),
-            dur_13k / twist_mini_13k.elapsed.as_secs_f64());
-        println!("  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
-            multi_13k.frames.len(), multi_13k.elapsed.as_secs_f64(),
-            dur_13k / multi_13k.elapsed.as_secs_f64());
+        println!(
+            "  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
+            fast_13k.frames.len(),
+            fast_13k.elapsed.as_secs_f64(),
+            dur_13k / fast_13k.elapsed.as_secs_f64()
+        );
+        println!(
+            "  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+            smart3_13k.frames.len(),
+            smart3_13k.elapsed.as_secs_f64(),
+            dur_13k / smart3_13k.elapsed.as_secs_f64()
+        );
+        println!(
+            "  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
+            twist_mini_13k.frames.len(),
+            twist_mini_13k.elapsed.as_secs_f64(),
+            dur_13k / twist_mini_13k.elapsed.as_secs_f64()
+        );
+        println!(
+            "  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+            multi_13k.frames.len(),
+            multi_13k.elapsed.as_secs_f64(),
+            dur_13k / multi_13k.elapsed.as_secs_f64()
+        );
 
         let gain_13k = twist_mini_13k.frames.len() as i64 - smart3_13k.frames.len() as i64;
         let gain_vs_native = twist_mini_13k.frames.len() as i64 - twist_mini.frames.len() as i64;
         println!("  TwistMini@13k vs Smart3@13k: {:>+4} packets", gain_13k);
-        println!("  TwistMini@13k vs TwistMini@native: {:>+4} packets", gain_vs_native);
+        println!(
+            "  TwistMini@13k vs TwistMini@native: {:>+4} packets",
+            gain_vs_native
+        );
     }
 
     // --- Try 12000 Hz variant (48k ÷ 4 decimation target) ---
@@ -104,23 +133,39 @@ pub fn run_twist_mini(path: &str) {
             let (multi_12k, _) = decode_multi(&samples_12k, rate_12k);
 
             let dur_12k = samples_12k.len() as f64 / rate_12k as f64;
-            println!("  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
-                fast_12k.frames.len(), fast_12k.elapsed.as_secs_f64(),
-                dur_12k / fast_12k.elapsed.as_secs_f64());
-            println!("  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
-                smart3_12k.frames.len(), smart3_12k.elapsed.as_secs_f64(),
-                dur_12k / smart3_12k.elapsed.as_secs_f64());
-            println!("  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
-                twist_mini_12k.frames.len(), twist_mini_12k.elapsed.as_secs_f64(),
-                dur_12k / twist_mini_12k.elapsed.as_secs_f64());
-            println!("  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
-                multi_12k.frames.len(), multi_12k.elapsed.as_secs_f64(),
-                dur_12k / multi_12k.elapsed.as_secs_f64());
+            println!(
+                "  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
+                fast_12k.frames.len(),
+                fast_12k.elapsed.as_secs_f64(),
+                dur_12k / fast_12k.elapsed.as_secs_f64()
+            );
+            println!(
+                "  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+                smart3_12k.frames.len(),
+                smart3_12k.elapsed.as_secs_f64(),
+                dur_12k / smart3_12k.elapsed.as_secs_f64()
+            );
+            println!(
+                "  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
+                twist_mini_12k.frames.len(),
+                twist_mini_12k.elapsed.as_secs_f64(),
+                dur_12k / twist_mini_12k.elapsed.as_secs_f64()
+            );
+            println!(
+                "  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+                multi_12k.frames.len(),
+                multi_12k.elapsed.as_secs_f64(),
+                dur_12k / multi_12k.elapsed.as_secs_f64()
+            );
 
             let gain_12k = twist_mini_12k.frames.len() as i64 - smart3_12k.frames.len() as i64;
-            let gain_vs_native = twist_mini_12k.frames.len() as i64 - twist_mini.frames.len() as i64;
+            let gain_vs_native =
+                twist_mini_12k.frames.len() as i64 - twist_mini.frames.len() as i64;
             println!("  TwistMini@12k vs Smart3@12k: {:>+4} packets", gain_12k);
-            println!("  TwistMini@12k vs TwistMini@native: {:>+4} packets", gain_vs_native);
+            println!(
+                "  TwistMini@12k vs TwistMini@native: {:>+4} packets",
+                gain_vs_native
+            );
         }
     }
 
@@ -139,23 +184,39 @@ pub fn run_twist_mini(path: &str) {
             let (multi_48k, _) = decode_multi(&samples_48k, rate_48k);
 
             let dur_48k = samples_48k.len() as f64 / rate_48k as f64;
-            println!("  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
-                fast_48k.frames.len(), fast_48k.elapsed.as_secs_f64(),
-                dur_48k / fast_48k.elapsed.as_secs_f64());
-            println!("  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
-                smart3_48k.frames.len(), smart3_48k.elapsed.as_secs_f64(),
-                dur_48k / smart3_48k.elapsed.as_secs_f64());
-            println!("  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
-                twist_mini_48k.frames.len(), twist_mini_48k.elapsed.as_secs_f64(),
-                dur_48k / twist_mini_48k.elapsed.as_secs_f64());
-            println!("  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
-                multi_48k.frames.len(), multi_48k.elapsed.as_secs_f64(),
-                dur_48k / multi_48k.elapsed.as_secs_f64());
+            println!(
+                "  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
+                fast_48k.frames.len(),
+                fast_48k.elapsed.as_secs_f64(),
+                dur_48k / fast_48k.elapsed.as_secs_f64()
+            );
+            println!(
+                "  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+                smart3_48k.frames.len(),
+                smart3_48k.elapsed.as_secs_f64(),
+                dur_48k / smart3_48k.elapsed.as_secs_f64()
+            );
+            println!(
+                "  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
+                twist_mini_48k.frames.len(),
+                twist_mini_48k.elapsed.as_secs_f64(),
+                dur_48k / twist_mini_48k.elapsed.as_secs_f64()
+            );
+            println!(
+                "  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+                multi_48k.frames.len(),
+                multi_48k.elapsed.as_secs_f64(),
+                dur_48k / multi_48k.elapsed.as_secs_f64()
+            );
 
             let gain_48k = twist_mini_48k.frames.len() as i64 - smart3_48k.frames.len() as i64;
-            let gain_vs_native = twist_mini_48k.frames.len() as i64 - twist_mini.frames.len() as i64;
+            let gain_vs_native =
+                twist_mini_48k.frames.len() as i64 - twist_mini.frames.len() as i64;
             println!("  TwistMini@48k vs Smart3@48k: {:>+4} packets", gain_48k);
-            println!("  TwistMini@48k vs TwistMini@native: {:>+4} packets", gain_vs_native);
+            println!(
+                "  TwistMini@48k vs TwistMini@native: {:>+4} packets",
+                gain_vs_native
+            );
         }
     }
 
@@ -172,23 +233,39 @@ pub fn run_twist_mini(path: &str) {
             let (multi_26k, _) = decode_multi(&samples_26k, rate_26k);
 
             let dur_26k = samples_26k.len() as f64 / rate_26k as f64;
-            println!("  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
-                fast_26k.frames.len(), fast_26k.elapsed.as_secs_f64(),
-                dur_26k / fast_26k.elapsed.as_secs_f64());
-            println!("  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
-                smart3_26k.frames.len(), smart3_26k.elapsed.as_secs_f64(),
-                dur_26k / smart3_26k.elapsed.as_secs_f64());
-            println!("  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
-                twist_mini_26k.frames.len(), twist_mini_26k.elapsed.as_secs_f64(),
-                dur_26k / twist_mini_26k.elapsed.as_secs_f64());
-            println!("  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
-                multi_26k.frames.len(), multi_26k.elapsed.as_secs_f64(),
-                dur_26k / multi_26k.elapsed.as_secs_f64());
+            println!(
+                "  Fast (1×):       {:>4} packets in {:.2}s ({:.0}x real-time)",
+                fast_26k.frames.len(),
+                fast_26k.elapsed.as_secs_f64(),
+                dur_26k / fast_26k.elapsed.as_secs_f64()
+            );
+            println!(
+                "  Smart3 (3×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+                smart3_26k.frames.len(),
+                smart3_26k.elapsed.as_secs_f64(),
+                dur_26k / smart3_26k.elapsed.as_secs_f64()
+            );
+            println!(
+                "  TwistMini (6×):  {:>4} packets in {:.2}s ({:.0}x real-time)",
+                twist_mini_26k.frames.len(),
+                twist_mini_26k.elapsed.as_secs_f64(),
+                dur_26k / twist_mini_26k.elapsed.as_secs_f64()
+            );
+            println!(
+                "  Multi (38×):     {:>4} packets in {:.2}s ({:.0}x real-time)",
+                multi_26k.frames.len(),
+                multi_26k.elapsed.as_secs_f64(),
+                dur_26k / multi_26k.elapsed.as_secs_f64()
+            );
 
             let gain_26k = twist_mini_26k.frames.len() as i64 - smart3_26k.frames.len() as i64;
-            let gain_vs_native = twist_mini_26k.frames.len() as i64 - twist_mini.frames.len() as i64;
+            let gain_vs_native =
+                twist_mini_26k.frames.len() as i64 - twist_mini.frames.len() as i64;
             println!("  TwistMini@26k vs Smart3@26k: {:>+4} packets", gain_26k);
-            println!("  TwistMini@26k vs TwistMini@native: {:>+4} packets", gain_vs_native);
+            println!(
+                "  TwistMini@26k vs TwistMini@native: {:>+4} packets",
+                gain_vs_native
+            );
         }
     }
 
@@ -224,12 +301,19 @@ fn decode_twist(
         filter::afsk_bandpass_11025()
     };
 
-    let mut demod = FastDemodulator::new(config).filter(bpf).phase_offset(phase_offset)
+    let mut demod = FastDemodulator::new(config)
+        .filter(bpf)
+        .phase_offset(phase_offset)
         .with_space_gain(space_gain_q8)
         .with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+    let mut symbols = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1024];
 
     let start = Instant::now();
     for chunk in samples.chunks(1024) {
@@ -266,7 +350,9 @@ pub fn run_twist_sweep(path: &str) {
     let duration_secs = samples.len() as f64 / sample_rate as f64;
     println!(
         "Duration: {:.1}s, {} samples at {} Hz\n",
-        duration_secs, samples.len(), sample_rate
+        duration_secs,
+        samples.len(),
+        sample_rate
     );
 
     // Baselines
@@ -289,14 +375,26 @@ pub fn run_twist_sweep(path: &str) {
     // Timing phases: 0, 1, 2
     let bpf_offsets = [-200i32, -100, 0, 100, 200, 300];
     let gains: [(u16, &str); 13] = [
-        (128, "-3.0dB"), (152, "-2.25dB"), (181, "-1.5dB"), (215, "-0.75dB"),
-        (256, " 0.0dB"), (304, "+0.75dB"), (362, "+1.5dB"), (430, "+2.25dB"),
-        (512, "+3.0dB"), (608, "+3.75dB"), (724, "+4.5dB"), (868, "+5.3dB"),
+        (128, "-3.0dB"),
+        (152, "-2.25dB"),
+        (181, "-1.5dB"),
+        (215, "-0.75dB"),
+        (256, " 0.0dB"),
+        (304, "+0.75dB"),
+        (362, "+1.5dB"),
+        (430, "+2.25dB"),
+        (512, "+3.0dB"),
+        (608, "+3.75dB"),
+        (724, "+4.5dB"),
+        (868, "+5.3dB"),
         (1024, "+6.0dB"),
     ];
     let timing_phases = [0u32, 1, 2];
 
-    println!("  {:>8} {:>7} {:>3}  {:>5}  {:>5}  not-in-S3", "BPF_off", "Gain", "T", "Pkts", "Uniq");
+    println!(
+        "  {:>8} {:>7} {:>3}  {:>5}  {:>5}  not-in-S3",
+        "BPF_off", "Gain", "T", "Pkts", "Uniq"
+    );
     println!("  {}", "─".repeat(52));
 
     // Collect results for ranking
@@ -334,8 +432,10 @@ pub fn run_twist_sweep(path: &str) {
 
     for r in &results {
         let marker = if r.exclusive > 0 { " ★" } else { "" };
-        println!("  {:>+5} Hz {:>7} t{}  {:>5}  {:>5}  {:>4}{}",
-            r.bpf_off, r.gain_label, r.timing, r.count, r.unique, r.exclusive, marker);
+        println!(
+            "  {:>+5} Hz {:>7} t{}  {:>5}  {:>5}  {:>4}{}",
+            r.bpf_off, r.gain_label, r.timing, r.count, r.unique, r.exclusive, marker
+        );
     }
 
     // Top candidates summary
@@ -346,8 +446,10 @@ pub fn run_twist_sweep(path: &str) {
     } else {
         println!("  Top twist configurations with exclusive frames vs Smart3:");
         for r in top.iter().take(10) {
-            println!("    BPF{:>+4}Hz gain={} t{}: {} exclusive ({} total)",
-                r.bpf_off, r.gain_label, r.timing, r.exclusive, r.count);
+            println!(
+                "    BPF{:>+4}Hz gain={} t{}: {} exclusive ({} total)",
+                r.bpf_off, r.gain_label, r.timing, r.exclusive, r.count
+            );
         }
     }
 
@@ -358,15 +460,24 @@ pub fn run_twist_sweep(path: &str) {
         let mut combined_set = smart3_set.clone();
         let mut added = 0;
         for r in top.iter().take(3) {
-            let tr = decode_twist(&samples, sample_rate, r.bpf_off,
-                gains.iter().find(|(_, l)| l == &r.gain_label).unwrap().0, r.timing);
+            let tr = decode_twist(
+                &samples,
+                sample_rate,
+                r.bpf_off,
+                gains.iter().find(|(_, l)| l == &r.gain_label).unwrap().0,
+                r.timing,
+            );
             for f in &tr.frames {
                 combined_set.insert(f.clone());
             }
             added += 1;
         }
-        println!("  Smart3 + top {} twist decoders: {} unique (Smart3 alone: {})",
-            added, combined_set.len(), smart3.frames.iter().cloned().collect::<HashSet<_>>().len());
+        println!(
+            "  Smart3 + top {} twist decoders: {} unique (Smart3 alone: {})",
+            added,
+            combined_set.len(),
+            smart3.frames.iter().cloned().collect::<HashSet<_>>().len()
+        );
     }
     println!();
 }

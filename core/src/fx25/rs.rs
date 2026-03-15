@@ -342,7 +342,15 @@ pub fn rs_decode(codeword: &mut [u8], n: usize, nsym: usize) -> Result<usize, Rs
 
     // 4. Forney
     let mut magnitudes = [0u8; MAX_CHECK];
-    forney(&syndromes[..nsym], &lambda, num_errors, &positions, MAX_N, nsym, &mut magnitudes);
+    forney(
+        &syndromes[..nsym],
+        &lambda,
+        num_errors,
+        &positions,
+        MAX_N,
+        nsym,
+        &mut magnitudes,
+    );
 
     // 5. Correct (on padded block)
     for i in 0..num_errors {
@@ -381,13 +389,16 @@ mod tests {
         // Python reference parity (using same GF(256) poly 0x11D, FCR=1, prim=1):
         let data: [u8; 128] = core::array::from_fn(|i| (i + 1) as u8);
         let expected_parity: [u8; 16] = [
-            0x59, 0xed, 0x75, 0xbf, 0x86, 0x6f, 0x16, 0x42,
-            0x1f, 0xd5, 0x35, 0x63, 0x9b, 0xfe, 0x52, 0xd9,
+            0x59, 0xed, 0x75, 0xbf, 0x86, 0x6f, 0x16, 0x42, 0x1f, 0xd5, 0x35, 0x63, 0x9b, 0xfe,
+            0x52, 0xd9,
         ];
         let mut parity = [0u8; 64];
         rs_encode(&data, 16, &mut parity).unwrap();
-        assert_eq!(&parity[..16], &expected_parity,
-            "RS(144,128) parity mismatch with Python reference");
+        assert_eq!(
+            &parity[..16],
+            &expected_parity,
+            "RS(144,128) parity mismatch with Python reference"
+        );
     }
 
     fn encode_test_block(data: &[u8], nsym: usize) -> ([u8; MAX_N], usize) {
@@ -406,8 +417,10 @@ mod tests {
         let nsym = 16;
         let (codeword, n) = encode_test_block(data, nsym);
         let mut syndromes = [0u8; MAX_CHECK];
-        assert!(compute_syndromes(&codeword[..n], nsym, &mut syndromes),
-            "codeword has non-zero syndromes");
+        assert!(
+            compute_syndromes(&codeword[..n], nsym, &mut syndromes),
+            "codeword has non-zero syndromes"
+        );
     }
 
     #[test]
@@ -487,9 +500,17 @@ mod tests {
     fn encode_decode_fx25_code_sizes() {
         let test_data = [0x42u8; 200];
         for &(rs_k, nsym) in &[
-            (239u16, 16usize), (128, 16), (64, 16), (32, 16),
-            (223, 32), (128, 32), (64, 32), (32, 32),
-            (191, 64), (128, 64), (64, 64),
+            (239u16, 16usize),
+            (128, 16),
+            (64, 16),
+            (32, 16),
+            (223, 32),
+            (128, 32),
+            (64, 32),
+            (32, 32),
+            (191, 64),
+            (128, 64),
+            (64, 64),
         ] {
             let k = rs_k as usize;
             let data = &test_data[..k.min(200)];
@@ -516,8 +537,11 @@ mod tests {
                 let corrected = rs_decode(&mut codeword, n, nsym)
                     .unwrap_or_else(|e| panic!("pos={pos} err=0x{err_val:02X}: {e:?}"));
                 assert_eq!(corrected, 1);
-                assert_eq!(&codeword[..data.len()], data,
-                    "pos={pos}, err=0x{err_val:02X}");
+                assert_eq!(
+                    &codeword[..data.len()],
+                    data,
+                    "pos={pos}, err=0x{err_val:02X}"
+                );
             }
         }
     }

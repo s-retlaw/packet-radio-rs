@@ -64,9 +64,13 @@ impl<T, const N: usize> FixedVec<T, N> {
     /// Number of initialized elements.
     pub fn len(&self) -> usize {
         #[cfg(feature = "alloc")]
-        { self.inner.len() }
+        {
+            self.inner.len()
+        }
         #[cfg(not(feature = "alloc"))]
-        { self.len }
+        {
+            self.len
+        }
     }
 
     /// Whether the container is empty.
@@ -77,20 +81,28 @@ impl<T, const N: usize> FixedVec<T, N> {
     /// Iterate over initialized elements.
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         #[cfg(feature = "alloc")]
-        { self.inner.iter() }
+        {
+            self.inner.iter()
+        }
         #[cfg(not(feature = "alloc"))]
         {
-            self.inner[..self.len].iter().map(|slot| unsafe { slot.assume_init_ref() })
+            self.inner[..self.len]
+                .iter()
+                .map(|slot| unsafe { slot.assume_init_ref() })
         }
     }
 
     /// Iterate mutably over initialized elements.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         #[cfg(feature = "alloc")]
-        { self.inner.iter_mut() }
+        {
+            self.inner.iter_mut()
+        }
         #[cfg(not(feature = "alloc"))]
         {
-            self.inner[..self.len].iter_mut().map(|slot| unsafe { slot.assume_init_mut() })
+            self.inner[..self.len]
+                .iter_mut()
+                .map(|slot| unsafe { slot.assume_init_mut() })
         }
     }
 }
@@ -99,10 +111,16 @@ impl<T, const N: usize> Index<usize> for FixedVec<T, N> {
     type Output = T;
     fn index(&self, idx: usize) -> &T {
         #[cfg(feature = "alloc")]
-        { &self.inner[idx] }
+        {
+            &self.inner[idx]
+        }
         #[cfg(not(feature = "alloc"))]
         {
-            assert!(idx < self.len, "FixedVec index {idx} out of bounds (len {})", self.len);
+            assert!(
+                idx < self.len,
+                "FixedVec index {idx} out of bounds (len {})",
+                self.len
+            );
             unsafe { self.inner[idx].assume_init_ref() }
         }
     }
@@ -111,10 +129,16 @@ impl<T, const N: usize> Index<usize> for FixedVec<T, N> {
 impl<T, const N: usize> IndexMut<usize> for FixedVec<T, N> {
     fn index_mut(&mut self, idx: usize) -> &mut T {
         #[cfg(feature = "alloc")]
-        { &mut self.inner[idx] }
+        {
+            &mut self.inner[idx]
+        }
         #[cfg(not(feature = "alloc"))]
         {
-            assert!(idx < self.len, "FixedVec index {idx} out of bounds (len {})", self.len);
+            assert!(
+                idx < self.len,
+                "FixedVec index {idx} out of bounds (len {})",
+                self.len
+            );
             unsafe { self.inner[idx].assume_init_mut() }
         }
     }

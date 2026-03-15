@@ -113,11 +113,11 @@ mod tests {
 
     #[test]
     fn exp_table_starts_correctly() {
-        assert_eq!(GF_EXP[0], 1);   // alpha^0 = 1
-        assert_eq!(GF_EXP[1], 2);   // alpha^1 = 2
-        assert_eq!(GF_EXP[2], 4);   // alpha^2 = 4
+        assert_eq!(GF_EXP[0], 1); // alpha^0 = 1
+        assert_eq!(GF_EXP[1], 2); // alpha^1 = 2
+        assert_eq!(GF_EXP[2], 4); // alpha^2 = 4
         assert_eq!(GF_EXP[7], 128); // alpha^7 = 128
-        // alpha^8 = 256 mod p(x) = 0x11D => 256 ^ 0x11D = 0x1D = 29
+                                    // alpha^8 = 256 mod p(x) = 0x11D => 256 ^ 0x11D = 0x1D = 29
         assert_eq!(GF_EXP[8], 29);
     }
 
@@ -135,7 +135,10 @@ mod tests {
     fn log_exp_roundtrip() {
         for i in 0u16..255 {
             let val = GF_EXP[i as usize];
-            assert_eq!(GF_LOG[val as usize], i as u8, "LOG/EXP roundtrip failed for i={i}");
+            assert_eq!(
+                GF_LOG[val as usize], i as u8,
+                "LOG/EXP roundtrip failed for i={i}"
+            );
         }
     }
 

@@ -60,17 +60,25 @@ pub fn run_suite_on_files(
 
         // Progress output
         let mut progress = String::new();
-        if let Some((c, _)) = result.fast { progress.push_str(&format!("fast={}", c)); }
+        if let Some((c, _)) = result.fast {
+            progress.push_str(&format!("fast={}", c));
+        }
         if let Some((c, _)) = result.smart3 {
-            if !progress.is_empty() { progress.push_str(", "); }
+            if !progress.is_empty() {
+                progress.push_str(", ");
+            }
             progress.push_str(&format!("smart3={}", c));
         }
         if let Some((c, _)) = result.multi {
-            if !progress.is_empty() { progress.push_str(", "); }
+            if !progress.is_empty() {
+                progress.push_str(", ");
+            }
             progress.push_str(&format!("multi={}", c));
         }
         if let Some((c, _)) = result.combined {
-            if !progress.is_empty() { progress.push_str(", "); }
+            if !progress.is_empty() {
+                progress.push_str(", ");
+            }
             progress.push_str(&format!("combined={}", c));
         }
         eprintln!("{}", progress);
@@ -82,10 +90,7 @@ pub fn run_suite_on_files(
 }
 
 /// Print best result per decoder per track across all rates.
-pub fn print_best_across_rates(
-    all_rate_results: &[(u32, Vec<UnifiedResult>)],
-    mcu_only: bool,
-) {
+pub fn print_best_across_rates(all_rate_results: &[(u32, Vec<UnifiedResult>)], mcu_only: bool) {
     let cols = num_cols(mcu_only);
 
     // Collect all unique display names (base names, without rate suffixes)
@@ -112,8 +117,14 @@ pub fn print_best_across_rates(
     println!();
 
     // Header with DW
-    let have_dw = all_rate_results.iter().any(|(_, rs)| rs.iter().any(|r| r.dw_count.is_some()));
-    let dw_hdr = if have_dw { format!("{:>5}", "DW") } else { String::new() };
+    let have_dw = all_rate_results
+        .iter()
+        .any(|(_, rs)| rs.iter().any(|r| r.dw_count.is_some()));
+    let dw_hdr = if have_dw {
+        format!("{:>5}", "DW")
+    } else {
+        String::new()
+    };
     let mut hdr = format!("{:<30} {}", "Track", dw_hdr);
     for (i, col_name) in COL_NAMES.iter().enumerate().take(cols) {
         if i == MCU_COLS && !mcu_only {
@@ -138,9 +149,13 @@ pub fn print_best_across_rates(
                         r.display_name.clone()
                     }
                 };
-                if &base != track_name { continue; }
+                if &base != track_name {
+                    continue;
+                }
 
-                if dw.is_none() { dw = r.dw_count; }
+                if dw.is_none() {
+                    dw = r.dw_count;
+                }
 
                 for (i, (bc, br)) in best_count.iter_mut().zip(best_rate.iter_mut()).enumerate() {
                     if let Some(c) = r.count(i) {
@@ -159,7 +174,11 @@ pub fn print_best_across_rates(
         } else {
             String::new()
         };
-        let truncated = if track_name.len() > 30 { &track_name[..30] } else { track_name.as_str() };
+        let truncated = if track_name.len() > 30 {
+            &track_name[..30]
+        } else {
+            track_name.as_str()
+        };
         let mut row = format!("{:<30}{}", truncated, dw_str);
         for (i, bc) in best_count.iter().enumerate() {
             if i == MCU_COLS && !mcu_only {
@@ -224,7 +243,8 @@ pub fn run_suite(dir: &str, rate: Option<u32>, all_rates: bool, mcu_only: bool) 
 
     // Classify files: separate base files from rate-suffixed variants
     let mut base_files: Vec<String> = Vec::new();
-    let mut rate_files: std::collections::HashMap<u32, Vec<String>> = std::collections::HashMap::new();
+    let mut rate_files: std::collections::HashMap<u32, Vec<String>> =
+        std::collections::HashMap::new();
 
     for wav_path in &all_wav_files {
         let stem = std::path::Path::new(wav_path)

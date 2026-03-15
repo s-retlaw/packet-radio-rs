@@ -183,30 +183,46 @@ pub fn encode_frame(port: u8, data: &[u8], out: &mut [u8]) -> Option<usize> {
     };
 
     // Opening FEND
-    if !write(FEND, &mut pos) { return None; }
+    if !write(FEND, &mut pos) {
+        return None;
+    }
 
     // Command byte (data frame)
-    if !write(Command::DataFrame.to_byte(port), &mut pos) { return None; }
+    if !write(Command::DataFrame.to_byte(port), &mut pos) {
+        return None;
+    }
 
     // Data with escaping
     for &byte in data {
         match byte {
             FEND => {
-                if !write(FESC, &mut pos) { return None; }
-                if !write(TFEND, &mut pos) { return None; }
+                if !write(FESC, &mut pos) {
+                    return None;
+                }
+                if !write(TFEND, &mut pos) {
+                    return None;
+                }
             }
             FESC => {
-                if !write(FESC, &mut pos) { return None; }
-                if !write(TFESC, &mut pos) { return None; }
+                if !write(FESC, &mut pos) {
+                    return None;
+                }
+                if !write(TFESC, &mut pos) {
+                    return None;
+                }
             }
             _ => {
-                if !write(byte, &mut pos) { return None; }
+                if !write(byte, &mut pos) {
+                    return None;
+                }
             }
         }
     }
 
     // Closing FEND
-    if !write(FEND, &mut pos) { return None; }
+    if !write(FEND, &mut pos) {
+        return None;
+    }
 
     Some(pos)
 }

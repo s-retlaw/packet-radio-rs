@@ -122,9 +122,11 @@ mod tests {
 
         // After 17 bits of sync, output should match input
         for i in 17..64 {
-            assert_eq!(recovered[i], input_bits[i],
+            assert_eq!(
+                recovered[i], input_bits[i],
                 "Mismatch at bit {} (after sync): expected {}, got {}",
-                i, input_bits[i], recovered[i]);
+                i, input_bits[i], recovered[i]
+            );
         }
     }
 
@@ -148,8 +150,7 @@ mod tests {
 
         // After 17 bits of sync, output must match
         for i in 17..100 {
-            assert_eq!(recovered[i], input_bits[i],
-                "Self-sync failed at bit {}", i);
+            assert_eq!(recovered[i], input_bits[i], "Self-sync failed at bit {}", i);
         }
     }
 
@@ -200,13 +201,17 @@ mod tests {
         // Wait — the delays are 0, 12-bit tap (5 positions back), 17-bit tap
         // Let me just count: should be exactly 3 errors
         let mut error_count = 0;
-        for i in 17..50 { // skip sync period
+        for i in 17..50 {
+            // skip sync period
             if clean_out[i] != corrupt_out[i] {
                 error_count += 1;
             }
         }
-        assert_eq!(error_count, 3,
-            "Single channel error should produce exactly 3 output errors, got {}", error_count);
+        assert_eq!(
+            error_count, 3,
+            "Single channel error should produce exactly 3 output errors, got {}",
+            error_count
+        );
     }
 
     #[test]
@@ -261,7 +266,10 @@ mod tests {
             prev = out;
         }
         // Good scrambler should produce roughly 50% transitions
-        assert!(transitions > 50 && transitions < 150,
-            "Expected ~100 transitions in 200 bits, got {}", transitions);
+        assert!(
+            transitions > 50 && transitions < 150,
+            "Expected ~100 transitions in 200 bits, got {}",
+            transitions
+        );
     }
 }

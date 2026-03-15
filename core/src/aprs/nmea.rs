@@ -80,7 +80,11 @@ pub fn parse_nmea(sentence: &[u8]) -> Option<NmeaData> {
 /// Returns true if no checksum present (no '*') or checksum matches.
 fn validate_checksum(sentence: &[u8]) -> bool {
     // Find '$' start
-    let start = if sentence.first() == Some(&b'$') { 1 } else { 0 };
+    let start = if sentence.first() == Some(&b'$') {
+        1
+    } else {
+        0
+    };
 
     // Find '*'
     let star_pos = match sentence.iter().position(|&b| b == b'*') {
@@ -100,7 +104,10 @@ fn validate_checksum(sentence: &[u8]) -> bool {
     }
 
     // Parse expected checksum
-    let expected = match (hex_digit(sentence[star_pos + 1]), hex_digit(sentence[star_pos + 2])) {
+    let expected = match (
+        hex_digit(sentence[star_pos + 1]),
+        hex_digit(sentence[star_pos + 2]),
+    ) {
         (Some(h), Some(l)) => h << 4 | l,
         _ => return false,
     };
@@ -249,7 +256,11 @@ fn parse_decimal_tenths(field: &[u8]) -> Option<u32> {
     }
 
     if let Some(dot) = field.iter().position(|&b| b == b'.') {
-        let integer = if dot > 0 { parse_uint(&field[..dot])? } else { 0 };
+        let integer = if dot > 0 {
+            parse_uint(&field[..dot])?
+        } else {
+            0
+        };
         let frac_part = &field[dot + 1..];
         let frac = if frac_part.is_empty() {
             0
@@ -386,7 +397,11 @@ fn parse_gga(fields: &[&[u8]], n: usize) -> Option<NmeaData> {
         fix_valid,
         satellites: parse_uint(fields[7]).map(|s| s as u8),
         hdop_tenths: parse_decimal_tenths(fields[8]).map(|v| v as u16),
-        altitude_dm: if n > 9 { parse_signed_decimal_tenths(fields[9]) } else { None },
+        altitude_dm: if n > 9 {
+            parse_signed_decimal_tenths(fields[9])
+        } else {
+            None
+        },
         ..NmeaData::default()
     })
 }

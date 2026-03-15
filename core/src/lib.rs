@@ -36,13 +36,13 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-pub mod modem;
-pub mod ax25;
 pub mod aprs;
-pub mod kiss;
-pub mod tnc;
+pub mod ax25;
 #[cfg(feature = "fx25")]
 pub mod fx25;
+pub mod kiss;
+pub mod modem;
+pub mod tnc;
 
 /// Maximum AX.25 frame length (bytes), per spec
 pub const MAX_FRAME_LEN: usize = 330;

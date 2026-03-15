@@ -4,10 +4,10 @@ use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use packet_radio_core::ax25::frame::HdlcDecoder;
+use packet_radio_core::modem::corr_slicer::CorrSlicerDecoder;
 use packet_radio_core::modem::demod::{
     CorrelationDemodulator, DemodSymbol, DmDemodulator, FastDemodulator, QualityDemodulator,
 };
-use packet_radio_core::modem::corr_slicer::CorrSlicerDecoder;
 use packet_radio_core::modem::multi::{MiniDecoder, MultiDecoder, TwistMiniDecoder};
 use packet_radio_core::modem::soft_hdlc::{FrameResult, SoftHdlcDecoder};
 use packet_radio_core::modem::DemodConfig;
@@ -56,7 +56,12 @@ pub fn run_hard_decode(
 ) -> DecodeResult {
     let mut hdlc = HdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; DECODE_CHUNK];
+    let mut symbols = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; DECODE_CHUNK];
 
     let start = Instant::now();
     for chunk in samples.chunks(DECODE_CHUNK) {
@@ -67,7 +72,10 @@ pub fn run_hard_decode(
             }
         }
     }
-    DecodeResult { frames, elapsed: start.elapsed() }
+    DecodeResult {
+        frames,
+        elapsed: start.elapsed(),
+    }
 }
 
 /// Run a symbol-producing demodulator through soft HDLC (LLR bit-flip recovery).
@@ -77,7 +85,12 @@ pub fn run_soft_decode(
 ) -> (DecodeResult, u32) {
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; DECODE_CHUNK];
+    let mut symbols = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; DECODE_CHUNK];
 
     let start = Instant::now();
     for chunk in samples.chunks(DECODE_CHUNK) {
@@ -93,7 +106,13 @@ pub fn run_soft_decode(
         }
     }
     let soft_recovered = soft_hdlc.stats_total_soft_recovered();
-    (DecodeResult { frames, elapsed: start.elapsed() }, soft_recovered)
+    (
+        DecodeResult {
+            frames,
+            elapsed: start.elapsed(),
+        },
+        soft_recovered,
+    )
 }
 
 /// Merge multiple lists of hashed+positioned frames, deduplicating by
@@ -161,10 +180,13 @@ pub fn decode_multi(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
     }
 
     let soft = multi.total_soft_recovered();
-    (DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }, soft)
+    (
+        DecodeResult {
+            frames,
+            elapsed: start.elapsed(),
+        },
+        soft,
+    )
 }
 
 /// Decode audio samples using the MiniDecoder (3 attribution-optimal decoders).
@@ -184,10 +206,13 @@ pub fn decode_smart3(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
     }
 
     let soft = mini.total_soft_recovered();
-    (DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }, soft)
+    (
+        DecodeResult {
+            frames,
+            elapsed: start.elapsed(),
+        },
+        soft,
+    )
 }
 
 /// Decode using TwistMiniDecoder (Smart3 + 3 twist-compensated decoders).
@@ -206,16 +231,21 @@ pub fn decode_twist_mini(samples: &[i16], sample_rate: u32) -> (DecodeResult, u3
         }
     }
 
-    (DecodeResult {
-        frames,
-        elapsed: start.elapsed(),
-    }, 0) // TwistMiniDecoder doesn't expose soft stats yet
+    (
+        DecodeResult {
+            frames,
+            elapsed: start.elapsed(),
+        },
+        0,
+    ) // TwistMiniDecoder doesn't expose soft stats yet
 }
 
 /// Decode using the fast demodulator with adaptive Goertzel re-tuning.
 pub fn decode_fast_adaptive(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let config = config_for_rate(sample_rate, get_baud());
-    let mut demod = FastDemodulator::new(config).with_adaptive_retune().with_energy_llr();
+    let mut demod = FastDemodulator::new(config)
+        .with_adaptive_retune()
+        .with_energy_llr();
     run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms)).0
 }
 
@@ -240,8 +270,12 @@ pub fn decode_best_single(samples: &[i16], sample_rate: u32) -> DecodeResult {
     let center = (1700i32 + freq_offset) as f64;
     let bpf = filter::bandpass_coeffs(sample_rate, center, 2000.0);
 
-    let mut demod = FastDemodulator::new(config).filter(bpf).phase_offset(phase_offset)
-        .frequencies(mark, space).with_adaptive_retune().with_energy_llr();
+    let mut demod = FastDemodulator::new(config)
+        .filter(bpf)
+        .phase_offset(phase_offset)
+        .frequencies(mark, space)
+        .with_adaptive_retune()
+        .with_energy_llr();
     run_soft_decode(samples, |chunk, syms| demod.process_samples(chunk, syms)).0
 }
 
@@ -280,7 +314,9 @@ pub fn decode_custom_goertzel(
         _ => filter::afsk_bandpass_11025(),
     };
 
-    let mut demod = FastDemodulator::new(config).filter(bpf).phase_offset(phase_offset)
+    let mut demod = FastDemodulator::new(config)
+        .filter(bpf)
+        .phase_offset(phase_offset)
         .frequencies(mark, space);
     run_hard_decode(samples, |chunk, syms| demod.process_samples(chunk, syms))
 }
@@ -298,8 +334,7 @@ pub fn resample_to(samples: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
         let src_idx = src_pos as usize;
         let frac = src_pos - src_idx as f64;
         if src_idx + 1 < samples.len() {
-            let s = samples[src_idx] as f64 * (1.0 - frac)
-                + samples[src_idx + 1] as f64 * frac;
+            let s = samples[src_idx] as f64 * (1.0 - frac) + samples[src_idx + 1] as f64 * frac;
             out.push(s.clamp(-32768.0, 32767.0) as i16);
         } else if src_idx < samples.len() {
             out.push(samples[src_idx]);
@@ -345,7 +380,12 @@ pub fn decode_corr_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
         let mut demod = CorrelationDemodulator::new(config).with_adaptive_gain();
         demod.set_bit_phase(offset);
         let mut hdlc = HdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 1024];
         let mut frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
         let mut sample_pos: usize = 0;
 
@@ -387,9 +427,16 @@ pub fn decode_corr_3phase_quality(samples: &[i16], sample_rate: u32) -> (DecodeR
             config,
             packet_radio_core::modem::filter::afsk_bandpass_11025(),
             offset,
-        ).with_adaptive_gain().with_energy_llr();
+        )
+        .with_adaptive_gain()
+        .with_energy_llr();
         let mut soft_hdlc = SoftHdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 1024];
         let mut frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
         let mut sample_pos: usize = 0;
 
@@ -414,10 +461,13 @@ pub fn decode_corr_3phase_quality(samples: &[i16], sample_rate: u32) -> (DecodeR
     let dedup_window = sample_rate as usize * 2;
     let all_frames = dedup_merge(&phase_frames, dedup_window);
 
-    (DecodeResult {
-        frames: all_frames,
-        elapsed: start.elapsed(),
-    }, total_soft)
+    (
+        DecodeResult {
+            frames: all_frames,
+            elapsed: start.elapsed(),
+        },
+        total_soft,
+    )
 }
 
 /// Decode using correlation multi-slicer (single demod, N gain slicers).
@@ -522,10 +572,13 @@ pub fn decode_combined(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32)
     let combined_phases = vec![multi_frames, corr_frames];
     let all_frames = dedup_merge(&combined_phases, dedup_window);
 
-    (DecodeResult {
-        frames: all_frames,
-        elapsed: start.elapsed(),
-    }, multi_soft)
+    (
+        DecodeResult {
+            frames: all_frames,
+            elapsed: start.elapsed(),
+        },
+        multi_soft,
+    )
 }
 
 // ─── Unified Result & Grid Printer ────────────────────────────────────────
@@ -583,7 +636,11 @@ pub const ALL_COLS: usize = 9;
 pub const COL_NAMES: [&str; 9] = ["Fst", "Qlt", "S3", "TM", "DM", "Mlt", "C3", "Sl3", "Cmb"];
 
 pub fn num_cols(mcu_only: bool) -> usize {
-    if mcu_only { MCU_COLS } else { ALL_COLS }
+    if mcu_only {
+        MCU_COLS
+    } else {
+        ALL_COLS
+    }
 }
 
 /// Print the unified comparison grid.
@@ -594,7 +651,11 @@ pub fn print_unified_grid(title: &str, results: &[UnifiedResult], mcu_only: bool
     println!("{}", title);
     println!();
 
-    let dw_hdr = if have_dw { format!("{:>5}", "DW") } else { String::new() };
+    let dw_hdr = if have_dw {
+        format!("{:>5}", "DW")
+    } else {
+        String::new()
+    };
     let mut hdr = format!("{:<30} {}", "Track", dw_hdr);
     for (i, col_name) in COL_NAMES.iter().enumerate().take(cols) {
         if i == MCU_COLS && !mcu_only {
@@ -606,7 +667,11 @@ pub fn print_unified_grid(title: &str, results: &[UnifiedResult], mcu_only: bool
 
     let dw_sep_w = if have_dw { 6 } else { 0 };
     let mcu_w = 30 + dw_sep_w + MCU_COLS * 6;
-    let desk_w = if mcu_only { 0 } else { (ALL_COLS - MCU_COLS) * 6 + 2 };
+    let desk_w = if mcu_only {
+        0
+    } else {
+        (ALL_COLS - MCU_COLS) * 6 + 2
+    };
     let sep_mcu = "\u{2500}".repeat(mcu_w);
     if mcu_only {
         println!("{}", sep_mcu);
@@ -619,7 +684,10 @@ pub fn print_unified_grid(title: &str, results: &[UnifiedResult], mcu_only: bool
 
     for r in results {
         let dw_str = if have_dw {
-            format!(" {:>5}", r.dw_count.map_or("?".to_string(), |d| d.to_string()))
+            format!(
+                " {:>5}",
+                r.dw_count.map_or("?".to_string(), |d| d.to_string())
+            )
         } else {
             String::new()
         };
@@ -698,7 +766,10 @@ pub fn print_timing_summary(results: &[UnifiedResult], mcu_only: bool) {
         hdr.push_str(&format!("  {:>5}", col_name));
     }
     println!("{}", hdr);
-    println!("  {}", "\u{2500}".repeat(28 + cols * 7 + if mcu_only { 0 } else { 3 }));
+    println!(
+        "  {}",
+        "\u{2500}".repeat(28 + cols * 7 + if mcu_only { 0 } else { 3 })
+    );
 
     for r in results {
         let mut row = format!("  {:<28}", r.display_name);
@@ -736,7 +807,13 @@ pub fn decode_all_unified(
     let (twist_mini, _) = if baud != 300 {
         decode_twist_mini(samples, sample_rate)
     } else {
-        (DecodeResult { frames: vec![], elapsed: Duration::ZERO }, 0)
+        (
+            DecodeResult {
+                frames: vec![],
+                elapsed: Duration::ZERO,
+            },
+            0,
+        )
     };
     let dm = decode_dm(samples, sample_rate);
 
@@ -809,8 +886,8 @@ pub fn read_wav_file(path: &str) -> Result<(u32, Vec<i16>), String> {
     let mut pos = 12;
     while pos + 8 < buf.len() {
         let chunk_id = &buf[pos..pos + 4];
-        let chunk_size = u32::from_le_bytes([buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7]])
-            as usize;
+        let chunk_size =
+            u32::from_le_bytes([buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7]]) as usize;
 
         if chunk_id == b"data" {
             let data_start = pos + 8;
@@ -964,12 +1041,16 @@ pub fn apply_de_emphasis(samples: &[i16], alpha: f64) -> Vec<i16> {
 
 /// Hard-clip samples at ±threshold. Simulates overdriven radio audio.
 pub fn apply_clipping(samples: &[i16], threshold: i16) -> Vec<i16> {
-    samples.iter().map(|&s| s.clamp(-threshold, threshold)).collect()
+    samples
+        .iter()
+        .map(|&s| s.clamp(-threshold, threshold))
+        .collect()
 }
 
 /// Scale signal amplitude.
 pub fn scale_amplitude(samples: &[i16], factor: f64) -> Vec<i16> {
-    samples.iter()
+    samples
+        .iter()
         .map(|&s| (s as f64 * factor).clamp(-32768.0, 32767.0) as i16)
         .collect()
 }
@@ -1021,7 +1102,8 @@ pub fn add_timing_jitter(
 pub fn add_impulse_noise(samples: &[i16], density: f64, amplitude: i16, seed: u64) -> Vec<i16> {
     let mut rng = seed;
     let threshold = (density * 4294967296.0) as u64;
-    samples.iter()
+    samples
+        .iter()
         .map(|&s| {
             rng ^= rng << 13;
             rng ^= rng >> 7;
@@ -1061,7 +1143,7 @@ pub fn frame_to_tnc2(frame: &[u8]) -> Option<String> {
     let dst = parse_callsign_tnc2(&frame[0..7], false);
     let src = parse_callsign_tnc2(&frame[7..14], false);
 
-    let mut result = format!("{}>{}",  src, dst);
+    let mut result = format!("{}>{}", src, dst);
 
     struct ViaEntry {
         callsign: String,
@@ -1096,7 +1178,9 @@ pub fn frame_to_tnc2(frame: &[u8]) -> Option<String> {
     result.push(':');
 
     let info = &frame[pos..];
-    let cleaned: Vec<u8> = info.iter().copied()
+    let cleaned: Vec<u8> = info
+        .iter()
+        .copied()
         .filter(|&b| b >= 0x20 || b == 0x09)
         .collect();
     let info_str = String::from_utf8_lossy(&cleaned);
@@ -1118,7 +1202,7 @@ pub fn parse_callsign_tnc2(data: &[u8], h_bit: bool) -> String {
     }
     let ssid = (data[6] >> 1) & 0x0F;
     if ssid > 0 {
-        call.push_str(&format!("-{}",  ssid));
+        call.push_str(&format!("-{}", ssid));
     }
     if h_bit {
         call.push('*');
@@ -1148,7 +1232,11 @@ pub struct DwFrameInfo {
 pub fn load_dw_packets(path: &str) -> Result<Vec<String>, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}", e))?;
     let contents = String::from_utf8_lossy(&bytes);
-    Ok(contents.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+    Ok(contents
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
 }
 
 /// Parse DW .clean.log to extract per-frame metadata.
@@ -1172,7 +1260,8 @@ pub fn parse_dw_clean_log(path: &str) -> Result<Vec<(String, DwFrameInfo)>, Stri
                 let (audio_level, mark, space, mark_space) =
                     if let Some(al_pos) = line.find("audio level = ") {
                         let al_rest = &line[al_pos + 14..];
-                        let level_str: String = al_rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                        let level_str: String =
+                            al_rest.chars().take_while(|c| c.is_ascii_digit()).collect();
                         let audio_level: u32 = level_str.parse().unwrap_or(0);
 
                         let (mark, space, ms_str) = if let Some(paren_start) = al_rest.find('(') {
@@ -1205,14 +1294,17 @@ pub fn parse_dw_clean_log(path: &str) -> Result<Vec<(String, DwFrameInfo)>, Stri
                         .replace("<0x0a>", "")
                         .replace("<0x09>", "\t");
 
-                    results.push((cleaned, DwFrameInfo {
-                        seq,
-                        timestamp,
-                        audio_level,
-                        mark_space,
-                        mark,
-                        space,
-                    }));
+                    results.push((
+                        cleaned,
+                        DwFrameInfo {
+                            seq,
+                            timestamp,
+                            audio_level,
+                            mark_space,
+                            mark,
+                            space,
+                        },
+                    ));
                 }
             }
         }
@@ -1229,9 +1321,10 @@ pub fn discover_dw_reference(wav_path: &str) -> Option<(String, String)> {
         .to_string_lossy()
         .to_string();
 
-    let candidates = [
-        ("iso/direwolf_review/packets", "iso/direwolf_review/raw_logs"),
-    ];
+    let candidates = [(
+        "iso/direwolf_review/packets",
+        "iso/direwolf_review/raw_logs",
+    )];
 
     for &(pkt_dir, log_dir) in &candidates {
         let pkt_path = format!("{}/{}.packets.txt", pkt_dir, stem);
@@ -1397,5 +1490,9 @@ pub fn load_dw_data(dir: &str) -> Vec<DireWolfEntry> {
 
 /// Convert a frame to hex string.
 pub fn frame_to_hex(frame: &[u8]) -> String {
-    frame.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join("")
+    frame
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join("")
 }

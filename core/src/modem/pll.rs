@@ -198,10 +198,9 @@ impl ClockRecoveryPll {
                 self.freq -= freq_correction as i32;
 
                 let max_drift = self.nominal_freq / self.max_drift_denom;
-                self.freq = self.freq.clamp(
-                    self.nominal_freq - max_drift,
-                    self.nominal_freq + max_drift,
-                );
+                self.freq = self
+                    .freq
+                    .clamp(self.nominal_freq - max_drift, self.nominal_freq + max_drift);
 
                 // Update state for next symbol
                 self.prev_boundary = disc_out;
@@ -225,8 +224,7 @@ impl ClockRecoveryPll {
                 (disc_out > self.hysteresis && self.prev_sample < -self.hysteresis)
                     || (disc_out < -self.hysteresis && self.prev_sample > self.hysteresis)
             } else {
-                (disc_out > 0) != (self.prev_sample > 0)
-                    && (disc_out != 0 || self.prev_sample != 0)
+                (disc_out > 0) != (self.prev_sample > 0) && (disc_out != 0 || self.prev_sample != 0)
             };
             self.prev_sample = disc_out;
 
@@ -243,10 +241,9 @@ impl ClockRecoveryPll {
                 self.freq -= freq_correction as i32;
 
                 let max_drift = self.nominal_freq / 50;
-                self.freq = self.freq.clamp(
-                    self.nominal_freq - max_drift,
-                    self.nominal_freq + max_drift,
-                );
+                self.freq = self
+                    .freq
+                    .clamp(self.nominal_freq - max_drift, self.nominal_freq + max_drift);
 
                 if self.lock_count > 20 {
                     self.locked = true;
@@ -317,7 +314,8 @@ mod tests {
         // Should produce approximately 1200 symbols in 1 second
         assert!(
             symbol_count > 1100 && symbol_count < 1300,
-            "Expected ~1200 symbols, got {}", symbol_count
+            "Expected ~1200 symbols, got {}",
+            symbol_count
         );
     }
 
@@ -347,16 +345,19 @@ mod tests {
         let transitions_no = pll_no_hyst.lock_count as u32;
 
         // With hysteresis=100, the ±10 noise should NOT trigger transitions
-        let mut pll_hyst = ClockRecoveryPll::new(11025, 1200, 936, 74)
-            .with_hysteresis(100);
+        let mut pll_hyst = ClockRecoveryPll::new(11025, 1200, 936, 74).with_hysteresis(100);
         for i in 0..500 {
             let val: i16 = if i % 2 == 0 { 10 } else { -10 };
             pll_hyst.update(val);
         }
-        assert_eq!(pll_hyst.lock_count, 0,
-            "Hysteresis should block small noise transitions");
-        assert!(transitions_no > 0,
-            "Without hysteresis, small noise should trigger transitions");
+        assert_eq!(
+            pll_hyst.lock_count, 0,
+            "Hysteresis should block small noise transitions"
+        );
+        assert!(
+            transitions_no > 0,
+            "Without hysteresis, small noise should trigger transitions"
+        );
     }
 
     #[test]

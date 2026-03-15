@@ -7,7 +7,7 @@
 //! This allows a single decoder to adapt to each transmitter's characteristics,
 //! replacing the need for multiple parallel decoders with fixed parameters.
 
-use super::{MARK_FREQ, SPACE_FREQ, MID_FREQ, DemodConfig};
+use super::{DemodConfig, MARK_FREQ, MID_FREQ, SPACE_FREQ};
 
 /// Tracking state machine
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -26,7 +26,6 @@ pub enum TrackState {
 /// current transmitter and tunes the demodulator accordingly.
 pub struct AdaptiveTracker {
     // --- Public estimates (read by demodulator after lock) ---
-
     /// Estimated mark frequency (Hz × 256, fixed-point)
     pub mark_freq_est: i32,
     /// Estimated space frequency (Hz × 256, fixed-point)
@@ -39,7 +38,6 @@ pub struct AdaptiveTracker {
     pub signal_level: i16,
 
     // --- Internal state ---
-
     /// Current tracking state
     state: TrackState,
     /// Accumulator for mark frequency measurements
@@ -339,10 +337,16 @@ mod tests {
         // Estimates should be near the input values
         let mark_err = (tracker.mark_freq_est - mark_fp).abs();
         let space_err = (tracker.space_freq_est - space_fp).abs();
-        assert!(mark_err < 10 * 256,
-            "Mark estimate off by {} Hz", mark_err / 256);
-        assert!(space_err < 10 * 256,
-            "Space estimate off by {} Hz", space_err / 256);
+        assert!(
+            mark_err < 10 * 256,
+            "Mark estimate off by {} Hz",
+            mark_err / 256
+        );
+        assert!(
+            space_err < 10 * 256,
+            "Space estimate off by {} Hz",
+            space_err / 256
+        );
     }
 
     #[test]
@@ -351,15 +355,27 @@ mod tests {
 
         // At mark frequency: should be strongly positive
         let llr_mark = tracker.freq_to_llr(1200 * 256);
-        assert!(llr_mark > 100, "Mark LLR should be strongly positive, got {}", llr_mark);
+        assert!(
+            llr_mark > 100,
+            "Mark LLR should be strongly positive, got {}",
+            llr_mark
+        );
 
         // At space frequency: should be strongly negative
         let llr_space = tracker.freq_to_llr(2200 * 256);
-        assert!(llr_space < -100, "Space LLR should be strongly negative, got {}", llr_space);
+        assert!(
+            llr_space < -100,
+            "Space LLR should be strongly negative, got {}",
+            llr_space
+        );
 
         // At midpoint: should be near zero
         let llr_mid = tracker.freq_to_llr(1700 * 256);
-        assert!(llr_mid.abs() < 10, "Midpoint LLR should be ~0, got {}", llr_mid);
+        assert!(
+            llr_mid.abs() < 10,
+            "Midpoint LLR should be ~0, got {}",
+            llr_mid
+        );
     }
 
     #[test]

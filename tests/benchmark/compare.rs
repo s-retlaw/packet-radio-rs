@@ -28,8 +28,7 @@ pub fn run_compare_approaches(path: &str) {
     let (quality, soft_saves) = decode_quality(&samples, sample_rate);
 
     // Compare unique frames by raw bytes
-    let quality_set: std::collections::HashSet<Vec<u8>> =
-        quality.frames.iter().cloned().collect();
+    let quality_set: std::collections::HashSet<Vec<u8>> = quality.frames.iter().cloned().collect();
     let fast_set: std::collections::HashSet<Vec<u8>> = fast.frames.iter().cloned().collect();
 
     let fast_unique = fast_set.len();
@@ -68,14 +67,8 @@ pub fn run_compare_approaches(path: &str) {
     );
     println!("  └──────────────────────────┴────────────┴─────────────┘");
     println!();
-    println!(
-        "  Unique frames decoded by both: {:>6}",
-        both_unique
-    );
-    println!(
-        "  Fast only (quality missed):    {:>6}",
-        fast_only_unique
-    );
+    println!("  Unique frames decoded by both: {:>6}", both_unique);
+    println!("  Fast only (quality missed):    {:>6}", fast_only_unique);
     println!(
         "  Quality only (fast missed):    {:>6}",
         quality_only_unique
@@ -84,14 +77,15 @@ pub fn run_compare_approaches(path: &str) {
 
     // Show a few example fast-only and quality-only frames
     if fast_only_unique > 0 {
-        println!(
-            "  First {} fast-only frame(s):",
-            fast_only_unique.min(3)
-        );
+        println!("  First {} fast-only frame(s):", fast_only_unique.min(3));
         let mut shown = 0;
         for frame in &fast.frames {
             if !quality_set.contains(frame) && shown < 3 {
-                println!("    [{} bytes] {:02X?}", frame.len(), &frame[..frame.len().min(20)]);
+                println!(
+                    "    [{} bytes] {:02X?}",
+                    frame.len(),
+                    &frame[..frame.len().min(20)]
+                );
                 shown += 1;
             }
         }
@@ -104,7 +98,11 @@ pub fn run_compare_approaches(path: &str) {
         let mut shown = 0;
         for frame in &quality.frames {
             if !fast_set.contains(frame) && shown < 3 {
-                println!("    [{} bytes] {:02X?}", frame.len(), &frame[..frame.len().min(20)]);
+                println!(
+                    "    [{} bytes] {:02X?}",
+                    frame.len(),
+                    &frame[..frame.len().min(20)]
+                );
                 shown += 1;
             }
         }

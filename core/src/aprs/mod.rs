@@ -221,8 +221,8 @@ pub enum AprsPacket<'a> {
     /// Mic-E encoded position
     MicE {
         position: Position,
-        speed: u16,    // knots
-        course: u16,   // degrees
+        speed: u16,  // knots
+        course: u16, // degrees
         symbol_table: u8,
         symbol_code: u8,
     },
@@ -257,31 +257,20 @@ pub enum AprsPacket<'a> {
         digital: u8,
     },
     /// Third-party forwarded packet (DTI `}`)
-    ThirdParty {
-        data: &'a [u8],
-    },
+    ThirdParty { data: &'a [u8] },
     /// Raw GPS/NMEA sentence (DTI `$`)
     RawGps {
         data: &'a [u8],
         parsed: Option<nmea::NmeaData>,
     },
     /// Station capabilities (DTI `<`)
-    Capabilities {
-        data: &'a [u8],
-    },
+    Capabilities { data: &'a [u8] },
     /// Query (DTI `?`)
-    Query {
-        query_type: &'a [u8],
-    },
+    Query { query_type: &'a [u8] },
     /// User-defined data (DTI `{`)
-    UserDefined {
-        data: &'a [u8],
-    },
+    UserDefined { data: &'a [u8] },
     /// Unrecognized packet type
-    Unknown {
-        dti: u8,
-        data: &'a [u8],
-    },
+    Unknown { dti: u8, data: &'a [u8] },
 }
 
 /// Parse an APRS packet from the information field of an AX.25 frame.
@@ -302,46 +291,25 @@ pub fn parse_packet<'a>(info: &'a [u8], dest_callsign: &[u8]) -> Option<AprsPack
         DataType::PositionWithTimestamp | DataType::PositionWithTimestampMsg => {
             parse_position_with_timestamp(info)
         }
-        DataType::MicE => {
-            parse_mic_e(info, dest_callsign)
-        }
-        DataType::Message => {
-            parse_message(info)
-        }
-        DataType::Status => {
-            parse_status(info)
-        }
-        DataType::Weather => {
-            parse_weather(info)
-        }
-        DataType::Object => {
-            parse_object(info)
-        }
-        DataType::Item => {
-            parse_item(info)
-        }
-        DataType::Telemetry => {
-            parse_telemetry(info)
-        }
-        DataType::Capabilities => {
-            Some(AprsPacket::Capabilities { data: &info[1..] })
-        }
-        DataType::UserDefined => {
-            Some(AprsPacket::UserDefined { data: &info[1..] })
-        }
-        DataType::Query => {
-            parse_query(info)
-        }
-        DataType::ThirdParty => {
-            Some(AprsPacket::ThirdParty { data: &info[1..] })
-        }
+        DataType::MicE => parse_mic_e(info, dest_callsign),
+        DataType::Message => parse_message(info),
+        DataType::Status => parse_status(info),
+        DataType::Weather => parse_weather(info),
+        DataType::Object => parse_object(info),
+        DataType::Item => parse_item(info),
+        DataType::Telemetry => parse_telemetry(info),
+        DataType::Capabilities => Some(AprsPacket::Capabilities { data: &info[1..] }),
+        DataType::UserDefined => Some(AprsPacket::UserDefined { data: &info[1..] }),
+        DataType::Query => parse_query(info),
+        DataType::ThirdParty => Some(AprsPacket::ThirdParty { data: &info[1..] }),
         DataType::RawGps => {
             let parsed = nmea::parse_nmea(info);
             Some(AprsPacket::RawGps { data: info, parsed })
         }
-        DataType::Unknown(_) => {
-            Some(AprsPacket::Unknown { dti: info[0], data: &info[1..] })
-        }
+        DataType::Unknown(_) => Some(AprsPacket::Unknown {
+            dti: info[0],
+            data: &info[1..],
+        }),
     }
 }
 
@@ -464,12 +432,23 @@ fn parse_plain_position_fields(data: &[u8]) -> Option<(Position, u8, u8, usize)>
     }
 
     let symbol_code = data[18];
-    Some((Position { lat, lon, ambiguity }, symbol_table, symbol_code, 19))
+    Some((
+        Position {
+            lat,
+            lon,
+            ambiguity,
+        },
+        symbol_table,
+        symbol_code,
+        19,
+    ))
 }
 
 /// Parsed compressed position fields: (position, symbol_table, symbol_code, total_bytes_consumed, compressed_extra).
 /// `data` starts at the symbol_table byte.
-fn parse_compressed_position_fields(data: &[u8]) -> Option<(Position, u8, u8, usize, Option<CompressedExtra>)> {
+fn parse_compressed_position_fields(
+    data: &[u8],
+) -> Option<(Position, u8, u8, usize, Option<CompressedExtra>)> {
     // Minimum: 1 sym_table + 4 lat + 4 lon + 1 sym_code = 10
     if data.len() < 10 {
         return None;
@@ -503,7 +482,7 @@ fn parse_compressed_position_fields(data: &[u8]) -> Option<(Position, u8, u8, us
                 0b00 => {
                     // Compressed course/speed
                     let course = cs_val * 4; // degrees
-                    // speed = 1.08^(se_val) - 1 knots — use integer approx
+                                             // speed = 1.08^(se_val) - 1 knots — use integer approx
                     let speed = compressed_speed(se_val);
                     Some(CompressedExtra {
                         course_speed: Some((course as u16, speed)),
@@ -539,7 +518,17 @@ fn parse_compressed_position_fields(data: &[u8]) -> Option<(Position, u8, u8, us
     } else {
         (10, None)
     };
-    Some((Position { lat, lon, ambiguity: 0 }, symbol_table, symbol_code, consumed, extra))
+    Some((
+        Position {
+            lat,
+            lon,
+            ambiguity: 0,
+        },
+        symbol_table,
+        symbol_code,
+        consumed,
+        extra,
+    ))
 }
 
 /// Compute 1.08^n - 1 (speed in knots) using integer math.
@@ -591,7 +580,11 @@ fn parse_position_auto(data: &[u8]) -> Option<(Position, u8, u8, usize, Option<C
 ///
 /// Position data at offset: `DDMM.MMN/DDDMM.MME$comment`
 /// (8 bytes lat + 1 symbol_table + 9 bytes lon + 1 symbol_code + comment)
-fn parse_plain_position<'a>(info: &'a [u8], offset: usize, timestamp: Option<Timestamp>) -> Option<AprsPacket<'a>> {
+fn parse_plain_position<'a>(
+    info: &'a [u8],
+    offset: usize,
+    timestamp: Option<Timestamp>,
+) -> Option<AprsPacket<'a>> {
     if info.len() < offset + 19 {
         return None;
     }
@@ -602,14 +595,25 @@ fn parse_plain_position<'a>(info: &'a [u8], offset: usize, timestamp: Option<Tim
     } else {
         &[]
     };
-    Some(AprsPacket::Position { position, symbol_table, symbol_code, comment, timestamp, compressed_extra: None })
+    Some(AprsPacket::Position {
+        position,
+        symbol_table,
+        symbol_code,
+        comment,
+        timestamp,
+        compressed_extra: None,
+    })
 }
 
 /// Parse compressed APRS position starting at `offset` in `info`.
 ///
 /// At offset: symbol_table (1) + lat base91 (4) + lon base91 (4) + symbol_code (1)
 /// + optional cs/type (3)
-fn parse_compressed_position<'a>(info: &'a [u8], offset: usize, timestamp: Option<Timestamp>) -> Option<AprsPacket<'a>> {
+fn parse_compressed_position<'a>(
+    info: &'a [u8],
+    offset: usize,
+    timestamp: Option<Timestamp>,
+) -> Option<AprsPacket<'a>> {
     if info.len() < offset + 10 {
         return None;
     }
@@ -620,7 +624,14 @@ fn parse_compressed_position<'a>(info: &'a [u8], offset: usize, timestamp: Optio
     } else {
         &[]
     };
-    Some(AprsPacket::Position { position, symbol_table, symbol_code, comment, timestamp, compressed_extra })
+    Some(AprsPacket::Position {
+        position,
+        symbol_table,
+        symbol_code,
+        comment,
+        timestamp,
+        compressed_extra,
+    })
 }
 
 /// Parse a position report without timestamp.
@@ -943,7 +954,8 @@ pub fn parse_weather_from_comment(comment: &[u8]) -> Option<WeatherData> {
     // Format 1: cDDDsSSSgXXXtXXX... (positionless weather comment)
     if comment[0] == b'c' {
         let (wx, _) = parse_weather_fields(comment);
-        if wx.wind_direction.is_some() || wx.temperature.is_some()
+        if wx.wind_direction.is_some()
+            || wx.temperature.is_some()
             || wx.barometric_pressure.is_some()
         {
             return Some(wx);
@@ -953,8 +965,12 @@ pub fn parse_weather_from_comment(comment: &[u8]) -> Option<WeatherData> {
     // Format 2: DDD/SSSgXXXtXXX... (position+weather comment)
     // Wind direction is 3 chars (digits or '.'), then '/', then 3 chars wind speed
     if comment.len() >= 7 && comment[3] == b'/' {
-        let dir_ok = comment[..3].iter().all(|&b| b.is_ascii_digit() || b == b'.');
-        let spd_ok = comment[4..7].iter().all(|&b| b.is_ascii_digit() || b == b'.');
+        let dir_ok = comment[..3]
+            .iter()
+            .all(|&b| b.is_ascii_digit() || b == b'.');
+        let spd_ok = comment[4..7]
+            .iter()
+            .all(|&b| b.is_ascii_digit() || b == b'.');
         if dir_ok && spd_ok {
             let mut wx = WeatherData {
                 wind_direction: parse_wx_int(comment, 0, 3),
@@ -974,7 +990,8 @@ pub fn parse_weather_from_comment(comment: &[u8]) -> Option<WeatherData> {
                 wx.luminosity = more_wx.luminosity;
                 wx.snowfall = more_wx.snowfall;
             }
-            if wx.wind_direction.is_some() || wx.temperature.is_some()
+            if wx.wind_direction.is_some()
+                || wx.temperature.is_some()
                 || wx.barometric_pressure.is_some()
             {
                 return Some(wx);
@@ -1003,7 +1020,11 @@ fn parse_object<'a>(info: &'a [u8]) -> Option<AprsPacket<'a>> {
 
     let name_raw = &info[1..10];
     // Trim trailing spaces from name
-    let name_end = name_raw.iter().rposition(|&b| b != b' ').map(|i| i + 1).unwrap_or(0);
+    let name_end = name_raw
+        .iter()
+        .rposition(|&b| b != b' ')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     let name = &name_raw[..name_end];
 
     let live = info[10] == b'*';
@@ -1045,7 +1066,10 @@ fn parse_item<'a>(info: &'a [u8]) -> Option<AprsPacket<'a>> {
 
     // Scan bytes 1..10 for '!' or '_' separator (name is 3-9 chars)
     let max_scan = core::cmp::min(10, info.len());
-    let sep_idx = info[4..max_scan].iter().position(|&b| b == b'!' || b == b'_').map(|i| i + 4);
+    let sep_idx = info[4..max_scan]
+        .iter()
+        .position(|&b| b == b'!' || b == b'_')
+        .map(|i| i + 4);
     let sep_idx = sep_idx?;
 
     let name = &info[1..sep_idx];
@@ -1109,7 +1133,14 @@ fn parse_message<'a>(info: &'a [u8]) -> Option<AprsPacket<'a>> {
     let (text, message_no) = match split {
         Some(idx) => {
             let msg_no = &remaining[idx + 1..];
-            (&remaining[..idx], if msg_no.is_empty() { None } else { Some(msg_no) })
+            (
+                &remaining[..idx],
+                if msg_no.is_empty() {
+                    None
+                } else {
+                    Some(msg_no)
+                },
+            )
         }
         None => (remaining, None),
     };
@@ -1161,7 +1192,11 @@ fn parse_telemetry<'a>(info: &'a [u8]) -> Option<AprsPacket<'a>> {
         return None;
     }
     // Skip 'T' and optional '#'
-    let start = if info.len() > 1 && info[1] == b'#' { 2 } else { 1 };
+    let start = if info.len() > 1 && info[1] == b'#' {
+        2
+    } else {
+        1
+    };
     let data = &info[start..];
 
     // Split by commas
@@ -1247,12 +1282,19 @@ fn parse_digital_bits(data: &[u8]) -> u8 {
 fn parse_query<'a>(info: &'a [u8]) -> Option<AprsPacket<'a>> {
     // DTI '?' + at least 1 char
     if info.len() < 2 {
-        return Some(AprsPacket::Query { query_type: &info[1..] });
+        return Some(AprsPacket::Query {
+            query_type: &info[1..],
+        });
     }
     // Find the closing '?' if present
     let query_data = &info[1..];
-    let end = query_data.iter().position(|&b| b == b'?').unwrap_or(query_data.len());
-    Some(AprsPacket::Query { query_type: &query_data[..end] })
+    let end = query_data
+        .iter()
+        .position(|&b| b == b'?')
+        .unwrap_or(query_data.len());
+    Some(AprsPacket::Query {
+        query_type: &query_data[..end],
+    })
 }
 
 // ── Status Parsing ─────────────────────────────────────────────────
@@ -1297,7 +1339,11 @@ fn parse_status<'a>(info: &'a [u8]) -> Option<AprsPacket<'a>> {
 
         if let Some(len) = mh_len {
             // Need space or end after the grid
-            let rest_start = if data.len() > len && data[len] == b' ' { len + 1 } else { len };
+            let rest_start = if data.len() > len && data[len] == b' ' {
+                len + 1
+            } else {
+                len
+            };
             return Some(AprsPacket::Status {
                 text: &data[rest_start..],
                 timestamp: None,
@@ -1367,12 +1413,20 @@ pub fn parse_comment_fields<'a>(comment: &'a [u8]) -> CommentFields<'a> {
     let cs_start = text_start;
     if comment.len() >= cs_start + 7 {
         let cs_slice = &comment[cs_start..cs_start + 7];
-        if cs_slice[3] == b'/' &&
-           cs_slice[0].is_ascii_digit() && cs_slice[1].is_ascii_digit() && cs_slice[2].is_ascii_digit() &&
-           cs_slice[4].is_ascii_digit() && cs_slice[5].is_ascii_digit() && cs_slice[6].is_ascii_digit()
+        if cs_slice[3] == b'/'
+            && cs_slice[0].is_ascii_digit()
+            && cs_slice[1].is_ascii_digit()
+            && cs_slice[2].is_ascii_digit()
+            && cs_slice[4].is_ascii_digit()
+            && cs_slice[5].is_ascii_digit()
+            && cs_slice[6].is_ascii_digit()
         {
-            let cse = (cs_slice[0] - b'0') as u16 * 100 + (cs_slice[1] - b'0') as u16 * 10 + (cs_slice[2] - b'0') as u16;
-            let spd = (cs_slice[4] - b'0') as u16 * 100 + (cs_slice[5] - b'0') as u16 * 10 + (cs_slice[6] - b'0') as u16;
+            let cse = (cs_slice[0] - b'0') as u16 * 100
+                + (cs_slice[1] - b'0') as u16 * 10
+                + (cs_slice[2] - b'0') as u16;
+            let spd = (cs_slice[4] - b'0') as u16 * 100
+                + (cs_slice[5] - b'0') as u16 * 10
+                + (cs_slice[6] - b'0') as u16;
             if cse <= 360 {
                 course_speed = Some((cse, spd));
                 text_start = cs_start + 7;
@@ -1412,7 +1466,12 @@ fn parse_phg(data: &[u8]) -> Option<Phg> {
     // Directivity
     let directivity = if d < PHG_DIR.len() { PHG_DIR[d] } else { 0 };
 
-    Some(Phg { power_watts, height_feet, gain_db: g, directivity })
+    Some(Phg {
+        power_watts,
+        height_feet,
+        gain_db: g,
+        directivity,
+    })
 }
 
 /// Parse DFS digits: strength, height, gain, directivity.
@@ -1428,7 +1487,12 @@ fn parse_dfs(data: &[u8]) -> Option<Dfs> {
     let height_feet = 10 * (1u16 << h);
     let directivity = if d < PHG_DIR.len() { PHG_DIR[d] } else { 0 };
 
-    Some(Dfs { strength: s, height_feet, gain_db: g, directivity })
+    Some(Dfs {
+        strength: s,
+        height_feet,
+        gain_db: g,
+        directivity,
+    })
 }
 
 /// Find a subsequence in a byte slice.
@@ -1474,7 +1538,13 @@ mod tests {
         let info = b"!4903.50N/07201.75W-";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Position { position, symbol_table, symbol_code, comment, .. } => {
+            AprsPacket::Position {
+                position,
+                symbol_table,
+                symbol_code,
+                comment,
+                ..
+            } => {
                 assert_eq!(position.lat, 49_058_333);
                 assert_eq!(position.lon, -72_029_167);
                 assert_eq!(position.ambiguity, 0);
@@ -1520,7 +1590,12 @@ mod tests {
         let info = b"/092345z4903.50N/07201.75W>";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Position { position, symbol_table, symbol_code, .. } => {
+            AprsPacket::Position {
+                position,
+                symbol_table,
+                symbol_code,
+                ..
+            } => {
                 assert_eq!(position.lat, 49_058_333);
                 assert_eq!(position.lon, -72_029_167);
                 assert_eq!(position.ambiguity, 0);
@@ -1602,7 +1677,12 @@ mod tests {
         let info = b":WA1ABC   :Hello World{123";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Message { addressee, text, message_no, .. } => {
+            AprsPacket::Message {
+                addressee,
+                text,
+                message_no,
+                ..
+            } => {
                 assert_eq!(addressee, b"WA1ABC");
                 assert_eq!(text, b"Hello World");
                 assert_eq!(message_no, Some(&b"123"[..]));
@@ -1616,7 +1696,12 @@ mod tests {
         let info = b":WA1ABC   :Hello World";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Message { addressee, text, message_no, .. } => {
+            AprsPacket::Message {
+                addressee,
+                text,
+                message_no,
+                ..
+            } => {
                 assert_eq!(addressee, b"WA1ABC");
                 assert_eq!(text, b"Hello World");
                 assert_eq!(message_no, None);
@@ -1630,7 +1715,12 @@ mod tests {
         let info = b":WA1ABC   :";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Message { addressee, text, message_no, .. } => {
+            AprsPacket::Message {
+                addressee,
+                text,
+                message_no,
+                ..
+            } => {
                 assert_eq!(addressee, b"WA1ABC");
                 assert_eq!(text, b"");
                 assert_eq!(message_no, None);
@@ -1645,7 +1735,12 @@ mod tests {
         let info = b":ABCDEFGHI:test{42";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Message { addressee, text, message_no, .. } => {
+            AprsPacket::Message {
+                addressee,
+                text,
+                message_no,
+                ..
+            } => {
                 assert_eq!(addressee, b"ABCDEFGHI");
                 assert_eq!(text, b"test");
                 assert_eq!(message_no, Some(&b"42"[..]));
@@ -1689,7 +1784,12 @@ mod tests {
         let info = b":BLN3     :Snow expected in Langstraat area";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Message { addressee, text, message_no, .. } => {
+            AprsPacket::Message {
+                addressee,
+                text,
+                message_no,
+                ..
+            } => {
                 assert_eq!(addressee, b"BLN3");
                 assert_eq!(text, b"Snow expected in Langstraat area");
                 assert_eq!(message_no, None);
@@ -1703,7 +1803,12 @@ mod tests {
         let info = b":N0CALL   :hello{001";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Message { addressee, text, message_no, .. } => {
+            AprsPacket::Message {
+                addressee,
+                text,
+                message_no,
+                ..
+            } => {
                 assert_eq!(addressee, b"N0CALL");
                 assert_eq!(text, b"hello");
                 assert_eq!(message_no, Some(&b"001"[..]));
@@ -1717,7 +1822,12 @@ mod tests {
         let info = b":WA1ABC-15:test{123";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Message { addressee, text, message_no, .. } => {
+            AprsPacket::Message {
+                addressee,
+                text,
+                message_no,
+                ..
+            } => {
                 assert_eq!(addressee, b"WA1ABC-15");
                 assert_eq!(text, b"test");
                 assert_eq!(message_no, Some(&b"123"[..]));
@@ -1763,7 +1873,13 @@ mod tests {
         let info = b"`.6N P.>/";
         let pkt = parse_mic_e(info, dest).unwrap();
         match pkt {
-            AprsPacket::MicE { position, speed, course, symbol_table, symbol_code } => {
+            AprsPacket::MicE {
+                position,
+                speed,
+                course,
+                symbol_table,
+                symbol_code,
+            } => {
                 // lat = 33*1e6 + (57*100+5)*10000/60 = 33_000_000 + 950_833 = 33_950_833
                 assert_eq!(position.lat, 33_950_833);
                 // lon = 118*1e6 + (26*100+50)*10000/60 = 118_000_000 + 441_666
@@ -1785,7 +1901,12 @@ mod tests {
         let info = b"`.6N P.>/";
         let pkt = parse_packet(info, dest).unwrap();
         match pkt {
-            AprsPacket::MicE { position, speed, course, .. } => {
+            AprsPacket::MicE {
+                position,
+                speed,
+                course,
+                ..
+            } => {
                 assert_eq!(position.lat, 33_950_833);
                 assert_eq!(position.lon, -118_441_666);
                 assert_eq!(speed, 45);
@@ -1809,7 +1930,12 @@ mod tests {
         let info: &[u8] = &[b'`', 223, 58, 28, 28, 28, 28, b'-', b'/'];
         let pkt = parse_mic_e(info, dest).unwrap();
         match pkt {
-            AprsPacket::MicE { position, speed, course, .. } => {
+            AprsPacket::MicE {
+                position,
+                speed,
+                course,
+                ..
+            } => {
                 // lat = 34*1e6 + 0 = 34_000_000, South → negative
                 assert_eq!(position.lat, -34_000_000);
                 // lon = 5*1e6 + 30*10000/60 = 5_000_000 + 500_000 = 5_500_000, East → positive
@@ -2026,7 +2152,12 @@ mod tests {
         let info = b"@092345z4903.50N/07201.75W_220/004g005t077r000p000P000h50b09900";
         let pkt = parse_packet(info, b"APRS").unwrap();
         match pkt {
-            AprsPacket::Position { position, symbol_code, comment, .. } => {
+            AprsPacket::Position {
+                position,
+                symbol_code,
+                comment,
+                ..
+            } => {
                 assert_eq!(symbol_code, b'_');
                 assert!((position.lat as f64 / 1_000_000.0 - 49.058333).abs() < 0.001);
                 // Weather should be parseable from comment
@@ -2069,7 +2200,15 @@ mod tests {
         let info = b";OBJNAME  *092345z4903.50N/07201.75W-";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Object { name, live, position, symbol_table, symbol_code, comment, .. } => {
+            AprsPacket::Object {
+                name,
+                live,
+                position,
+                symbol_table,
+                symbol_code,
+                comment,
+                ..
+            } => {
                 assert_eq!(name, b"OBJNAME");
                 assert!(live);
                 assert_eq!(position.lat, 49_058_333);
@@ -2152,7 +2291,14 @@ mod tests {
         let info = b")ITEM!4903.50N/07201.75W-Test item";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Item { name, live, position, symbol_table, symbol_code, comment } => {
+            AprsPacket::Item {
+                name,
+                live,
+                position,
+                symbol_table,
+                symbol_code,
+                comment,
+            } => {
                 assert_eq!(name, b"ITEM");
                 assert!(live);
                 assert_eq!(position.lat, 49_058_333);
@@ -2238,7 +2384,11 @@ mod tests {
         let info = b"T#123,100,200,300,400,500,10110011";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Telemetry { sequence, analog, digital } => {
+            AprsPacket::Telemetry {
+                sequence,
+                analog,
+                digital,
+            } => {
                 assert_eq!(sequence, 123);
                 assert_eq!(analog[0], Some(100));
                 assert_eq!(analog[1], Some(200));
@@ -2256,7 +2406,11 @@ mod tests {
         let info = b"T#001,50,60";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Telemetry { sequence, analog, digital } => {
+            AprsPacket::Telemetry {
+                sequence,
+                analog,
+                digital,
+            } => {
                 assert_eq!(sequence, 1);
                 assert_eq!(analog[0], Some(50));
                 assert_eq!(analog[1], Some(60));
@@ -2274,7 +2428,11 @@ mod tests {
         let info = b"T123,50,60,70,80,90,11111111";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Telemetry { sequence, analog, digital } => {
+            AprsPacket::Telemetry {
+                sequence,
+                analog,
+                digital,
+            } => {
                 assert_eq!(sequence, 123);
                 assert_eq!(analog[0], Some(50));
                 assert_eq!(digital, 0b11111111);
@@ -2399,7 +2557,9 @@ mod tests {
         let info = b":WA1ABC   :ack123";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Message { message_type, text, .. } => {
+            AprsPacket::Message {
+                message_type, text, ..
+            } => {
                 assert_eq!(message_type, MessageType::Ack);
                 assert_eq!(text, b"ack123");
             }
@@ -2461,7 +2621,11 @@ mod tests {
     fn test_timestamp_dhm() {
         assert_eq!(
             parse_timestamp(b"092345z"),
-            Some(Timestamp::Dhm { day: 9, hour: 23, minute: 45 })
+            Some(Timestamp::Dhm {
+                day: 9,
+                hour: 23,
+                minute: 45
+            })
         );
     }
 
@@ -2469,7 +2633,11 @@ mod tests {
     fn test_timestamp_hms() {
         assert_eq!(
             parse_timestamp(b"123456h"),
-            Some(Timestamp::Hms { hour: 12, minute: 34, second: 56 })
+            Some(Timestamp::Hms {
+                hour: 12,
+                minute: 34,
+                second: 56
+            })
         );
     }
 
@@ -2477,7 +2645,11 @@ mod tests {
     fn test_timestamp_dhm_local() {
         assert_eq!(
             parse_timestamp(b"092345/"),
-            Some(Timestamp::DhmLocal { day: 9, hour: 23, minute: 45 })
+            Some(Timestamp::DhmLocal {
+                day: 9,
+                hour: 23,
+                minute: 45
+            })
         );
     }
 
@@ -2487,7 +2659,14 @@ mod tests {
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
             AprsPacket::Position { timestamp, .. } => {
-                assert_eq!(timestamp, Some(Timestamp::Dhm { day: 9, hour: 23, minute: 45 }));
+                assert_eq!(
+                    timestamp,
+                    Some(Timestamp::Dhm {
+                        day: 9,
+                        hour: 23,
+                        minute: 45
+                    })
+                );
             }
             _ => panic!("expected Position variant"),
         }
@@ -2511,7 +2690,14 @@ mod tests {
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
             AprsPacket::Object { timestamp, .. } => {
-                assert_eq!(timestamp, Some(Timestamp::Dhm { day: 9, hour: 23, minute: 45 }));
+                assert_eq!(
+                    timestamp,
+                    Some(Timestamp::Dhm {
+                        day: 9,
+                        hour: 23,
+                        minute: 45
+                    })
+                );
             }
             _ => panic!("expected Object variant"),
         }
@@ -2524,9 +2710,21 @@ mod tests {
         let info = b">092345zNet Control";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Status { text, timestamp, maidenhead, .. } => {
+            AprsPacket::Status {
+                text,
+                timestamp,
+                maidenhead,
+                ..
+            } => {
                 assert_eq!(text, b"Net Control");
-                assert_eq!(timestamp, Some(Timestamp::Dhm { day: 9, hour: 23, minute: 45 }));
+                assert_eq!(
+                    timestamp,
+                    Some(Timestamp::Dhm {
+                        day: 9,
+                        hour: 23,
+                        minute: 45
+                    })
+                );
                 assert_eq!(maidenhead, None);
             }
             _ => panic!("expected Status variant"),
@@ -2538,7 +2736,12 @@ mod tests {
         let info = b">IO91SX status text";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Status { text, timestamp, maidenhead, .. } => {
+            AprsPacket::Status {
+                text,
+                timestamp,
+                maidenhead,
+                ..
+            } => {
                 assert_eq!(maidenhead, Some(&b"IO91SX"[..]));
                 assert_eq!(text, b"status text");
                 assert_eq!(timestamp, None);
@@ -2552,7 +2755,9 @@ mod tests {
         let info = b">IO91 status";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Status { maidenhead, text, .. } => {
+            AprsPacket::Status {
+                maidenhead, text, ..
+            } => {
                 assert_eq!(maidenhead, Some(&b"IO91"[..]));
                 assert_eq!(text, b"status");
             }
@@ -2565,7 +2770,12 @@ mod tests {
         let info = b">Net Control - Loss Angeles";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Status { text, timestamp, maidenhead, .. } => {
+            AprsPacket::Status {
+                text,
+                timestamp,
+                maidenhead,
+                ..
+            } => {
                 assert_eq!(text, b"Net Control - Loss Angeles");
                 assert_eq!(timestamp, None);
                 assert_eq!(maidenhead, None);
@@ -2668,7 +2878,11 @@ mod tests {
         let info = b"!/5L!!<*e7>7P[";
         let pkt = parse_packet(info, b"").unwrap();
         match pkt {
-            AprsPacket::Position { position, compressed_extra, .. } => {
+            AprsPacket::Position {
+                position,
+                compressed_extra,
+                ..
+            } => {
                 // Position should parse
                 assert_ne!(position.lat, 0);
                 assert_ne!(position.lon, 0);

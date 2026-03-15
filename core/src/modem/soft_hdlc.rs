@@ -15,7 +15,7 @@
 //! decoder would completely miss — typically 5-15% more packets in
 //! marginal signal conditions.
 
-use super::{MAX_FRAME_BITS, MAX_FLIP_CANDIDATES, FLIP_CONFIDENCE_THRESHOLD, TRIPLE_FLIP_LIMIT};
+use super::{FLIP_CONFIDENCE_THRESHOLD, MAX_FLIP_CANDIDATES, MAX_FRAME_BITS, TRIPLE_FLIP_LIMIT};
 
 /// Maximum frame length in bytes for bit-flip recovery working buffer
 const MAX_FRAME_BYTES: usize = 400; // AX.25 max ≈ 330 + margin
@@ -33,7 +33,11 @@ pub enum FrameResult<'a> {
     Valid(&'a [u8]),
     /// Frame recovered by flipping bits. `flips` = number of bits corrected.
     /// `cost` = quality metric (lower is better): syndrome=1, flip=sum of |LLR|s.
-    Recovered { data: &'a [u8], flips: u8, cost: u16 },
+    Recovered {
+        data: &'a [u8],
+        flips: u8,
+        cost: u16,
+    },
 }
 
 /// Soft HDLC decoder.
@@ -42,7 +46,6 @@ pub enum FrameResult<'a> {
 /// attempts error correction by flipping the least-confident bits.
 pub struct SoftHdlcDecoder {
     // --- Bit accumulation ---
-
     /// Soft values (LLR) for each bit in the current potential frame.
     /// Positive = mark/1, negative = space/0, magnitude = confidence.
     soft_bits: [i8; MAX_FRAME_BITS],
@@ -52,7 +55,6 @@ pub struct SoftHdlcDecoder {
     bit_count: usize,
 
     // --- HDLC state machine ---
-
     /// Current state
     state: HdlcState,
     /// Count of consecutive 1-bits (for flag/abort detection and bit unstuffing)
@@ -63,7 +65,6 @@ pub struct SoftHdlcDecoder {
     shift_count: u8,
 
     // --- Frame assembly ---
-
     /// Assembled frame bytes (after bit unstuffing)
     frame_buf: [u8; MAX_FRAME_BYTES],
     /// Current byte being assembled
@@ -74,7 +75,6 @@ pub struct SoftHdlcDecoder {
     frame_len: usize,
 
     // --- Configurable thresholds ---
-
     /// Max candidates for flip recovery (default: MAX_FLIP_CANDIDATES = 12)
     max_flip_candidates: usize,
     /// Confidence threshold for candidate inclusion (default: FLIP_CONFIDENCE_THRESHOLD = 96)
@@ -83,7 +83,6 @@ pub struct SoftHdlcDecoder {
     triple_flip_limit: usize,
 
     // --- Statistics (per recovery type) ---
-
     /// Number of frames decoded normally (hard decision)
     pub stats_hard_decode: u32,
     /// Number of frames recovered via CRC syndrome single-bit correction
@@ -237,9 +236,9 @@ impl SoftHdlcDecoder {
                 let ch = data[i] >> 1; // AX.25 chars are shifted left by 1
                 match ch {
                     0x20 => {}                          // space (padding)
-                    0x30..=0x39 => has_nonspace = true,  // 0-9
-                    0x41..=0x5A => has_nonspace = true,  // A-Z
-                    _ => return false,                   // invalid character
+                    0x30..=0x39 => has_nonspace = true, // 0-9
+                    0x41..=0x5A => has_nonspace = true, // A-Z
+                    _ => return false,                  // invalid character
                 }
                 i += 1;
             }
@@ -384,16 +383,12 @@ impl SoftHdlcDecoder {
 
         // Now construct the return value borrowing from frame_buf
         match frame_result_info {
-            Some((data_len, false, _, _)) => {
-                Some(FrameResult::Valid(&self.frame_buf[..data_len]))
-            }
-            Some((data_len, true, flips, cost)) => {
-                Some(FrameResult::Recovered {
-                    data: &self.frame_buf[..data_len],
-                    flips,
-                    cost,
-                })
-            }
+            Some((data_len, false, _, _)) => Some(FrameResult::Valid(&self.frame_buf[..data_len])),
+            Some((data_len, true, flips, cost)) => Some(FrameResult::Recovered {
+                data: &self.frame_buf[..data_len],
+                flips,
+                cost,
+            }),
             None => None,
         }
     }
@@ -536,9 +531,13 @@ impl SoftHdlcDecoder {
         // Pick the pair with the lowest combined confidence cost.
         let mut best_pair: Option<(usize, usize, u16)> = None; // (i, j, cost)
         for i in 0..num_candidates {
-            if candidates[i].1 >= threshold { break; }
+            if candidates[i].1 >= threshold {
+                break;
+            }
             for j in (i + 1)..num_candidates {
-                if candidates[j].1 >= threshold { break; }
+                if candidates[j].1 >= threshold {
+                    break;
+                }
 
                 self.hard_bits[candidates[i].0] ^= 1;
                 self.hard_bits[candidates[j].0] ^= 1;
@@ -570,7 +569,9 @@ impl SoftHdlcDecoder {
         // Pick the pair with the lowest sum of |LLR| at flipped positions.
         let mut best_nrzi_pair: Option<(usize, usize, u16)> = None; // (bit1, bit2, cost)
         for k in 0..num_candidates {
-            if candidates[k].1 >= threshold { break; }
+            if candidates[k].1 >= threshold {
+                break;
+            }
             let idx = candidates[k].0;
 
             // Try (idx, idx+1)
@@ -619,11 +620,17 @@ impl SoftHdlcDecoder {
         let triple_limit = num_candidates.min(TRIPLE_FLIP_LIMIT);
         let mut best_triple: Option<(usize, usize, usize, u16)> = None; // (i, j, k, cost)
         for i in 0..triple_limit {
-            if candidates[i].1 >= threshold { break; }
+            if candidates[i].1 >= threshold {
+                break;
+            }
             for j in (i + 1)..triple_limit {
-                if candidates[j].1 >= threshold { break; }
+                if candidates[j].1 >= threshold {
+                    break;
+                }
                 for k in (j + 1)..triple_limit {
-                    if candidates[k].1 >= threshold { break; }
+                    if candidates[k].1 >= threshold {
+                        break;
+                    }
 
                     self.hard_bits[candidates[i].0] ^= 1;
                     self.hard_bits[candidates[j].0] ^= 1;
@@ -662,7 +669,9 @@ impl SoftHdlcDecoder {
         // Pick the triple with the lowest sum of |LLR| at flipped positions.
         let mut best_nrzi_triple: Option<(usize, u16)> = None; // (candidate_k, cost)
         for k in 0..num_candidates {
-            if candidates[k].1 >= threshold { break; }
+            if candidates[k].1 >= threshold {
+                break;
+            }
             let idx = candidates[k].0;
 
             if idx > 0 && idx + 1 < count {
@@ -823,7 +832,7 @@ mod tests {
         frame[13] = 0xE1; // SSID with end-of-address bit
         frame[14] = 0x03; // Control: UI
         frame[15] = 0xF0; // PID: no L3
-        frame[16] = b'!';  // payload
+        frame[16] = b'!'; // payload
         assert!(SoftHdlcDecoder::is_valid_ax25_frame(&frame));
 
         // Invalid: lowercase in destination
@@ -877,7 +886,7 @@ mod tests {
         digi_frame[20] = 0xE1; // digi SSID with end-of-address bit
         digi_frame[21] = 0x03; // Control
         digi_frame[22] = 0xF0; // PID
-        digi_frame[23] = b'!';  // payload
+        digi_frame[23] = b'!'; // payload
         assert!(SoftHdlcDecoder::is_valid_ax25_frame(&digi_frame));
     }
 
@@ -886,10 +895,18 @@ mod tests {
         // Verify syndrome stepping: e(0) = CRC_POLY_REFLECTED, each step shifts through poly
         let mut e: u16 = CRC_POLY_REFLECTED;
         // After one step
-        e = if e & 1 != 0 { (e >> 1) ^ CRC_POLY_REFLECTED } else { e >> 1 };
+        e = if e & 1 != 0 {
+            (e >> 1) ^ CRC_POLY_REFLECTED
+        } else {
+            e >> 1
+        };
         assert_eq!(e, 0x4204); // 0x8408 >> 1 = 0x4204 (bit 0 was 0)
-        // After another step
-        e = if e & 1 != 0 { (e >> 1) ^ CRC_POLY_REFLECTED } else { e >> 1 };
+                               // After another step
+        e = if e & 1 != 0 {
+            (e >> 1) ^ CRC_POLY_REFLECTED
+        } else {
+            e >> 1
+        };
         assert_eq!(e, 0x2102); // 0x4204 >> 1 = 0x2102 (bit 0 was 0)
     }
 }

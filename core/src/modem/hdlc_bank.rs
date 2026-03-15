@@ -41,9 +41,13 @@ impl AnyHdlc {
     /// Create a new HDLC decoder.
     pub fn new() -> Self {
         #[cfg(feature = "alloc")]
-        { Self(SoftHdlcDecoder::new()) }
+        {
+            Self(SoftHdlcDecoder::new())
+        }
         #[cfg(not(feature = "alloc"))]
-        { Self(HdlcDecoder::new()) }
+        {
+            Self(HdlcDecoder::new())
+        }
     }
 
     /// Reset the decoder state.

@@ -131,10 +131,14 @@ impl<'a> Frame<'a> {
         }
 
         let dest = Address::from_bytes(
-            data[0..7].try_into().map_err(|_| FrameError::InvalidAddress)?,
+            data[0..7]
+                .try_into()
+                .map_err(|_| FrameError::InvalidAddress)?,
         );
         let src = Address::from_bytes(
-            data[7..14].try_into().map_err(|_| FrameError::InvalidAddress)?,
+            data[7..14]
+                .try_into()
+                .map_err(|_| FrameError::InvalidAddress)?,
         );
 
         // Check for digipeater addresses
@@ -236,7 +240,12 @@ mod tests {
         // AX.25 address for "CQ    " SSID 0
         // Each char shifted left by 1
         let bytes: [u8; 7] = [
-            b'C' << 1, b'Q' << 1, b' ' << 1, b' ' << 1, b' ' << 1, b' ' << 1,
+            b'C' << 1,
+            b'Q' << 1,
+            b' ' << 1,
+            b' ' << 1,
+            b' ' << 1,
+            b' ' << 1,
             0x00 | 0x01, // SSID 0, last address
         ];
         let addr = Address::from_bytes(&bytes);
@@ -247,7 +256,10 @@ mod tests {
     #[test]
     fn test_try_parse_too_short() {
         assert_eq!(Frame::try_parse(&[]).unwrap_err(), FrameError::TooShort);
-        assert_eq!(Frame::try_parse(&[0u8; 14]).unwrap_err(), FrameError::TooShort);
+        assert_eq!(
+            Frame::try_parse(&[0u8; 14]).unwrap_err(),
+            FrameError::TooShort
+        );
     }
 
     #[test]
@@ -256,12 +268,16 @@ mod tests {
         // but there aren't enough bytes for control+PID after the address fields
         let mut data = [0u8; 15];
         // dest: 7 bytes
-        for i in 0..6 { data[i] = b' ' << 1; }
+        for i in 0..6 {
+            data[i] = b' ' << 1;
+        }
         data[6] = 0x00;
         // src: 7 bytes, extension bit CLEAR (digipeaters follow)
-        for i in 7..13 { data[i] = b' ' << 1; }
+        for i in 7..13 {
+            data[i] = b' ' << 1;
+        }
         data[13] = 0x00; // no extension bit — expects digipeaters
-        // Only 1 byte left (pos=14), not enough for a digipeater or control+PID
+                         // Only 1 byte left (pos=14), not enough for a digipeater or control+PID
         data[14] = 0x03;
         assert_eq!(Frame::try_parse(&data).unwrap_err(), FrameError::TooShort);
     }
@@ -275,18 +291,28 @@ mod tests {
         const TOTAL: usize = 16 + crate::MAX_INFO_LEN + 1;
         let mut data = [0u8; TOTAL];
         // dest address
-        for i in 0..6 { data[i] = b'A' << 1; }
+        for i in 0..6 {
+            data[i] = b'A' << 1;
+        }
         data[6] = 0x00;
         // src address with extension bit set (last address)
-        for i in 7..13 { data[i] = b'B' << 1; }
+        for i in 7..13 {
+            data[i] = b'B' << 1;
+        }
         data[13] = 0x01;
         // control + PID
         data[14] = 0x03;
         data[15] = 0xF0;
         // info: fill with 'X'
         let mut i = 16;
-        while i < TOTAL { data[i] = b'X'; i += 1; }
-        assert_eq!(Frame::try_parse(&data).unwrap_err(), FrameError::InfoTooLong);
+        while i < TOTAL {
+            data[i] = b'X';
+            i += 1;
+        }
+        assert_eq!(
+            Frame::try_parse(&data).unwrap_err(),
+            FrameError::InfoTooLong
+        );
     }
 
     #[test]
@@ -294,10 +320,14 @@ mod tests {
         // Build a minimal valid frame: dest(7) + src(7) + control + PID + info
         let mut data = [0u8; 20];
         // dest
-        for i in 0..6 { data[i] = b'C' << 1; }
+        for i in 0..6 {
+            data[i] = b'C' << 1;
+        }
         data[6] = 0x00;
         // src (last address)
-        for i in 7..13 { data[i] = b'D' << 1; }
+        for i in 7..13 {
+            data[i] = b'D' << 1;
+        }
         data[13] = 0x01;
         // control + PID
         data[14] = 0x03;
@@ -316,9 +346,13 @@ mod tests {
         assert!(Frame::parse(&[0u8; 10]).is_none());
         // Valid: parse returns Some
         let mut data = [0u8; 16];
-        for i in 0..6 { data[i] = b'A' << 1; }
+        for i in 0..6 {
+            data[i] = b'A' << 1;
+        }
         data[6] = 0x00;
-        for i in 7..13 { data[i] = b'B' << 1; }
+        for i in 7..13 {
+            data[i] = b'B' << 1;
+        }
         data[13] = 0x01;
         data[14] = 0x03;
         data[15] = 0xF0;

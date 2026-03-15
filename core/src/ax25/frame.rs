@@ -4,8 +4,8 @@
 //! any sequence of five consecutive 1-bits is followed by a stuffed 0-bit
 //! to prevent false flag detection. The receiver must remove these stuffed bits.
 
-use crate::MAX_FRAME_LEN;
 use super::Address;
+use crate::MAX_FRAME_LEN;
 
 /// Maximum number of bits in an encoded HDLC frame
 const MAX_ENCODED_BITS: usize = 4096;
@@ -95,11 +95,7 @@ fn emit_flag(frame: &mut EncodedFrame) {
 ///
 /// Returns the raw frame bytes (address + control + PID + info) in a fixed-size buffer,
 /// along with the number of valid bytes.
-pub fn build_test_frame(
-    src: &str,
-    dest: &str,
-    info: &[u8],
-) -> ([u8; MAX_FRAME_LEN], usize) {
+pub fn build_test_frame(src: &str, dest: &str, info: &[u8]) -> ([u8; MAX_FRAME_LEN], usize) {
     let mut buf = [0u8; MAX_FRAME_LEN];
     let mut pos = 0;
 

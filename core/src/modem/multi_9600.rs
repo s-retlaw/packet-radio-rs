@@ -20,7 +20,7 @@ use super::demod_9600::*;
 use super::fixed_vec::FixedVec;
 use super::frame_output::FrameOutputBuffer;
 use super::hdlc_bank::{AnyHdlc, HdlcBank};
-use super::{DedupRing, DedupAction};
+use super::{DedupAction, DedupRing};
 
 #[cfg(feature = "attribution")]
 extern crate alloc;
@@ -143,20 +143,32 @@ impl Multi9600Decoder {
     }
 
     /// Push a Direwolf decoder and record its attribution label.
-    fn push_dw(&mut self, dw: Demod9600Direwolf, #[cfg(feature = "attribution")] label: &'static str) {
+    fn push_dw(
+        &mut self,
+        dw: Demod9600Direwolf,
+        #[cfg(feature = "attribution")] label: &'static str,
+    ) {
         let idx = self.decoders.len();
         self.decoders.push(Algo9600::Direwolf(dw));
         #[cfg(feature = "attribution")]
-        { self.labels[idx] = label; }
+        {
+            self.labels[idx] = label;
+        }
         let _ = idx;
     }
 
     /// Push a Gardner decoder and record its attribution label.
-    fn push_gardner(&mut self, g: Demod9600Gardner, #[cfg(feature = "attribution")] label: &'static str) {
+    fn push_gardner(
+        &mut self,
+        g: Demod9600Gardner,
+        #[cfg(feature = "attribution")] label: &'static str,
+    ) {
         let idx = self.decoders.len();
         self.decoders.push(Algo9600::Gardner(g));
         #[cfg(feature = "attribution")]
-        { self.labels[idx] = label; }
+        {
+            self.labels[idx] = label;
+        }
         let _ = idx;
     }
 
@@ -252,16 +264,16 @@ impl Multi9600Decoder {
         match (cutoff, threshold) {
             (5400, -660) => "DW:5400/2nd/th-660",
             (5400, -330) => "DW:5400/2nd/th-330",
-            (5400, _)    => "DW:5400/2nd/th0",
+            (5400, _) => "DW:5400/2nd/th0",
             (6000, -660) => "DW:6000/2nd/th-660",
             (6000, -330) => "DW:6000/2nd/th-330",
-            (6000, _)    => "DW:6000/2nd/th0",
+            (6000, _) => "DW:6000/2nd/th0",
             (6600, -660) => "DW:6600/2nd/th-660",
             (6600, -330) => "DW:6600/2nd/th-330",
-            (6600, _)    => "DW:6600/2nd/th0",
-            (_, -660)    => "DW:7200/2nd/th-660",
-            (_, -330)    => "DW:7200/2nd/th-330",
-            _            => "DW:7200/2nd/th0",
+            (6600, _) => "DW:6600/2nd/th0",
+            (_, -660) => "DW:7200/2nd/th-660",
+            (_, -330) => "DW:7200/2nd/th-330",
+            _ => "DW:7200/2nd/th0",
         }
     }
 
@@ -269,14 +281,14 @@ impl Multi9600Decoder {
     fn dw_label_4th(cutoff: u32, threshold: i16) -> &'static str {
         match (cutoff, threshold) {
             (5400, -330) => "DW:5400/4th/th-330",
-            (5400, 0)    => "DW:5400/4th/th0",
-            (5400, _)    => "DW:5400/4th/th+330",
+            (5400, 0) => "DW:5400/4th/th0",
+            (5400, _) => "DW:5400/4th/th+330",
             (6600, -330) => "DW:6600/4th/th-330",
-            (6600, 0)    => "DW:6600/4th/th0",
-            (6600, _)    => "DW:6600/4th/th+330",
-            (_, -330)    => "DW:7200/4th/th-330",
-            (_, 0)       => "DW:7200/4th/th0",
-            _            => "DW:7200/4th/th+330",
+            (6600, 0) => "DW:6600/4th/th0",
+            (6600, _) => "DW:6600/4th/th+330",
+            (_, -330) => "DW:7200/4th/th-330",
+            (_, 0) => "DW:7200/4th/th0",
+            _ => "DW:7200/4th/th+330",
         }
     }
 
@@ -284,8 +296,8 @@ impl Multi9600Decoder {
     fn dw_label_timing(cutoff: u32, _cascaded: bool, threshold: i16) -> &'static str {
         match (cutoff, threshold) {
             (6000, -660) => "DW:6000/2nd/t1/th-660",
-            (6000, _)    => "DW:6000/2nd/t1/th-330",
-            (_, _)       => "DW:6600/2nd/t1/th-330",
+            (6000, _) => "DW:6000/2nd/t1/th-330",
+            (_, _) => "DW:6600/2nd/t1/th-330",
         }
     }
 
@@ -294,10 +306,10 @@ impl Multi9600Decoder {
         match (locked, threshold) {
             (228, -660) => "G:i228/2nd/th-660",
             (228, -330) => "G:i228/2nd/th-330",
-            (228, _)    => "G:i228/2nd/th0",
-            (_, -660)   => "G:i180/2nd/th-660",
-            (_, -330)   => "G:i180/2nd/th-330",
-            _           => "G:i180/2nd/th0",
+            (228, _) => "G:i228/2nd/th0",
+            (_, -660) => "G:i180/2nd/th-660",
+            (_, -330) => "G:i180/2nd/th-330",
+            _ => "G:i180/2nd/th0",
         }
     }
 
@@ -305,9 +317,9 @@ impl Multi9600Decoder {
     fn gardner_label_4th(locked: i32, threshold: i16) -> &'static str {
         match (locked, threshold) {
             (228, -660) => "G:i228/4th/4800/th-660",
-            (228, _)    => "G:i228/4th/4800/th-330",
-            (_, -660)   => "G:i180/4th/4800/th-660",
-            _           => "G:i180/4th/4800/th-330",
+            (228, _) => "G:i228/4th/4800/th-330",
+            (_, -660) => "G:i180/4th/4800/th-660",
+            _ => "G:i180/4th/4800/th-330",
         }
     }
 
@@ -333,7 +345,12 @@ impl Multi9600Decoder {
         self.samples_processed += samples.len() as u64;
         let mut output = Multi9600Output::new();
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; MAX_SYMBOLS];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; MAX_SYMBOLS];
 
         for decoder_idx in 0..self.decoders.len() {
             let n_syms = self.decoders[decoder_idx].process_samples(samples, &mut symbols);
@@ -361,7 +378,8 @@ impl Multi9600Decoder {
                     let start = sym.sample_idx as u64;
                     match self.dedup.check(hash, start, cost) {
                         DedupAction::New => {
-                            if let Some(slot) = output.push_with_cost(&frame_buf[..frame_len], cost) {
+                            if let Some(slot) = output.push_with_cost(&frame_buf[..frame_len], cost)
+                            {
                                 self.dedup.record_with_info(hash, start, cost, slot);
                                 self.total_unique += 1;
                             }
@@ -492,7 +510,12 @@ impl Single9600Decoder {
     /// Returns all decoded frames (up to 4) found in this batch.
     pub fn process_samples(&mut self, samples: &[i16]) -> Single9600Output {
         let mut output = Single9600Output::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; MAX_SYMBOLS];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; MAX_SYMBOLS];
 
         let n_syms = match &mut self.algo {
             SingleAlgo::Direwolf(d) => d.process_samples(samples, &mut symbols),
@@ -579,73 +602,112 @@ impl Mini9600Decoder {
     fn build_low_sps(config: Demod9600Config, d: &mut FixedVec<Algo9600, MINI_9600_DECODERS>) {
         d.push(Algo9600::Direwolf(
             Demod9600Direwolf::new(config)
-                .with_lpf_cutoff(6000).with_threshold(-330).with_bad_threshold(5),
+                .with_lpf_cutoff(6000)
+                .with_threshold(-330)
+                .with_bad_threshold(5),
         ));
         d.push(Algo9600::Direwolf(
             Demod9600Direwolf::new(config)
-                .with_lpf_cutoff(6600).with_threshold(-660).with_bad_threshold(5),
+                .with_lpf_cutoff(6600)
+                .with_threshold(-660)
+                .with_bad_threshold(5),
         ));
         d.push(Algo9600::Direwolf(
             Demod9600Direwolf::new(config)
-                .with_cascaded_lpf_cutoff(6600).with_threshold(0).with_bad_threshold(5),
+                .with_cascaded_lpf_cutoff(6600)
+                .with_threshold(0)
+                .with_bad_threshold(5),
         ));
         d.push(Algo9600::Direwolf(
             Demod9600Direwolf::new(config)
-                .with_lpf_cutoff(6000).with_threshold(-330).with_bad_threshold(5).with_good_threshold(8),
+                .with_lpf_cutoff(6000)
+                .with_threshold(-330)
+                .with_bad_threshold(5)
+                .with_good_threshold(8),
         ));
         d.push(Algo9600::Direwolf(
             Demod9600Direwolf::new(config)
-                .with_lpf_cutoff(6600).with_threshold(-660).with_bad_threshold(5).with_good_threshold(8),
+                .with_lpf_cutoff(6600)
+                .with_threshold(-660)
+                .with_bad_threshold(5)
+                .with_good_threshold(8),
         ));
         d.push(Algo9600::Gardner(
             Demod9600Gardner::new(config)
-                .with_lpf_cutoff(4800).with_inertia(180, 100).with_threshold(-660).with_bad_threshold(5),
+                .with_lpf_cutoff(4800)
+                .with_inertia(180, 100)
+                .with_threshold(-660)
+                .with_bad_threshold(5),
         ));
     }
 
     /// Build decoder combo for 4.3-4.7 sps (44100 Hz).
     fn build_mid_sps(config: Demod9600Config, d: &mut FixedVec<Algo9600, MINI_9600_DECODERS>) {
         d.push(Algo9600::Direwolf(
-            Demod9600Direwolf::new(config).with_lpf_cutoff(6600).with_threshold(-660),
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(6600)
+                .with_threshold(-660),
         ));
         d.push(Algo9600::Direwolf(
-            Demod9600Direwolf::new(config).with_cascaded_lpf_cutoff(6600).with_threshold(-330),
+            Demod9600Direwolf::new(config)
+                .with_cascaded_lpf_cutoff(6600)
+                .with_threshold(-330),
         ));
         d.push(Algo9600::Direwolf(
-            Demod9600Direwolf::new(config).with_lpf_cutoff(5400).with_threshold(330),
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(5400)
+                .with_threshold(330),
         ));
         d.push(Algo9600::Direwolf(
-            Demod9600Direwolf::new(config).with_lpf_cutoff(6000).with_threshold(-660),
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(6000)
+                .with_threshold(-660),
         ));
         d.push(Algo9600::Direwolf(
-            Demod9600Direwolf::new(config).with_lpf_cutoff(7200).with_threshold(-660),
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(7200)
+                .with_threshold(-660),
         ));
         d.push(Algo9600::Gardner(
             Demod9600Gardner::new(config)
-                .with_lpf_cutoff(4800).with_inertia(180, 100).with_threshold(-660),
+                .with_lpf_cutoff(4800)
+                .with_inertia(180, 100)
+                .with_threshold(-660),
         ));
     }
 
     /// Build default decoder combo for >4.7 sps (48000+ Hz).
     fn build_default(config: Demod9600Config, d: &mut FixedVec<Algo9600, MINI_9600_DECODERS>) {
         d.push(Algo9600::Direwolf(
-            Demod9600Direwolf::new(config).with_lpf_cutoff(6000).with_threshold(-660),
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(6000)
+                .with_threshold(-660),
         ));
         d.push(Algo9600::Direwolf(
-            Demod9600Direwolf::new(config).with_cascaded_lpf_cutoff(6600).with_threshold(330),
+            Demod9600Direwolf::new(config)
+                .with_cascaded_lpf_cutoff(6600)
+                .with_threshold(330),
         ));
         d.push(Algo9600::Direwolf(
-            Demod9600Direwolf::new(config).with_lpf_cutoff(6600).with_threshold(-660),
+            Demod9600Direwolf::new(config)
+                .with_lpf_cutoff(6600)
+                .with_threshold(-660),
         ));
         d.push(Algo9600::Direwolf(
-            Demod9600Direwolf::new(config).with_cascaded_lpf_cutoff(5400).with_threshold(-660),
+            Demod9600Direwolf::new(config)
+                .with_cascaded_lpf_cutoff(5400)
+                .with_threshold(-660),
         ));
         d.push(Algo9600::Direwolf(
-            Demod9600Direwolf::new(config).with_cascaded_lpf_cutoff(4800).with_threshold(-330),
+            Demod9600Direwolf::new(config)
+                .with_cascaded_lpf_cutoff(4800)
+                .with_threshold(-330),
         ));
         d.push(Algo9600::Gardner(
             Demod9600Gardner::new(config)
-                .with_lpf_cutoff(4800).with_inertia(180, 100).with_threshold(-660),
+                .with_lpf_cutoff(4800)
+                .with_inertia(180, 100)
+                .with_threshold(-660),
         ));
     }
 
@@ -653,27 +715,40 @@ impl Mini9600Decoder {
     fn build_high_sps(config: Demod9600Config, d: &mut FixedVec<Algo9600, MINI_9600_DECODERS>) {
         d.push(Algo9600::Direwolf(
             Demod9600Direwolf::new(config)
-                .with_cascaded_lpf_cutoff(6600).with_threshold(-660).with_bad_threshold(4),
+                .with_cascaded_lpf_cutoff(6600)
+                .with_threshold(-660)
+                .with_bad_threshold(4),
         ));
         d.push(Algo9600::Direwolf(
             Demod9600Direwolf::new(config)
-                .with_cascaded_lpf_cutoff(6600).with_threshold(0).with_bad_threshold(4),
+                .with_cascaded_lpf_cutoff(6600)
+                .with_threshold(0)
+                .with_bad_threshold(4),
         ));
         d.push(Algo9600::Direwolf(
             Demod9600Direwolf::new(config)
-                .with_lpf_cutoff(6000).with_threshold(-330).with_bad_threshold(4),
+                .with_lpf_cutoff(6000)
+                .with_threshold(-330)
+                .with_bad_threshold(4),
         ));
         d.push(Algo9600::Direwolf(
             Demod9600Direwolf::new(config)
-                .with_cascaded_lpf_cutoff(7200).with_threshold(330).with_bad_threshold(4),
+                .with_cascaded_lpf_cutoff(7200)
+                .with_threshold(330)
+                .with_bad_threshold(4),
         ));
         d.push(Algo9600::Direwolf(
             Demod9600Direwolf::new(config)
-                .with_lpf_cutoff(6600).with_threshold(-660).with_bad_threshold(4),
+                .with_lpf_cutoff(6600)
+                .with_threshold(-660)
+                .with_bad_threshold(4),
         ));
         d.push(Algo9600::Gardner(
             Demod9600Gardner::new(config)
-                .with_lpf_cutoff(4800).with_inertia(180, 100).with_threshold(-660).with_bad_threshold(4),
+                .with_lpf_cutoff(4800)
+                .with_inertia(180, 100)
+                .with_threshold(-660)
+                .with_bad_threshold(4),
         ));
     }
 
@@ -682,7 +757,12 @@ impl Mini9600Decoder {
         self.samples_processed += samples.len() as u64;
         let mut output = Multi9600Output::new();
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; MAX_SYMBOLS];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; MAX_SYMBOLS];
 
         for (slot, decoder) in self.decoders.iter_mut().enumerate() {
             let n_syms = decoder.process_samples(samples, &mut symbols);
@@ -698,7 +778,9 @@ impl Mini9600Decoder {
                     let start = sym.sample_idx as u64;
                     match self.dedup.check(hash, start, cost) {
                         DedupAction::New => {
-                            if let Some(out_slot) = output.push_with_cost(&frame_buf[..frame_len], cost) {
+                            if let Some(out_slot) =
+                                output.push_with_cost(&frame_buf[..frame_len], cost)
+                            {
                                 self.dedup.record_with_info(hash, start, cost, out_slot);
                                 self.total_unique += 1;
                             }
@@ -731,16 +813,22 @@ mod tests {
         let config = Demod9600Config::default_48k();
         let decoder = Multi9600Decoder::new(config);
 
-        assert!(decoder.num_decoders() > 0,
-            "Should have active decoders, got {}", decoder.num_decoders());
+        assert!(
+            decoder.num_decoders() > 0,
+            "Should have active decoders, got {}",
+            decoder.num_decoders()
+        );
 
         #[cfg(feature = "std")]
-        assert_eq!(decoder.num_decoders(), 34,
-            "std should have 34 decoders (24 DW + 10 Gardner), got {}", decoder.num_decoders());
+        assert_eq!(
+            decoder.num_decoders(),
+            34,
+            "std should have 34 decoders (24 DW + 10 Gardner), got {}",
+            decoder.num_decoders()
+        );
 
         #[cfg(not(feature = "std"))]
-        assert_eq!(decoder.num_decoders(), 6,
-            "no_std should have 6 decoders");
+        assert_eq!(decoder.num_decoders(), 6, "no_std should have 6 decoders");
     }
 
     #[test]
@@ -772,8 +860,14 @@ mod tests {
         let data2 = b"hello world";
         let data3 = b"different data";
 
-        assert_eq!(crate::modem::frame_hash(data1), crate::modem::frame_hash(data2));
-        assert_ne!(crate::modem::frame_hash(data1), crate::modem::frame_hash(data3));
+        assert_eq!(
+            crate::modem::frame_hash(data1),
+            crate::modem::frame_hash(data2)
+        );
+        assert_ne!(
+            crate::modem::frame_hash(data1),
+            crate::modem::frame_hash(data3)
+        );
     }
 
     #[test]

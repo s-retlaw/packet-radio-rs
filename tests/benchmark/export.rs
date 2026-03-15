@@ -11,7 +11,10 @@ pub fn run_export(wav_path: &str, output_dir: &str) {
 
     let (sample_rate, samples) = match read_wav_file(wav_path) {
         Ok(v) => v,
-        Err(e) => { eprintln!("Error reading {}: {}", wav_path, e); return; }
+        Err(e) => {
+            eprintln!("Error reading {}: {}", wav_path, e);
+            return;
+        }
     };
 
     // Create output directory
@@ -25,9 +28,7 @@ pub fn run_export(wav_path: &str, output_dir: &str) {
         ("fast", Box::new(decode_fast)),
         ("dm", Box::new(decode_dm)),
         ("dm_pll", Box::new(decode_dm_pll)),
-        ("multi", Box::new(|s, sr| {
-            decode_multi(s, sr).0
-        })),
+        ("multi", Box::new(|s, sr| decode_multi(s, sr).0)),
     ];
 
     for &(name, ref decode_fn) in paths {
@@ -40,7 +41,7 @@ pub fn run_export(wav_path: &str, output_dir: &str) {
             if frame.len() >= 14 {
                 let dst = parse_callsign_tnc2(&frame[0..7], false);
                 let src = parse_callsign_tnc2(&frame[7..14], false);
-                content.push_str(&format!(" {}>{}",  src, dst));
+                content.push_str(&format!(" {}>{}", src, dst));
             }
             content.push('\n');
         }
@@ -66,7 +67,9 @@ pub fn run_export(wav_path: &str, output_dir: &str) {
 
     println!("  Frame overlap matrix:");
     print!("  {:>8}", "");
-    for &(name, _) in &sets { print!(" {:>8}", name); }
+    for &(name, _) in &sets {
+        print!(" {:>8}", name);
+    }
     println!();
 
     for &(name_a, ref set_a) in &sets {

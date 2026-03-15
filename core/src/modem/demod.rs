@@ -13,12 +13,12 @@
 //! The multi-decoder (`multi.rs`) runs multiple fast-path instances with
 //! filter and timing diversity for maximum decode performance.
 
-use super::DemodConfig;
 use super::filter::BiquadFilter;
+use super::DemodConfig;
 
 // Quality path imports
-use super::hilbert::{HilbertTransform, InstFreqDetector, hilbert_31};
 use super::adaptive::AdaptiveTracker;
+use super::hilbert::{hilbert_31, HilbertTransform, InstFreqDetector};
 
 // Delay-multiply path imports
 use super::delay_multiply::DelayMultiplyDetector;
@@ -392,7 +392,7 @@ impl FastDemodulator {
     pub fn with_pll(mut self) -> Self {
         self.pll = Some(
             ClockRecoveryPll::new_gardner(self.config.sample_rate, self.config.baud_rate, 936, 0)
-                .with_error_shift(8)
+                .with_error_shift(8),
         );
         self
     }
@@ -514,11 +514,7 @@ impl FastDemodulator {
     ///
     /// Decoded symbols are written to `symbols_out`. Returns the number
     /// of symbols produced.
-    pub fn process_samples(
-        &mut self,
-        samples: &[i16],
-        symbols_out: &mut [DemodSymbol],
-    ) -> usize {
+    pub fn process_samples(&mut self, samples: &[i16], symbols_out: &mut [DemodSymbol]) -> usize {
         let mut sym_count = 0;
         let sample_rate = self.config.sample_rate;
         let timing_baud = self.timing_baud_rate;
@@ -561,14 +557,18 @@ impl FastDemodulator {
                         let mark_hz = (adaptive.tracker.mark_freq_est >> 8) as u32;
                         let space_hz = (adaptive.tracker.space_freq_est >> 8) as u32;
                         // Only retune if estimates are reasonable (within ±200 Hz of nominal)
-                        let mark_delta = (mark_hz as i32 - self.config.mark_freq as i32).unsigned_abs();
-                        let space_delta = (space_hz as i32 - self.config.space_freq as i32).unsigned_abs();
+                        let mark_delta =
+                            (mark_hz as i32 - self.config.mark_freq as i32).unsigned_abs();
+                        let space_delta =
+                            (space_hz as i32 - self.config.space_freq as i32).unsigned_abs();
                         if mark_delta < 200 && space_delta < 200 && mark_hz > 0 && space_hz > 0 {
                             self.mark_coeff = goertzel_coeff(mark_hz, sample_rate);
                             self.space_coeff = goertzel_coeff(space_hz, sample_rate);
                             // Reset Goertzel accumulators — old state is invalid under new coefficients
-                            self.mark_s1 = 0; self.mark_s2 = 0;
-                            self.space_s1 = 0; self.space_s2 = 0;
+                            self.mark_s1 = 0;
+                            self.mark_s2 = 0;
+                            self.space_s1 = 0;
+                            self.space_s2 = 0;
                         }
                         adaptive.retuned = true;
                     }
@@ -585,7 +585,8 @@ impl FastDemodulator {
 
             // 2. Apply window (if enabled) and Goertzel iteration
             let sw = if self.window_len > 0 {
-                let idx = (self.sym_sample_idx as usize).min(self.window_len.saturating_sub(1) as usize);
+                let idx =
+                    (self.sym_sample_idx as usize).min(self.window_len.saturating_sub(1) as usize);
                 self.sym_sample_idx = self.sym_sample_idx.saturating_add(1);
                 (s * self.window_q8[idx] as i64) >> 8
             } else {
@@ -625,11 +626,9 @@ impl FastDemodulator {
 
             if boundary {
                 // 4. Goertzel energy comparison for hard bit decision
-                let mark_energy = self.mark_s1 * self.mark_s1
-                    + self.mark_s2 * self.mark_s2
+                let mark_energy = self.mark_s1 * self.mark_s1 + self.mark_s2 * self.mark_s2
                     - ((self.mark_coeff as i64 * self.mark_s1 * self.mark_s2) >> 14);
-                let space_energy = self.space_s1 * self.space_s1
-                    + self.space_s2 * self.space_s2
+                let space_energy = self.space_s1 * self.space_s1 + self.space_s2 * self.space_s2
                     - ((self.space_coeff as i64 * self.space_s1 * self.space_s2) >> 14);
 
                 // 4b. Early/late gate timing correction
@@ -637,10 +636,12 @@ impl FastDemodulator {
                     // Compute "early" energy (from 1 sample before boundary)
                     let early_mark = self.early_mark_s1 * self.early_mark_s1
                         + self.early_mark_s2 * self.early_mark_s2
-                        - ((self.mark_coeff as i64 * self.early_mark_s1 * self.early_mark_s2) >> 14);
+                        - ((self.mark_coeff as i64 * self.early_mark_s1 * self.early_mark_s2)
+                            >> 14);
                     let early_space = self.early_space_s1 * self.early_space_s1
                         + self.early_space_s2 * self.early_space_s2
-                        - ((self.space_coeff as i64 * self.early_space_s1 * self.early_space_s2) >> 14);
+                        - ((self.space_coeff as i64 * self.early_space_s1 * self.early_space_s2)
+                            >> 14);
 
                     let on_time_total = (mark_energy + space_energy) >> 20;
                     let early_total = (early_mark + early_space) >> 20;
@@ -684,7 +685,8 @@ impl FastDemodulator {
                     // Cross-multiply: mark/mark_peak > space/space_peak
                     mark_s * s_peak > space_s * m_peak
                 } else {
-                    mark_energy * (UNITY_GAIN_Q8 as i64) > space_energy * (self.space_gain_q8 as i64)
+                    mark_energy * (UNITY_GAIN_Q8 as i64)
+                        > space_energy * (self.space_gain_q8 as i64)
                 };
 
                 // 5. NRZI decode
@@ -699,7 +701,8 @@ impl FastDemodulator {
                         self.preamble_flag_count = self.preamble_flag_count.saturating_add(1);
                         self.symbols_since_last_flag = 0;
                     } else {
-                        self.symbols_since_last_flag = self.symbols_since_last_flag.saturating_add(1);
+                        self.symbols_since_last_flag =
+                            self.symbols_since_last_flag.saturating_add(1);
                     }
                 }
 
@@ -721,7 +724,8 @@ impl FastDemodulator {
                         && self.preamble_space_count > 0
                     {
                         let mark_avg = self.preamble_mark_energy / self.preamble_mark_count as i64;
-                        let space_avg = self.preamble_space_energy / self.preamble_space_count as i64;
+                        let space_avg =
+                            self.preamble_space_energy / self.preamble_space_count as i64;
                         if space_avg > 0 {
                             let measured = (mark_avg * UNITY_GAIN_Q8 as i64) / space_avg;
                             // Only increase gain (compensate de-emphasis), never decrease.
@@ -738,8 +742,7 @@ impl FastDemodulator {
                                 if measured > 768 {
                                     // Conservative alpha: scale gently from the excess
                                     // ratio 3.0→alpha~2560, ratio 5.0→alpha~5120
-                                    let alpha = ((measured - 768) * 10)
-                                        .clamp(0, 12000) as i16;
+                                    let alpha = ((measured - 768) * 10).clamp(0, 12000) as i16;
                                     self.preemph_alpha_q15 = alpha;
                                 }
                             }
@@ -763,9 +766,15 @@ impl FastDemodulator {
                         // SoftHdlcDecoder targets genuinely uncertain bits.
                         if !decoded_bit {
                             confidence >>= 1;
-                            if confidence == 0 { confidence = 1; }
+                            if confidence == 0 {
+                                confidence = 1;
+                            }
                         }
-                        if decoded_bit { confidence } else { -confidence }
+                        if decoded_bit {
+                            confidence
+                        } else {
+                            -confidence
+                        }
                     } else {
                         0
                     }
@@ -804,31 +813,31 @@ pub fn goertzel_coeff(freq: u32, sample_rate: u32) -> i32 {
     // floating-point at runtime.
     // For other frequencies, we precompute at initialization time.
     match (freq, sample_rate) {
-        (1200, 11025) => 25328,  // 2·cos(2π·1200/11025) × 16384
-        (2200, 11025) => 10126,  // 2·cos(2π·2200/11025) × 16384
-        (1200, 22050) => 30870,  // 2·cos(2π·1200/22050) × 16384
-        (2200, 22050) => 26537,  // 2·cos(2π·2200/22050) × 16384
-        (1200, 44100) => 32290,  // 2·cos(2π·1200/44100) × 16384
-        (2200, 44100) => 31171,  // 2·cos(2π·2200/44100) × 16384
-        (1200, 26400) => 31441,  // 2·cos(2π·1200/26400) × 16384
-        (2200, 26400) => 28378,  // 2·cos(2π·2200/26400) × 16384 = √3 × 16384
-        (1200, 13200) => 27566,  // 2·cos(2π·1200/13200) × 16384
-        (2200, 13200) => 16384,  // 2·cos(2π·2200/13200) × 16384 = 1.0 × 16384
-        (1200, 48000) => 32365,  // 2·cos(2π·1200/48000) × 16384
-        (2200, 48000) => 31419,  // 2·cos(2π·2200/48000) × 16384
-        (1200, 12000) => 26510,  // 2·cos(2π·1200/12000) × 16384
-        (2200, 12000) => 13328,  // 2·cos(2π·2200/12000) × 16384
+        (1200, 11025) => 25328, // 2·cos(2π·1200/11025) × 16384
+        (2200, 11025) => 10126, // 2·cos(2π·2200/11025) × 16384
+        (1200, 22050) => 30870, // 2·cos(2π·1200/22050) × 16384
+        (2200, 22050) => 26537, // 2·cos(2π·2200/22050) × 16384
+        (1200, 44100) => 32290, // 2·cos(2π·1200/44100) × 16384
+        (2200, 44100) => 31171, // 2·cos(2π·2200/44100) × 16384
+        (1200, 26400) => 31441, // 2·cos(2π·1200/26400) × 16384
+        (2200, 26400) => 28378, // 2·cos(2π·2200/26400) × 16384 = √3 × 16384
+        (1200, 13200) => 27566, // 2·cos(2π·1200/13200) × 16384
+        (2200, 13200) => 16384, // 2·cos(2π·2200/13200) × 16384 = 1.0 × 16384
+        (1200, 48000) => 32365, // 2·cos(2π·1200/48000) × 16384
+        (2200, 48000) => 31419, // 2·cos(2π·2200/48000) × 16384
+        (1200, 12000) => 26510, // 2·cos(2π·1200/12000) × 16384
+        (2200, 12000) => 13328, // 2·cos(2π·2200/12000) × 16384
         // 300 baud: mark=1600 Hz, space=1800 Hz
-        (1600, 8000) => 10126,   // 2·cos(2π·1600/8000) × 16384
-        (1800, 8000) => 5126,    // 2·cos(2π·1800/8000) × 16384
-        (1600, 11025) => 20063,  // 2·cos(2π·1600/11025) × 16384
-        (1800, 11025) => 16987,  // 2·cos(2π·1800/11025) × 16384
-        (1600, 22050) => 29421,  // 2·cos(2π·1600/22050) × 16384
-        (1800, 22050) => 28551,  // 2·cos(2π·1800/22050) × 16384
-        (1600, 44100) => 31920,  // 2·cos(2π·1600/44100) × 16384
-        (1800, 44100) => 31696,  // 2·cos(2π·1800/44100) × 16384
-        (1600, 48000) => 32052,  // 2·cos(2π·1600/48000) × 16384
-        (1800, 48000) => 31863,  // 2·cos(2π·1800/48000) × 16384
+        (1600, 8000) => 10126,  // 2·cos(2π·1600/8000) × 16384
+        (1800, 8000) => 5126,   // 2·cos(2π·1800/8000) × 16384
+        (1600, 11025) => 20063, // 2·cos(2π·1600/11025) × 16384
+        (1800, 11025) => 16987, // 2·cos(2π·1800/11025) × 16384
+        (1600, 22050) => 29421, // 2·cos(2π·1600/22050) × 16384
+        (1800, 22050) => 28551, // 2·cos(2π·1800/22050) × 16384
+        (1600, 44100) => 31920, // 2·cos(2π·1600/44100) × 16384
+        (1800, 44100) => 31696, // 2·cos(2π·1800/44100) × 16384
+        (1600, 48000) => 32052, // 2·cos(2π·1600/48000) × 16384
+        (1800, 48000) => 31863, // 2·cos(2π·1800/48000) × 16384
         _ => {
             // Approximate using integer arithmetic.
             // For unsupported rates, fall back to a rough calculation.
@@ -847,7 +856,7 @@ pub fn goertzel_coeff(freq: u32, sample_rate: u32) -> i32 {
                 // pi_q20 = π × 2^20 ≈ 3294199
                 const PI_Q20: i64 = 3_294_199;
                 let w_q20 = 2 * PI_Q20 * freq as i64 / sample_rate as i64; // 2π·f/Fs in Q20
-                // w² in Q20 (shift down 20 to stay in Q20)
+                                                                           // w² in Q20 (shift down 20 to stay in Q20)
                 let w2 = (w_q20 * w_q20) >> 20;
                 // w⁴ in Q20
                 let w4 = (w2 * w2) >> 20;
@@ -1059,11 +1068,7 @@ impl QualityDemodulator {
     ///
     /// Decoded symbols include soft (confidence) information that can be
     /// used by the SoftHdlcDecoder for bit-flip error recovery.
-    pub fn process_samples(
-        &mut self,
-        samples: &[i16],
-        symbols_out: &mut [DemodSymbol],
-    ) -> usize {
+    pub fn process_samples(&mut self, samples: &[i16], symbols_out: &mut [DemodSymbol]) -> usize {
         let mut sym_count = 0;
         let sample_rate = self.config.sample_rate;
         let baud_rate = self.config.baud_rate;
@@ -1102,8 +1107,10 @@ impl QualityDemodulator {
                     self.mark_coeff = goertzel_coeff(mark_hz, sample_rate);
                     self.space_coeff = goertzel_coeff(space_hz, sample_rate);
                     // Reset Goertzel accumulators — old state is invalid under new coefficients
-                    self.mark_s1 = 0; self.mark_s2 = 0;
-                    self.space_s1 = 0; self.space_s2 = 0;
+                    self.mark_s1 = 0;
+                    self.mark_s2 = 0;
+                    self.space_s1 = 0;
+                    self.space_s2 = 0;
                 }
                 self.retuned = true;
             }
@@ -1114,14 +1121,13 @@ impl QualityDemodulator {
                 self.bit_phase -= sample_rate;
 
                 // 5. Goertzel energy comparison for hard bit decision
-                let mark_energy = self.mark_s1 * self.mark_s1
-                    + self.mark_s2 * self.mark_s2
+                let mark_energy = self.mark_s1 * self.mark_s1 + self.mark_s2 * self.mark_s2
                     - ((self.mark_coeff as i64 * self.mark_s1 * self.mark_s2) >> 14);
-                let space_energy = self.space_s1 * self.space_s1
-                    + self.space_s2 * self.space_s2
+                let space_energy = self.space_s1 * self.space_s1 + self.space_s2 * self.space_s2
                     - ((self.space_coeff as i64 * self.space_s1 * self.space_s2) >> 14);
 
-                let raw_bit = mark_energy * (UNITY_GAIN_Q8 as i64) > space_energy * (self.space_gain_q8 as i64);
+                let raw_bit = mark_energy * (UNITY_GAIN_Q8 as i64)
+                    > space_energy * (self.space_gain_q8 as i64);
 
                 // 6. Hybrid LLR: combine energy-based and frequency-based confidence
                 // Energy confidence from Goertzel ratio
@@ -1156,7 +1162,8 @@ impl QualityDemodulator {
                         self.preamble_flag_count = self.preamble_flag_count.saturating_add(1);
                         self.symbols_since_last_flag = 0;
                     } else {
-                        self.symbols_since_last_flag = self.symbols_since_last_flag.saturating_add(1);
+                        self.symbols_since_last_flag =
+                            self.symbols_since_last_flag.saturating_add(1);
                     }
 
                     if self.preamble_flag_count >= 1 && self.symbols_since_last_flag <= 8 {
@@ -1175,7 +1182,8 @@ impl QualityDemodulator {
                         && self.preamble_space_count > 0
                     {
                         let mark_avg = self.preamble_mark_energy / self.preamble_mark_count as i64;
-                        let space_avg = self.preamble_space_energy / self.preamble_space_count as i64;
+                        let space_avg =
+                            self.preamble_space_energy / self.preamble_space_count as i64;
                         if space_avg > 0 {
                             let measured = (mark_avg * UNITY_GAIN_Q8 as i64) / space_avg;
                             // Only increase gain (compensate de-emphasis), never decrease.
@@ -1200,7 +1208,11 @@ impl QualityDemodulator {
                     hybrid_conf
                 };
 
-                let decoded_llr = if decoded_bit { adj_conf as i8 } else { -(adj_conf as i8) };
+                let decoded_llr = if decoded_bit {
+                    adj_conf as i8
+                } else {
+                    -(adj_conf as i8)
+                };
 
                 if sym_count < symbols_out.len() {
                     symbols_out[sym_count] = DemodSymbol {
@@ -1219,7 +1231,6 @@ impl QualityDemodulator {
                 self.space_s2 = 0;
                 self.freq_accum = 0;
                 self.freq_count = 0;
-
             }
         }
 
@@ -1308,11 +1319,11 @@ impl DmDemodulator {
         if config.baud_rate == 300 {
             // 300 baud: τ ≈ 1/(1600+1800) ≈ 294 μs
             match config.sample_rate {
-                8000 => 2,    // 250 μs
-                11025 => 3,   // 272 μs
-                22050 => 6,   // 272 μs
-                44100 => 13,  // 295 μs
-                48000 => 14,  // 292 μs
+                8000 => 2,   // 250 μs
+                11025 => 3,  // 272 μs
+                22050 => 6,  // 272 μs
+                44100 => 13, // 295 μs
+                48000 => 14, // 292 μs
                 _ => {
                     let approx = config.sample_rate / 3400;
                     approx.clamp(1, super::MAX_DELAY as u32 - 1) as usize
@@ -1320,17 +1331,21 @@ impl DmDemodulator {
             }
         } else {
             match config.sample_rate {
-                11025 => 2,  // 181 μs: mark→+0.20, space→−0.81, 2/9=22%
-                13200 => 2,  // 152 μs: mark→+0.36, space→−0.54, 2/11=18%
-                22050 => 3,  // 136 μs: mark→+0.52, space→−0.30, 3/18=16%
-                26400 => 4,  // 152 μs: mark→+0.36, space→−0.54, 4/22=18%
-                44100 => 7,  // 159 μs: mark→+0.37, space→−0.58, 7/37=19%
-                48000 => 8,  // 167 μs: mark→+0.31, space→−0.67, 8/40=20%
+                11025 => 2, // 181 μs: mark→+0.20, space→−0.81, 2/9=22%
+                13200 => 2, // 152 μs: mark→+0.36, space→−0.54, 2/11=18%
+                22050 => 3, // 136 μs: mark→+0.52, space→−0.30, 3/18=16%
+                26400 => 4, // 152 μs: mark→+0.36, space→−0.54, 4/22=18%
+                44100 => 7, // 159 μs: mark→+0.37, space→−0.58, 7/37=19%
+                48000 => 8, // 167 μs: mark→+0.31, space→−0.67, 8/40=20%
                 _ => {
                     let approx = config.sample_rate / 6000;
-                    if approx < 1 { 1 }
-                    else if approx >= super::MAX_DELAY as u32 { super::MAX_DELAY - 1 }
-                    else { approx as usize }
+                    if approx < 1 {
+                        1
+                    } else if approx >= super::MAX_DELAY as u32 {
+                        super::MAX_DELAY - 1
+                    } else {
+                        approx as usize
+                    }
                 }
             }
         }
@@ -1347,9 +1362,17 @@ impl DmDemodulator {
         // For common rates:
         match (delay, sample_rate) {
             // dm_delay (short, clean signals): all mark→positive
-            (1, _) | (2, 11025) | (2, 13200) | (3, 22050) | (4, 26400) | (7, 44100) | (8, 48000) => false,
+            (1, _)
+            | (2, 11025)
+            | (2, 13200)
+            | (3, 22050)
+            | (4, 26400)
+            | (7, 44100)
+            | (8, 48000) => false,
             // dm_delay_filtered (long, real-world): all mark→positive
-            (8, 11025) | (10, 13200) | (16, 22050) | (19, 26400) | (31, 44100) | (31, 48000) => false,
+            (8, 11025) | (10, 13200) | (16, 22050) | (19, 26400) | (31, 44100) | (31, 48000) => {
+                false
+            }
             // d=5 at 11025 (alt delay): mark→negative
             (5, 11025) | (6, 13200) | (10, 22050) | (12, 26400) | (20, 44100) => true,
             // General case: approximate using integer check
@@ -1378,12 +1401,12 @@ impl DmDemodulator {
     /// leaving a stable discriminator output over each symbol.
     fn dm_delay_filtered(sample_rate: u32) -> usize {
         match sample_rate {
-            11025 => 8,   // 726 μs: mark→+0.66, space→−0.85, sep=1.51
-            13200 => 10,  // 758 μs: ~1 symbol at 13200 Hz (11 sps)
-            22050 => 16,  // 726 μs: same τ
-            26400 => 19,  // 720 μs: ~1 symbol at 26400 Hz (22 sps)
-            44100 => 31,  // 703 μs: near MAX_DELAY limit
-            48000 => 31,  // 646 μs: near MAX_DELAY limit
+            11025 => 8,  // 726 μs: mark→+0.66, space→−0.85, sep=1.51
+            13200 => 10, // 758 μs: ~1 symbol at 13200 Hz (11 sps)
+            22050 => 16, // 726 μs: same τ
+            26400 => 19, // 720 μs: ~1 symbol at 26400 Hz (22 sps)
+            44100 => 31, // 703 μs: near MAX_DELAY limit
+            48000 => 31, // 646 μs: near MAX_DELAY limit
             _ => {
                 // τ ≈ 1/baud_rate ≈ 833μs → delay ≈ sample_rate / 1200
                 let d = sample_rate as usize / 1400; // slightly shorter than 1 symbol
@@ -1470,11 +1493,11 @@ impl DmDemodulator {
         if config.baud_rate == 300 {
             // 300 baud: delay ≈ 1 symbol period = sample_rate / 300
             match config.sample_rate {
-                8000 => 27,   // 3375 μs (~1 symbol)
-                11025 => 37,  // 3356 μs (~1 symbol)
-                22050 => 37,  // 1678 μs (~half symbol, limited by MAX_DELAY)
-                44100 => 47,  // 1066 μs (~1/3 symbol, limited by MAX_DELAY)
-                48000 => 47,  // 979 μs (~1/3 symbol, limited by MAX_DELAY)
+                8000 => 27,  // 3375 μs (~1 symbol)
+                11025 => 37, // 3356 μs (~1 symbol)
+                22050 => 37, // 1678 μs (~half symbol, limited by MAX_DELAY)
+                44100 => 47, // 1066 μs (~1/3 symbol, limited by MAX_DELAY)
+                48000 => 47, // 979 μs (~1/3 symbol, limited by MAX_DELAY)
                 _ => {
                     let d = config.sample_rate as usize / 300;
                     d.clamp(1, super::MAX_DELAY - 1)
@@ -1695,11 +1718,7 @@ impl DmDemodulator {
     ///
     /// Decoded symbols are written to `symbols_out`. Returns the number
     /// of symbols produced.
-    pub fn process_samples(
-        &mut self,
-        samples: &[i16],
-        symbols_out: &mut [DemodSymbol],
-    ) -> usize {
+    pub fn process_samples(&mut self, samples: &[i16], symbols_out: &mut [DemodSymbol]) -> usize {
         let mut sym_count = 0;
         let sample_rate = self.config.sample_rate;
         let baud_rate = self.config.baud_rate;
@@ -1744,7 +1763,11 @@ impl DmDemodulator {
                     disc_out
                 };
                 // Safety: use_pll is set from self.pll.is_some() above
-                self.pll.as_mut().expect("PLL checked above").update(pll_input).is_some()
+                self.pll
+                    .as_mut()
+                    .expect("PLL checked above")
+                    .update(pll_input)
+                    .is_some()
             } else {
                 self.bit_phase += baud_rate;
                 if self.bit_phase >= sample_rate {
@@ -1779,8 +1802,7 @@ impl DmDemodulator {
                     }
                     self.symbol_count += 1;
                     if self.symbol_count > 20 {
-                        self.adaptive_threshold =
-                            (self.mark_peak + self.space_peak) / 2;
+                        self.adaptive_threshold = (self.mark_peak + self.space_peak) / 2;
                     }
                 }
 
@@ -1942,9 +1964,9 @@ impl CorrelationDemodulator {
         // Without decimation, 120 Hz LPF at 44100 Hz has b0=2 (truncates to 0).
         let (decim_factor, effective_rate) = if config.baud_rate == 300 {
             if config.sample_rate >= 44100 {
-                (4u8, config.sample_rate / 4)  // 44100→11025, 48000→12000
+                (4u8, config.sample_rate / 4) // 44100→11025, 48000→12000
             } else if config.sample_rate >= 22050 {
-                (2u8, config.sample_rate / 2)  // 22050→11025
+                (2u8, config.sample_rate / 2) // 22050→11025
             } else {
                 (1u8, config.sample_rate)
             }
@@ -1954,7 +1976,10 @@ impl CorrelationDemodulator {
 
         // Select LPF for effective (decimated) sample rate
         let lpf = super::filter::corr_lpf_for_config(
-            config.mark_freq, config.space_freq, config.baud_rate, effective_rate,
+            config.mark_freq,
+            config.space_freq,
+            config.baud_rate,
+            effective_rate,
         );
 
         Self {
@@ -1991,7 +2016,11 @@ impl CorrelationDemodulator {
     }
 
     /// Create with a custom bandpass filter and initial timing offset.
-    pub fn with_filter_and_offset(config: DemodConfig, bpf: BiquadFilter, phase_offset: u32) -> Self {
+    pub fn with_filter_and_offset(
+        config: DemodConfig,
+        bpf: BiquadFilter,
+        phase_offset: u32,
+    ) -> Self {
         let mut d = Self::new(config);
         d.bpf = bpf;
         d.bit_phase = phase_offset;
@@ -2050,8 +2079,13 @@ impl CorrelationDemodulator {
     /// mismatch), unlike the failed Goertzel+DM PLL experiments.
     pub fn with_pll(mut self) -> Self {
         self.pll = Some(
-            ClockRecoveryPll::new_gardner(self.effective_sample_rate, self.config.baud_rate, 936, 0)
-                .with_error_shift(8)
+            ClockRecoveryPll::new_gardner(
+                self.effective_sample_rate,
+                self.config.baud_rate,
+                936,
+                0,
+            )
+            .with_error_shift(8),
         );
         self
     }
@@ -2098,11 +2132,7 @@ impl CorrelationDemodulator {
     ///
     /// Decoded symbols are written to `symbols_out`. Returns the number
     /// of symbols produced.
-    pub fn process_samples(
-        &mut self,
-        samples: &[i16],
-        symbols_out: &mut [DemodSymbol],
-    ) -> usize {
+    pub fn process_samples(&mut self, samples: &[i16], symbols_out: &mut [DemodSymbol]) -> usize {
         let mut sym_count = 0;
         let baud_rate = self.config.baud_rate;
 
@@ -2187,13 +2217,14 @@ impl CorrelationDemodulator {
 
             if boundary {
                 // 5. Envelope detection: I² + Q²
-                let mark_energy = (mark_i as i64) * (mark_i as i64)
-                    + (mark_q as i64) * (mark_q as i64);
-                let space_energy = (space_i as i64) * (space_i as i64)
-                    + (space_q as i64) * (space_q as i64);
+                let mark_energy =
+                    (mark_i as i64) * (mark_i as i64) + (mark_q as i64) * (mark_q as i64);
+                let space_energy =
+                    (space_i as i64) * (space_i as i64) + (space_q as i64) * (space_q as i64);
 
                 // 6. Hard bit decision with space gain
-                let raw_bit = mark_energy * (UNITY_GAIN_Q8 as i64) > space_energy * (self.space_gain_q8 as i64);
+                let raw_bit = mark_energy * (UNITY_GAIN_Q8 as i64)
+                    > space_energy * (self.space_gain_q8 as i64);
 
                 // 7. NRZI decode
                 let decoded_bit = raw_bit == self.prev_nrzi_bit;
@@ -2207,7 +2238,8 @@ impl CorrelationDemodulator {
                         self.preamble_flag_count = self.preamble_flag_count.saturating_add(1);
                         self.symbols_since_last_flag = 0;
                     } else {
-                        self.symbols_since_last_flag = self.symbols_since_last_flag.saturating_add(1);
+                        self.symbols_since_last_flag =
+                            self.symbols_since_last_flag.saturating_add(1);
                     }
 
                     if self.preamble_flag_count >= 1 && self.symbols_since_last_flag <= 8 {
@@ -2226,7 +2258,8 @@ impl CorrelationDemodulator {
                         && self.preamble_space_count > 0
                     {
                         let mark_avg = self.preamble_mark_energy / self.preamble_mark_count as i64;
-                        let space_avg = self.preamble_space_energy / self.preamble_space_count as i64;
+                        let space_avg =
+                            self.preamble_space_energy / self.preamble_space_count as i64;
                         if space_avg > 0 {
                             let measured = (mark_avg * UNITY_GAIN_Q8 as i64) / space_avg;
                             let excess = (measured - UNITY_GAIN_Q8 as i64).max(0);
@@ -2247,7 +2280,11 @@ impl CorrelationDemodulator {
                     if total > 0 {
                         let energy_ratio = ((mark_energy - space_energy) * 127) / total;
                         let confidence = energy_ratio.unsigned_abs().clamp(1, 127) as i8;
-                        if decoded_bit { confidence } else { -confidence }
+                        if decoded_bit {
+                            confidence
+                        } else {
+                            -confidence
+                        }
                     } else {
                         0
                     }
@@ -2297,7 +2334,12 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         // Silence should produce some symbols (PLL runs, but data is garbage)
@@ -2310,7 +2352,12 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = QualityDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         assert!(n < 200);
@@ -2321,7 +2368,12 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
         let noise = [1000i16; 100];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 50];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 50];
 
         demod.process_samples(&noise, &mut symbols);
         demod.reset();
@@ -2340,7 +2392,12 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = CorrelationDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         assert!(n < 200);
@@ -2358,7 +2415,12 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = CorrelationDemodulator::new(config).with_pll();
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         // PLL should still produce symbols (at approximately baud rate)
@@ -2370,7 +2432,12 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = CorrelationDemodulator::new(config);
         let noise = [1000i16; 100];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 50];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 50];
 
         demod.process_samples(&noise, &mut symbols);
         demod.reset();
@@ -2411,7 +2478,7 @@ mod tests {
         // For mark (1200 Hz): 2·cos(2π·1200/11025) = 2·cos(0.6838) = 2·0.7732 = 1.5464
         // For space (2200 Hz): 2·cos(2π·2200/11025) = 2·cos(1.2538) = 2·0.3090 = 0.6180
         // In Q14 (×16384):
-        let mark_coeff: i32 = 25328;  // 1.5464 × 16384
+        let mark_coeff: i32 = 25328; // 1.5464 × 16384
         let space_coeff: i32 = 10126; // 0.6180 × 16384
 
         let mut mark_s1: i64 = 0;
@@ -2459,22 +2526,28 @@ mod tests {
                 let decoded_bit = raw_bit == prev_nrzi;
                 prev_nrzi = raw_bit;
                 shift_reg = (shift_reg >> 1) | if decoded_bit { 0x80 } else { 0x00 };
-                if shift_reg == 0x7E { flag_count += 1; }
+                if shift_reg == 0x7E {
+                    flag_count += 1;
+                }
                 if let Some(frame) = decoder.feed_bit(decoded_bit) {
                     assert_eq!(frame, raw, "Decoded frame doesn't match");
                     frame_found = true;
                 }
 
                 // Reset Goertzel state for next symbol
-                mark_s1 = 0; mark_s2 = 0;
-                space_s1 = 0; space_s2 = 0;
+                mark_s1 = 0;
+                mark_s2 = 0;
+                space_s1 = 0;
+                space_s2 = 0;
             }
         }
 
         if !frame_found {
             // Re-run collecting bits for comparison
-            let mut mark_s1b: i64 = 0; let mut mark_s2b: i64 = 0;
-            let mut space_s1b: i64 = 0; let mut space_s2b: i64 = 0;
+            let mut mark_s1b: i64 = 0;
+            let mut mark_s2b: i64 = 0;
+            let mut space_s1b: i64 = 0;
+            let mut space_s2b: i64 = 0;
             let mut prev2 = false;
             let mut bp2: u32 = 0;
             let mut all_bits = [false; 512];
@@ -2483,23 +2556,30 @@ mod tests {
             for i in 0..audio_len {
                 let s = audio[i] as i64;
                 let ms0 = s + ((mark_coeff as i64 * mark_s1b) >> 14) - mark_s2b;
-                mark_s2b = mark_s1b; mark_s1b = ms0;
+                mark_s2b = mark_s1b;
+                mark_s1b = ms0;
                 let ss0 = s + ((space_coeff as i64 * space_s1b) >> 14) - space_s2b;
-                space_s2b = space_s1b; space_s1b = ss0;
+                space_s2b = space_s1b;
+                space_s1b = ss0;
 
                 bp2 += baud_rate;
                 if bp2 >= sample_rate {
                     bp2 -= sample_rate;
-                    let me = mark_s1b*mark_s1b + mark_s2b*mark_s2b
+                    let me = mark_s1b * mark_s1b + mark_s2b * mark_s2b
                         - ((mark_coeff as i64 * mark_s1b * mark_s2b) >> 14);
-                    let se = space_s1b*space_s1b + space_s2b*space_s2b
+                    let se = space_s1b * space_s1b + space_s2b * space_s2b
                         - ((space_coeff as i64 * space_s1b * space_s2b) >> 14);
                     let rb = me > se;
                     let db = rb == prev2;
                     prev2 = rb;
-                    if sym2 < 512 { all_bits[sym2] = db; sym2 += 1; }
-                    mark_s1b = 0; mark_s2b = 0;
-                    space_s1b = 0; space_s2b = 0;
+                    if sym2 < 512 {
+                        all_bits[sym2] = db;
+                        sym2 += 1;
+                    }
+                    mark_s1b = 0;
+                    mark_s2b = 0;
+                    space_s1b = 0;
+                    space_s2b = 0;
                 }
             }
 
@@ -2509,11 +2589,17 @@ mod tests {
             let mut exp_len = 0;
             for _ in 0..30 {
                 for &b in &flag_bits_arr {
-                    if exp_len < 512 { expected[exp_len] = b; exp_len += 1; }
+                    if exp_len < 512 {
+                        expected[exp_len] = b;
+                        exp_len += 1;
+                    }
                 }
             }
             for j in 0..encoded.bit_count {
-                if exp_len < 512 { expected[exp_len] = encoded.bits[j] != 0; exp_len += 1; }
+                if exp_len < 512 {
+                    expected[exp_len] = encoded.bits[j] != 0;
+                    exp_len += 1;
+                }
             }
 
             let cmp = sym2.min(exp_len);
@@ -2522,7 +2608,9 @@ mod tests {
             for j in 1..cmp {
                 if all_bits[j] != expected[j] {
                     errs += 1;
-                    if errs == 1 { first_err = j; }
+                    if errs == 1 {
+                        first_err = j;
+                    }
                 }
             }
 
@@ -2536,16 +2624,27 @@ mod tests {
                 let idx = j - s;
                 act[idx] = if all_bits[j] { b'1' } else { b'0' };
                 exp[idx] = if expected[j] { b'1' } else { b'0' };
-                mrk[idx] = if all_bits[j] != expected[j] { b'^' } else { b' ' };
+                mrk[idx] = if all_bits[j] != expected[j] {
+                    b'^'
+                } else {
+                    b' '
+                };
             }
             let len = e - s;
 
-            panic!("Pipeline: {} flags, {} errors in {} bits, first at bit {}\n\
+            panic!(
+                "Pipeline: {} flags, {} errors in {} bits, first at bit {}\n\
                     Bits {}-{}: act={}\n                    exp={}\n                    err={}",
-                    flag_count, errs, cmp, first_err, s, e,
-                    core::str::from_utf8(&act[..len]).unwrap_or("?"),
-                    core::str::from_utf8(&exp[..len]).unwrap_or("?"),
-                    core::str::from_utf8(&mrk[..len]).unwrap_or("?"));
+                flag_count,
+                errs,
+                cmp,
+                first_err,
+                s,
+                e,
+                core::str::from_utf8(&act[..len]).unwrap_or("?"),
+                core::str::from_utf8(&exp[..len]).unwrap_or("?"),
+                core::str::from_utf8(&mrk[..len]).unwrap_or("?")
+            );
         }
     }
 
@@ -2556,7 +2655,8 @@ mod tests {
         use crate::modem::ModConfig;
 
         // Build a test frame
-        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test");
+        let (frame_data, frame_len) =
+            build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test");
         let raw = &frame_data[..frame_len];
 
         // HDLC encode
@@ -2588,7 +2688,12 @@ mod tests {
         // Demodulate with fast path
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 8192];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Feed demodulated bits into HDLC decoder
@@ -2604,19 +2709,23 @@ mod tests {
         }
 
         let (dec_buf, dec_len) = decoded.expect("Fast path should decode clean signal");
-        assert_eq!(&dec_buf[..dec_len], raw,
-            "Fast path decoded frame doesn't match original");
+        assert_eq!(
+            &dec_buf[..dec_len],
+            raw,
+            "Fast path decoded frame doesn't match original"
+        );
     }
 
     #[test]
     fn test_loopback_quality_path_clean() {
         use crate::ax25::frame::{build_test_frame, hdlc_encode};
         use crate::modem::afsk::AfskModulator;
-        use crate::modem::ModConfig;
         use crate::modem::soft_hdlc::SoftHdlcDecoder;
+        use crate::modem::ModConfig;
 
         // Build a test frame
-        let (frame_data, frame_len) = build_test_frame("WA1ABC", "APRS", b"=4903.50N/07201.75W>status");
+        let (frame_data, frame_len) =
+            build_test_frame("WA1ABC", "APRS", b"=4903.50N/07201.75W>status");
         let raw = &frame_data[..frame_len];
 
         // HDLC encode and modulate with preamble + trailing silence
@@ -2640,7 +2749,12 @@ mod tests {
         // Demodulate with quality path
         let config = DemodConfig::default_1200();
         let mut demod = QualityDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 8192];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Feed into soft HDLC decoder
@@ -2660,8 +2774,11 @@ mod tests {
         }
 
         let (dec_buf, dec_len) = decoded.expect("Quality path should decode clean signal");
-        assert_eq!(&dec_buf[..dec_len], raw,
-            "Quality path decoded frame doesn't match original");
+        assert_eq!(
+            &dec_buf[..dec_len],
+            raw,
+            "Quality path decoded frame doesn't match original"
+        );
     }
 
     #[test]
@@ -2670,7 +2787,8 @@ mod tests {
         use crate::modem::afsk::AfskModulator;
         use crate::modem::ModConfig;
 
-        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-AGC");
+        let (frame_data, frame_len) =
+            build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-AGC");
         let raw = &frame_data[..frame_len];
         let encoded = hdlc_encode(raw);
 
@@ -2690,7 +2808,12 @@ mod tests {
 
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config).with_agc();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 8192];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -2705,8 +2828,11 @@ mod tests {
         }
 
         let (dec_buf, dec_len) = decoded.expect("AGC fast path should decode clean signal");
-        assert_eq!(&dec_buf[..dec_len], raw,
-            "AGC fast path decoded frame doesn't match original");
+        assert_eq!(
+            &dec_buf[..dec_len],
+            raw,
+            "AGC fast path decoded frame doesn't match original"
+        );
     }
 
     #[test]
@@ -2715,7 +2841,8 @@ mod tests {
         use crate::modem::afsk::AfskModulator;
         use crate::modem::ModConfig;
 
-        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-DeEmph");
+        let (frame_data, frame_len) =
+            build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-DeEmph");
         let raw = &frame_data[..frame_len];
         let encoded = hdlc_encode(raw);
 
@@ -2750,7 +2877,12 @@ mod tests {
         // AGC decoder should succeed on de-emphasized signal
         let config = DemodConfig::default_1200();
         let mut demod_agc = FastDemodulator::new(config).with_agc();
-        let mut symbols_agc = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 8192];
+        let mut symbols_agc = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 8192];
         let num_agc = demod_agc.process_samples(&audio[..audio_len], &mut symbols_agc);
 
         let mut decoder_agc = HdlcDecoder::new();
@@ -2765,8 +2897,11 @@ mod tests {
         }
 
         let (dec_buf, dec_len) = agc_decoded.expect("AGC should decode de-emphasized signal");
-        assert_eq!(&dec_buf[..dec_len], raw,
-            "AGC decoded frame doesn't match original");
+        assert_eq!(
+            &dec_buf[..dec_len],
+            raw,
+            "AGC decoded frame doesn't match original"
+        );
     }
 
     #[test]
@@ -2807,7 +2942,12 @@ mod tests {
         // Demodulate
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 8192];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Decode
@@ -2817,14 +2957,22 @@ mod tests {
             if let Some(frame) = decoder.feed_bit(symbols[i].bit) {
                 if decoded_count < 3 {
                     let (ref raw_buf, raw_len) = raw_frames[decoded_count];
-                    assert_eq!(frame, &raw_buf[..raw_len],
-                        "Frame {} mismatch", decoded_count);
+                    assert_eq!(
+                        frame,
+                        &raw_buf[..raw_len],
+                        "Frame {} mismatch",
+                        decoded_count
+                    );
                 }
                 decoded_count += 1;
             }
         }
 
-        assert_eq!(decoded_count, 3, "Should decode all 3 frames, got {}", decoded_count);
+        assert_eq!(
+            decoded_count, 3,
+            "Should decode all 3 frames, got {}",
+            decoded_count
+        );
     }
 
     // ── DmDemodulator tests ──────────────────────────────────────────
@@ -2849,7 +2997,8 @@ mod tests {
             let mut space_audio = [0i16; 22050];
             for i in 0..num_samples {
                 let t = i as f64 / sample_rate as f64;
-                space_audio[i] = (16000.0 * (2.0 * core::f64::consts::PI * 2200.0 * t).sin()) as i16;
+                space_audio[i] =
+                    (16000.0 * (2.0 * core::f64::consts::PI * 2200.0 * t).sin()) as i16;
             }
 
             // BPF → delay-multiply with LPF → sample last output
@@ -2881,7 +3030,9 @@ mod tests {
             assert!(
                 (mark_last > 0 && space_last < 0) || (mark_last < 0 && space_last > 0),
                 "BPF+DM+LPF at {} Hz: mark_last={}, space_last={} — should have opposite polarity",
-                sample_rate, mark_last, space_last
+                sample_rate,
+                mark_last,
+                space_last
             );
         }
     }
@@ -2906,19 +3057,28 @@ mod tests {
 
         let config = DemodConfig::default_1200_22k();
         let mut demod = DmDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 256];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 256];
         let num = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut shift_reg: u8 = 0;
         let mut flag_count = 0u32;
         for i in 0..num {
             shift_reg = (shift_reg >> 1) | if symbols[i].bit { 0x80 } else { 0 };
-            if shift_reg == 0x7E { flag_count += 1; }
+            if shift_reg == 0x7E {
+                flag_count += 1;
+            }
         }
 
-        assert!(flag_count >= 5,
+        assert!(
+            flag_count >= 5,
             "DM at 22050 Hz should detect >= 5 flags from 10 flag preamble, got {}",
-            flag_count);
+            flag_count
+        );
     }
 
     #[test]
@@ -2941,7 +3101,12 @@ mod tests {
 
         let config = DemodConfig::default_1200_22k();
         let mut demod = DmDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 256];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 256];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Check for flags
@@ -2950,15 +3115,21 @@ mod tests {
         let mut bits_str = [0u8; 256];
         for i in 0..num_symbols {
             shift_reg = (shift_reg >> 1) | if symbols[i].bit { 0x80 } else { 0 };
-            if shift_reg == 0x7E { flag_count += 1; }
-            if i < 256 { bits_str[i] = if symbols[i].bit { b'1' } else { b'0' }; }
+            if shift_reg == 0x7E {
+                flag_count += 1;
+            }
+            if i < 256 {
+                bits_str[i] = if symbols[i].bit { b'1' } else { b'0' };
+            }
         }
         let show = num_symbols.min(256);
         assert!(
             flag_count >= 2,
             "DM on 5 flags at {} Hz: {} symbols, {} flags\n\
              Bits: {}",
-            sample_rate, num_symbols, flag_count,
+            sample_rate,
+            num_symbols,
+            flag_count,
             core::str::from_utf8(&bits_str[..show]).unwrap_or("?")
         );
     }
@@ -2975,7 +3146,12 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = DmDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         // Silence should produce some symbols (PLL runs), no panics/overflow
@@ -2987,7 +3163,12 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = DmDemodulator::new(config);
         let noise = [1000i16; 100];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 50];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 50];
 
         demod.process_samples(&noise, &mut symbols);
         demod.reset();
@@ -3034,7 +3215,12 @@ mod tests {
         // Demodulate with DM path at 22050 Hz
         let config = DemodConfig::default_1200_22k();
         let mut demod = DmDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 16384];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Feed demodulated bits into HDLC decoder
@@ -3057,10 +3243,18 @@ mod tests {
             let mut expected = [false; 1024];
             let mut exp_len = 0;
             for _ in 0..50 {
-                for &b in &flag_bits { if exp_len < 1024 { expected[exp_len] = b; exp_len += 1; } }
+                for &b in &flag_bits {
+                    if exp_len < 1024 {
+                        expected[exp_len] = b;
+                        exp_len += 1;
+                    }
+                }
             }
             for j in 0..encoded.bit_count {
-                if exp_len < 1024 { expected[exp_len] = encoded.bits[j] != 0; exp_len += 1; }
+                if exp_len < 1024 {
+                    expected[exp_len] = encoded.bits[j] != 0;
+                    exp_len += 1;
+                }
             }
 
             // Count errors after preamble (where flags are reliable)
@@ -3071,7 +3265,9 @@ mod tests {
             for j in data_start..cmp_end {
                 if symbols[j].bit != expected[j] {
                     errs += 1;
-                    if first_err == cmp_end { first_err = j; }
+                    if first_err == cmp_end {
+                        first_err = j;
+                    }
                 }
             }
 
@@ -3085,22 +3281,35 @@ mod tests {
                 let idx = j - s;
                 act[idx] = if symbols[j].bit { b'1' } else { b'0' };
                 exp_s[idx] = if expected[j] { b'1' } else { b'0' };
-                mrk[idx] = if symbols[j].bit != expected[j] { b'^' } else { b' ' };
+                mrk[idx] = if symbols[j].bit != expected[j] {
+                    b'^'
+                } else {
+                    b' '
+                };
             }
             let len = e - s;
 
             panic!(
                 "DM path: {} symbols, {} data errors in {} data bits, first at {}\n\
                  Bits {}-{}: act={}\n                 exp={}\n                 err={}",
-                num_symbols, errs, cmp_end - data_start, first_err, s, e,
+                num_symbols,
+                errs,
+                cmp_end - data_start,
+                first_err,
+                s,
+                e,
                 core::str::from_utf8(&act[..len]).unwrap_or("?"),
                 core::str::from_utf8(&exp_s[..len]).unwrap_or("?"),
-                core::str::from_utf8(&mrk[..len]).unwrap_or("?"));
+                core::str::from_utf8(&mrk[..len]).unwrap_or("?")
+            );
         }
 
         let (dec_buf, dec_len) = decoded.unwrap();
-        assert_eq!(&dec_buf[..dec_len], raw,
-            "DM path decoded frame doesn't match original");
+        assert_eq!(
+            &dec_buf[..dec_len],
+            raw,
+            "DM path decoded frame doesn't match original"
+        );
     }
 
     #[test]
@@ -3109,7 +3318,8 @@ mod tests {
         use crate::modem::afsk::AfskModulator;
         use crate::modem::ModConfig;
 
-        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Corr");
+        let (frame_data, frame_len) =
+            build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Corr");
         let raw = &frame_data[..frame_len];
         let encoded = hdlc_encode(raw);
 
@@ -3129,7 +3339,12 @@ mod tests {
 
         let config = DemodConfig::default_1200();
         let mut demod = CorrelationDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 8192];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3144,8 +3359,11 @@ mod tests {
         }
 
         let (dec_buf, dec_len) = decoded.expect("Correlation demod should decode clean signal");
-        assert_eq!(&dec_buf[..dec_len], raw,
-            "Correlation demod decoded frame doesn't match original");
+        assert_eq!(
+            &dec_buf[..dec_len],
+            raw,
+            "Correlation demod decoded frame doesn't match original"
+        );
     }
 
     #[test]
@@ -3186,7 +3404,12 @@ mod tests {
 
         let config = DemodConfig::default_1200_22k();
         let mut demod = DmDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 16384];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3195,14 +3418,22 @@ mod tests {
             if let Some(frame) = decoder.feed_bit(symbols[i].bit) {
                 if decoded_count < 3 {
                     let (ref raw_buf, raw_len) = raw_frames[decoded_count];
-                    assert_eq!(frame, &raw_buf[..raw_len],
-                        "DM Frame {} mismatch", decoded_count);
+                    assert_eq!(
+                        frame,
+                        &raw_buf[..raw_len],
+                        "DM Frame {} mismatch",
+                        decoded_count
+                    );
                 }
                 decoded_count += 1;
             }
         }
 
-        assert_eq!(decoded_count, 3, "DM should decode all 3 frames, got {}", decoded_count);
+        assert_eq!(
+            decoded_count, 3,
+            "DM should decode all 3 frames, got {}",
+            decoded_count
+        );
     }
 
     // ─── 300 Baud Loopback Tests ─────────────────────────────────────────
@@ -3213,7 +3444,8 @@ mod tests {
         use crate::modem::afsk::AfskModulator;
         use crate::modem::ModConfig;
 
-        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test 300 baud");
+        let (frame_data, frame_len) =
+            build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test 300 baud");
         let raw = &frame_data[..frame_len];
         let encoded = hdlc_encode(raw);
 
@@ -3242,7 +3474,12 @@ mod tests {
 
         let config = DemodConfig::default_300();
         let mut demod = FastDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 16384];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3257,8 +3494,11 @@ mod tests {
         }
 
         let (dec_buf, dec_len) = decoded.expect("300 baud fast path should decode clean signal");
-        assert_eq!(&dec_buf[..dec_len], raw,
-            "300 baud fast path decoded frame doesn't match original");
+        assert_eq!(
+            &dec_buf[..dec_len],
+            raw,
+            "300 baud fast path decoded frame doesn't match original"
+        );
     }
 
     #[test]
@@ -3267,7 +3507,8 @@ mod tests {
         use crate::modem::afsk::AfskModulator;
         use crate::modem::ModConfig;
 
-        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test 300 baud DM");
+        let (frame_data, frame_len) =
+            build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test 300 baud DM");
         let raw = &frame_data[..frame_len];
         let encoded = hdlc_encode(raw);
 
@@ -3294,7 +3535,12 @@ mod tests {
 
         let config = DemodConfig::default_300();
         let mut demod = DmDemodulator::with_bpf(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 16384];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3309,8 +3555,11 @@ mod tests {
         }
 
         let (dec_buf, dec_len) = decoded.expect("300 baud DM path should decode clean signal");
-        assert_eq!(&dec_buf[..dec_len], raw,
-            "300 baud DM decoded frame doesn't match original");
+        assert_eq!(
+            &dec_buf[..dec_len],
+            raw,
+            "300 baud DM decoded frame doesn't match original"
+        );
     }
 
     #[test]
@@ -3319,7 +3568,8 @@ mod tests {
         use crate::modem::afsk::AfskModulator;
         use crate::modem::ModConfig;
 
-        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test 300 baud Corr");
+        let (frame_data, frame_len) =
+            build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Test 300 baud Corr");
         let raw = &frame_data[..frame_len];
         let encoded = hdlc_encode(raw);
 
@@ -3346,7 +3596,12 @@ mod tests {
 
         let config = DemodConfig::default_300();
         let mut demod = CorrelationDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 16384];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3360,8 +3615,12 @@ mod tests {
             }
         }
 
-        let (dec_buf, dec_len) = decoded.expect("300 baud correlation path should decode clean signal");
-        assert_eq!(&dec_buf[..dec_len], raw,
-            "300 baud correlation decoded frame doesn't match original");
+        let (dec_buf, dec_len) =
+            decoded.expect("300 baud correlation path should decode clean signal");
+        assert_eq!(
+            &dec_buf[..dec_len],
+            raw,
+            "300 baud correlation decoded frame doesn't match original"
+        );
     }
 }

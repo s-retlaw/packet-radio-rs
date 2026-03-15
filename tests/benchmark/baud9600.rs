@@ -5,9 +5,8 @@ use std::time::{Duration, Instant};
 use packet_radio_core::ax25::frame::HdlcDecoder;
 use packet_radio_core::modem::demod::DemodSymbol;
 use packet_radio_core::modem::demod_9600::{
-    Demod9600Config, Demod9600Direwolf, Demod9600Gardner,
-    Demod9600EarlyLate, Demod9600MuellerMuller, Demod9600Rrc,
-    select_9600_lpf,
+    select_9600_lpf, Demod9600Config, Demod9600Direwolf, Demod9600EarlyLate, Demod9600Gardner,
+    Demod9600MuellerMuller, Demod9600Rrc,
 };
 use packet_radio_core::modem::multi_9600::{Mini9600Decoder, Multi9600Decoder, Single9600Decoder};
 use packet_radio_core::modem::soft_hdlc::{FrameResult, SoftHdlcDecoder};
@@ -20,12 +19,19 @@ use crate::common::*;
 pub fn run_9600_single(path: &str) {
     let (sample_rate, samples) = match read_wav_file(path) {
         Ok(v) => v,
-        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
     };
 
     println!("9600 Baud Decode: {}", path);
-    println!("  Sample rate: {} Hz, {} samples ({:.1}s)",
-        sample_rate, samples.len(), samples.len() as f64 / sample_rate as f64);
+    println!(
+        "  Sample rate: {} Hz, {} samples ({:.1}s)",
+        sample_rate,
+        samples.len(),
+        samples.len() as f64 / sample_rate as f64
+    );
     println!();
 
     let config = Demod9600Config::with_sample_rate(sample_rate);
@@ -33,10 +39,10 @@ pub fn run_9600_single(path: &str) {
     #[allow(clippy::type_complexity)]
     let algos: [(&str, fn(Demod9600Config) -> Single9600Decoder); 5] = [
         ("DireWolf-style", Single9600Decoder::direwolf),
-        ("Gardner PLL",    Single9600Decoder::gardner),
-        ("Early-Late",     Single9600Decoder::early_late),
+        ("Gardner PLL", Single9600Decoder::gardner),
+        ("Early-Late", Single9600Decoder::early_late),
         ("Mueller-Muller", Single9600Decoder::mueller_muller),
-        ("RRC Matched",    Single9600Decoder::rrc),
+        ("RRC Matched", Single9600Decoder::rrc),
     ];
 
     println!("{:<18} {:>8} {:>10}", "Algorithm", "Frames", "Time");
@@ -52,7 +58,12 @@ pub fn run_9600_single(path: &str) {
         }
 
         let elapsed = start.elapsed();
-        println!("{:<18} {:>8} {:>8.1}ms", name, frame_count, elapsed.as_secs_f64() * 1000.0);
+        println!(
+            "{:<18} {:>8} {:>8.1}ms",
+            name,
+            frame_count,
+            elapsed.as_secs_f64() * 1000.0
+        );
     }
 }
 
@@ -60,12 +71,18 @@ pub fn run_9600_single(path: &str) {
 pub fn run_9600_compare(path: &str) {
     let (sample_rate, samples) = match read_wav_file(path) {
         Ok(v) => v,
-        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
     };
 
     println!("9600 Baud Algorithm Comparison: {}", path);
-    println!("  Sample rate: {} Hz, {:.1}s",
-        sample_rate, samples.len() as f64 / sample_rate as f64);
+    println!(
+        "  Sample rate: {} Hz, {:.1}s",
+        sample_rate,
+        samples.len() as f64 / sample_rate as f64
+    );
     println!();
 
     let config = Demod9600Config::with_sample_rate(sample_rate);
@@ -75,10 +92,10 @@ pub fn run_9600_compare(path: &str) {
     #[allow(clippy::type_complexity)]
     let algos: [(&str, fn(Demod9600Config) -> Single9600Decoder); 5] = [
         ("DireWolf-style", Single9600Decoder::direwolf),
-        ("Gardner PLL",    Single9600Decoder::gardner),
-        ("Early-Late",     Single9600Decoder::early_late),
+        ("Gardner PLL", Single9600Decoder::gardner),
+        ("Early-Late", Single9600Decoder::early_late),
         ("Mueller-Muller", Single9600Decoder::mueller_muller),
-        ("RRC Matched",    Single9600Decoder::rrc),
+        ("RRC Matched", Single9600Decoder::rrc),
     ];
 
     for (name, ctor) in &algos {
@@ -95,13 +112,25 @@ pub fn run_9600_compare(path: &str) {
 
     let best = results.iter().map(|r| r.1).max().unwrap_or(0);
 
-    println!("{:<18} {:>8} {:>8} {:>10}", "Algorithm", "Frames", "%Best", "Time");
+    println!(
+        "{:<18} {:>8} {:>8} {:>10}",
+        "Algorithm", "Frames", "%Best", "Time"
+    );
     println!("{}", "-".repeat(50));
 
     for (name, frames, elapsed) in &results {
-        let pct = if best > 0 { *frames as f64 / best as f64 * 100.0 } else { 0.0 };
-        println!("{:<18} {:>8} {:>7.1}% {:>8.1}ms",
-            name, frames, pct, elapsed.as_secs_f64() * 1000.0);
+        let pct = if best > 0 {
+            *frames as f64 / best as f64 * 100.0
+        } else {
+            0.0
+        };
+        println!(
+            "{:<18} {:>8} {:>7.1}% {:>8.1}ms",
+            name,
+            frames,
+            pct,
+            elapsed.as_secs_f64() * 1000.0
+        );
     }
 }
 
@@ -109,12 +138,18 @@ pub fn run_9600_compare(path: &str) {
 pub fn run_9600_multi(path: &str) {
     let (sample_rate, samples) = match read_wav_file(path) {
         Ok(v) => v,
-        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
     };
 
     println!("9600 Baud Multi-Decoder: {}", path);
-    println!("  Sample rate: {} Hz, {:.1}s",
-        sample_rate, samples.len() as f64 / sample_rate as f64);
+    println!(
+        "  Sample rate: {} Hz, {:.1}s",
+        sample_rate,
+        samples.len() as f64 / sample_rate as f64
+    );
 
     let config = Demod9600Config::with_sample_rate(sample_rate);
     let mut decoder = Multi9600Decoder::new(config);
@@ -137,7 +172,11 @@ pub fn run_9600_multi(path: &str) {
 }
 
 /// Helper: decode a 9600 WAV with a single-algo decoder, return frame count.
-pub fn decode_9600_single_count(samples: &[i16], config: Demod9600Config, ctor: fn(Demod9600Config) -> Single9600Decoder) -> u32 {
+pub fn decode_9600_single_count(
+    samples: &[i16],
+    config: Demod9600Config,
+    ctor: fn(Demod9600Config) -> Single9600Decoder,
+) -> u32 {
     let mut decoder = ctor(config);
     let mut count = 0u32;
     for chunk in samples.chunks(1024) {
@@ -192,10 +231,10 @@ pub fn run_9600_suite(dir: &str) {
     #[allow(clippy::type_complexity)]
     let algos: Vec<(&str, fn(Demod9600Config) -> Single9600Decoder)> = vec![
         ("DW-style", Single9600Decoder::direwolf),
-        ("FastTrk",  Single9600Decoder::gardner),
-        ("Narrow",   Single9600Decoder::early_late),
-        ("Wide",     Single9600Decoder::mueller_muller),
-        ("RRC",      Single9600Decoder::rrc),
+        ("FastTrk", Single9600Decoder::gardner),
+        ("Narrow", Single9600Decoder::early_late),
+        ("Wide", Single9600Decoder::mueller_muller),
+        ("RRC", Single9600Decoder::rrc),
     ];
 
     // Load all WAV files
@@ -221,7 +260,12 @@ pub fn run_9600_suite(dir: &str) {
     }
 
     // Print header
-    let name_width = wavs.iter().map(|w| w.display_name.len()).max().unwrap_or(20).max(20);
+    let name_width = wavs
+        .iter()
+        .map(|w| w.display_name.len())
+        .max()
+        .unwrap_or(20)
+        .max(20);
     print!("{:<width$}", "File (rate, sps)", width = name_width + 2);
     for (algo_name, _) in &algos {
         print!(" {:>9}", algo_name);
@@ -257,12 +301,19 @@ pub fn run_9600_suite(dir: &str) {
 pub fn run_9600_diag(path: &str) {
     let (sample_rate, samples) = match read_wav_file(path) {
         Ok(v) => v,
-        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
     };
 
     println!("9600 Baud Diagnostic: {}", path);
-    println!("  Sample rate: {} Hz, {} samples ({:.1}s)",
-        sample_rate, samples.len(), samples.len() as f64 / sample_rate as f64);
+    println!(
+        "  Sample rate: {} Hz, {} samples ({:.1}s)",
+        sample_rate,
+        samples.len(),
+        samples.len() as f64 / sample_rate as f64
+    );
     println!();
 
     let config = Demod9600Config::with_sample_rate(sample_rate);
@@ -271,7 +322,12 @@ pub fn run_9600_diag(path: &str) {
     let algo_names = ["DW-style", "Gardner", "Early-Late", "M&M", "RRC"];
 
     for (idx, name) in algo_names.iter().enumerate() {
-        let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 2048];
+        let mut sym_buf = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 2048];
         let mut total_syms = 0usize;
         let mut ones = 0usize;
         let mut flag_count = 0usize;
@@ -281,18 +337,39 @@ pub fn run_9600_diag(path: &str) {
 
         for chunk in samples.chunks(1024) {
             let n = match idx {
-                0 => { let mut d = Demod9600Direwolf::new(config); d.process_samples(chunk, &mut sym_buf) }
-                1 => { let mut d = Demod9600Gardner::new(config); d.process_samples(chunk, &mut sym_buf) }
-                2 => { let mut d = Demod9600EarlyLate::new(config); d.process_samples(chunk, &mut sym_buf) }
-                3 => { let mut d = Demod9600MuellerMuller::new(config); d.process_samples(chunk, &mut sym_buf) }
-                4 => { let mut d = Demod9600Rrc::new(config); d.process_samples(chunk, &mut sym_buf) }
+                0 => {
+                    let mut d = Demod9600Direwolf::new(config);
+                    d.process_samples(chunk, &mut sym_buf)
+                }
+                1 => {
+                    let mut d = Demod9600Gardner::new(config);
+                    d.process_samples(chunk, &mut sym_buf)
+                }
+                2 => {
+                    let mut d = Demod9600EarlyLate::new(config);
+                    d.process_samples(chunk, &mut sym_buf)
+                }
+                3 => {
+                    let mut d = Demod9600MuellerMuller::new(config);
+                    d.process_samples(chunk, &mut sym_buf)
+                }
+                4 => {
+                    let mut d = Demod9600Rrc::new(config);
+                    d.process_samples(chunk, &mut sym_buf)
+                }
                 _ => 0,
             };
             total_syms += n;
             for sym in &sym_buf[..n] {
-                if sym.bit { ones += 1; }
-                if sym.llr > max_llr { max_llr = sym.llr; }
-                if sym.llr < min_llr { min_llr = sym.llr; }
+                if sym.bit {
+                    ones += 1;
+                }
+                if sym.llr > max_llr {
+                    max_llr = sym.llr;
+                }
+                if sym.llr < min_llr {
+                    min_llr = sym.llr;
+                }
                 // Check for HDLC flag pattern 01111110
                 if sym.bit {
                     consec_ones += 1;
@@ -308,9 +385,15 @@ pub fn run_9600_diag(path: &str) {
             }
         }
 
-        let ratio = if total_syms > 0 { ones as f64 / total_syms as f64 } else { 0.0 };
-        println!("{:<12} syms={:<8} ones={:.3} flags={:<5} llr=[{},{}]",
-                 name, total_syms, ratio, flag_count, min_llr, max_llr);
+        let ratio = if total_syms > 0 {
+            ones as f64 / total_syms as f64
+        } else {
+            0.0
+        };
+        println!(
+            "{:<12} syms={:<8} ones={:.3} flags={:<5} llr=[{},{}]",
+            name, total_syms, ratio, flag_count, min_llr, max_llr
+        );
     }
 
     println!();
@@ -320,7 +403,12 @@ pub fn run_9600_diag(path: &str) {
 
     // Persistent state test - this is the real test
     for (idx, name) in algo_names.iter().enumerate() {
-        let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 2048];
+        let mut sym_buf = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 2048];
         let mut total_syms = 0usize;
         let mut ones = 0usize;
         let mut flag_count = 0usize;
@@ -348,9 +436,15 @@ pub fn run_9600_diag(path: &str) {
             };
             total_syms += n;
             for sym in &sym_buf[..n] {
-                if sym.bit { ones += 1; }
-                if sym.llr > max_llr { max_llr = sym.llr; }
-                if sym.llr < min_llr { min_llr = sym.llr; }
+                if sym.bit {
+                    ones += 1;
+                }
+                if sym.llr > max_llr {
+                    max_llr = sym.llr;
+                }
+                if sym.llr < min_llr {
+                    min_llr = sym.llr;
+                }
                 if sym.bit {
                     consec_ones += 1;
                 } else {
@@ -365,9 +459,15 @@ pub fn run_9600_diag(path: &str) {
             }
         }
 
-        let ratio = if total_syms > 0 { ones as f64 / total_syms as f64 } else { 0.0 };
-        println!("{:<12} syms={:<8} ones={:.3} flags={:<5} hdlc={:<5} llr=[{},{}]",
-                 name, total_syms, ratio, flag_count, hdlc_frames, min_llr, max_llr);
+        let ratio = if total_syms > 0 {
+            ones as f64 / total_syms as f64
+        } else {
+            0.0
+        };
+        println!(
+            "{:<12} syms={:<8} ones={:.3} flags={:<5} hdlc={:<5} llr=[{},{}]",
+            name, total_syms, ratio, flag_count, hdlc_frames, min_llr, max_llr
+        );
     }
 }
 
@@ -377,12 +477,18 @@ pub fn run_9600_diag(path: &str) {
 pub fn run_9600_mini(path: &str) {
     let (sample_rate, samples) = match read_wav_file(path) {
         Ok(v) => v,
-        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
     };
 
     println!("9600 Baud Mini9600 Decoder: {}", path);
-    println!("  Sample rate: {} Hz, {:.1}s",
-        sample_rate, samples.len() as f64 / sample_rate as f64);
+    println!(
+        "  Sample rate: {} Hz, {:.1}s",
+        sample_rate,
+        samples.len() as f64 / sample_rate as f64
+    );
 
     let config = Demod9600Config::with_sample_rate(sample_rate);
     let mut decoder = Mini9600Decoder::new(config);
@@ -411,12 +517,18 @@ pub fn run_9600_mini(path: &str) {
 pub fn run_9600_tune(path: &str) {
     let (sample_rate, samples) = match read_wav_file(path) {
         Ok(v) => v,
-        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
     };
 
     println!("9600 Baud Grid Search Tuning: {}", path);
-    println!("  Sample rate: {} Hz, {:.1}s",
-        sample_rate, samples.len() as f64 / sample_rate as f64);
+    println!(
+        "  Sample rate: {} Hz, {:.1}s",
+        sample_rate,
+        samples.len() as f64 / sample_rate as f64
+    );
 
     let config = Demod9600Config::with_sample_rate(sample_rate);
     let period = (sample_rate as i64 * 256 / 9600) as i32;
@@ -428,10 +540,17 @@ pub fn run_9600_tune(path: &str) {
     let thresholds: [i16; 5] = [-660, -330, 0, 330, 660];
     let timing_phases: [i32; 4] = [0, period / 4, period / 2, period * 3 / 4];
 
-    println!("  Grid: {} cutoffs × {} orders × {} inertias × {} thresholds × {} phases",
-        cutoffs.len(), lpf_orders.len(), inertias.len(), thresholds.len(), timing_phases.len());
+    println!(
+        "  Grid: {} cutoffs × {} orders × {} inertias × {} thresholds × {} phases",
+        cutoffs.len(),
+        lpf_orders.len(),
+        inertias.len(),
+        thresholds.len(),
+        timing_phases.len()
+    );
 
-    let total_combos = cutoffs.len() * lpf_orders.len() * inertias.len() * thresholds.len() * timing_phases.len();
+    let total_combos =
+        cutoffs.len() * lpf_orders.len() * inertias.len() * thresholds.len() * timing_phases.len();
     println!("  Total combos: {}", total_combos);
     println!();
 
@@ -451,8 +570,10 @@ pub fn run_9600_tune(path: &str) {
                 for &threshold in &thresholds {
                     for &phase in &timing_phases {
                         let lpf_tag = if cascaded { "4th" } else { "2nd" };
-                        let label = format!("DW:{}Hz/{}/i{}/th{}/p{}",
-                            cutoff, lpf_tag, locked, threshold, phase);
+                        let label = format!(
+                            "DW:{}Hz/{}/i{}/th{}/p{}",
+                            cutoff, lpf_tag, locked, threshold, phase
+                        );
 
                         let mut demod = Demod9600Direwolf::new(config)
                             .with_threshold(threshold)
@@ -465,13 +586,21 @@ pub fn run_9600_tune(path: &str) {
                         }
 
                         let mut hdlc = SoftHdlcDecoder::new();
-                        let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 512];
+                        let mut sym_buf = [DemodSymbol {
+                            bit: false,
+                            llr: 0,
+                            sample_idx: 0,
+                            raw_bit: false,
+                        }; 512];
                         let mut hashes: Vec<u32> = Vec::new();
 
                         for chunk in samples.chunks(1024) {
                             let n = demod.process_samples(chunk, &mut sym_buf);
                             for sym in &sym_buf[..n] {
-                                if let Some(FrameResult::Valid(data)) | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym.llr) {
+                                if let Some(FrameResult::Valid(data))
+                                | Some(FrameResult::Recovered { data, .. }) =
+                                    hdlc.feed_soft_bit(sym.llr)
+                                {
                                     let mut h: u32 = 0x811c9dc5;
                                     for &b in data {
                                         h ^= b as u32;
@@ -484,7 +613,11 @@ pub fn run_9600_tune(path: &str) {
                             }
                         }
 
-                        results.push(TuneResult { label, frames: hashes.len() as u32, hashes });
+                        results.push(TuneResult {
+                            label,
+                            frames: hashes.len() as u32,
+                            hashes,
+                        });
                     }
                 }
             }
@@ -498,8 +631,10 @@ pub fn run_9600_tune(path: &str) {
                 for &threshold in &thresholds {
                     for &phase in &timing_phases {
                         let lpf_tag = if cascaded { "4th" } else { "2nd" };
-                        let label = format!("G:{}Hz/{}/i{}-{}/th{}/p{}",
-                            cutoff, lpf_tag, locked, searching, threshold, phase);
+                        let label = format!(
+                            "G:{}Hz/{}/i{}-{}/th{}/p{}",
+                            cutoff, lpf_tag, locked, searching, threshold, phase
+                        );
 
                         let mut demod = Demod9600Gardner::new(config)
                             .with_inertia(locked, searching)
@@ -513,13 +648,21 @@ pub fn run_9600_tune(path: &str) {
                         // cutoff variation is less relevant for Gardner
 
                         let mut hdlc = SoftHdlcDecoder::new();
-                        let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 512];
+                        let mut sym_buf = [DemodSymbol {
+                            bit: false,
+                            llr: 0,
+                            sample_idx: 0,
+                            raw_bit: false,
+                        }; 512];
                         let mut hashes: Vec<u32> = Vec::new();
 
                         for chunk in samples.chunks(1024) {
                             let n = demod.process_samples(chunk, &mut sym_buf);
                             for sym in &sym_buf[..n] {
-                                if let Some(FrameResult::Valid(data)) | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym.llr) {
+                                if let Some(FrameResult::Valid(data))
+                                | Some(FrameResult::Recovered { data, .. }) =
+                                    hdlc.feed_soft_bit(sym.llr)
+                                {
                                     let mut h: u32 = 0x811c9dc5;
                                     for &b in data {
                                         h ^= b as u32;
@@ -532,7 +675,11 @@ pub fn run_9600_tune(path: &str) {
                             }
                         }
 
-                        results.push(TuneResult { label, frames: hashes.len() as u32, hashes });
+                        results.push(TuneResult {
+                            label,
+                            frames: hashes.len() as u32,
+                            hashes,
+                        });
                     }
                 }
             }
@@ -540,7 +687,11 @@ pub fn run_9600_tune(path: &str) {
     }
 
     let elapsed = start.elapsed();
-    println!("  Sweep completed in {:.1}s ({} configs)", elapsed.as_secs_f64(), results.len());
+    println!(
+        "  Sweep completed in {:.1}s ({} configs)",
+        elapsed.as_secs_f64(),
+        results.len()
+    );
     println!();
 
     // Sort by frame count descending
@@ -578,19 +729,29 @@ pub fn run_9600_tune(path: &str) {
         let mut best_gain = 0u32;
 
         for (ri, r) in results.iter().enumerate() {
-            if selected.contains(&ri) { continue; }
-            let gain = r.hashes.iter().filter(|h| {
-                if let Some(pos) = all_hashes.iter().position(|ah| ah == *h) {
-                    !covered[pos]
-                } else { false }
-            }).count() as u32;
+            if selected.contains(&ri) {
+                continue;
+            }
+            let gain = r
+                .hashes
+                .iter()
+                .filter(|h| {
+                    if let Some(pos) = all_hashes.iter().position(|ah| ah == *h) {
+                        !covered[pos]
+                    } else {
+                        false
+                    }
+                })
+                .count() as u32;
             if gain > best_gain {
                 best_gain = gain;
                 best_idx = ri;
             }
         }
 
-        if best_gain == 0 { break; }
+        if best_gain == 0 {
+            break;
+        }
 
         // Mark covered
         for &h in &results[best_idx].hashes {
@@ -601,11 +762,20 @@ pub fn run_9600_tune(path: &str) {
         cumulative += best_gain;
         selected.push(best_idx);
 
-        println!("  #{}: +{:>3} = {:>4} total  {}", step + 1, best_gain, cumulative, results[best_idx].label);
+        println!(
+            "  #{}: +{:>3} = {:>4} total  {}",
+            step + 1,
+            best_gain,
+            cumulative,
+            results[best_idx].label
+        );
     }
 
     println!();
-    println!("Total unique frames across all configs: {}", all_hashes.len());
+    println!(
+        "Total unique frames across all configs: {}",
+        all_hashes.len()
+    );
 }
 
 // ─── 9600 Attribution Analysis ────────────────────────────────────────────
@@ -615,12 +785,18 @@ pub fn run_9600_tune(path: &str) {
 pub fn run_9600_attribution(path: &str) {
     let (sample_rate, samples) = match read_wav_file(path) {
         Ok(v) => v,
-        Err(e) => { eprintln!("Error reading {}: {}", path, e); return; }
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return;
+        }
     };
 
     println!("9600 Baud Attribution Analysis: {}", path);
-    println!("  Sample rate: {} Hz, {:.1}s",
-        sample_rate, samples.len() as f64 / sample_rate as f64);
+    println!(
+        "  Sample rate: {} Hz, {:.1}s",
+        sample_rate,
+        samples.len() as f64 / sample_rate as f64
+    );
 
     let config = Demod9600Config::with_sample_rate(sample_rate);
 
@@ -631,7 +807,11 @@ pub fn run_9600_attribution(path: &str) {
         total_frames += multi.process_samples(chunk).len() as u32;
     }
 
-    println!("  Multi9600: {} decoders, {} unique frames", multi.num_decoders(), total_frames);
+    println!(
+        "  Multi9600: {} decoders, {} unique frames",
+        multi.num_decoders(),
+        total_frames
+    );
     println!();
 
     // We need to run each decoder slot individually to get per-decoder hashes.
@@ -658,16 +838,28 @@ pub fn run_9600_attribution(path: &str) {
                     .with_timing_offset(phase)
                     .with_threshold(threshold);
                 let mut hdlc = SoftHdlcDecoder::new();
-                let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 512];
+                let mut sym_buf = [DemodSymbol {
+                    bit: false,
+                    llr: 0,
+                    sample_idx: 0,
+                    raw_bit: false,
+                }; 512];
                 let mut hashes: Vec<u32> = Vec::new();
 
                 for chunk in samples.chunks(1024) {
                     let n = demod.process_samples(chunk, &mut sym_buf);
                     for sym in &sym_buf[..n] {
-                        if let Some(FrameResult::Valid(data)) | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym.llr) {
+                        if let Some(FrameResult::Valid(data))
+                        | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym.llr)
+                        {
                             let mut h: u32 = 0x811c9dc5;
-                            for &b in data { h ^= b as u32; h = h.wrapping_mul(0x01000193); }
-                            if !hashes.contains(&h) { hashes.push(h); }
+                            for &b in data {
+                                h ^= b as u32;
+                                h = h.wrapping_mul(0x01000193);
+                            }
+                            if !hashes.contains(&h) {
+                                hashes.push(h);
+                            }
                         }
                     }
                 }
@@ -687,16 +879,28 @@ pub fn run_9600_attribution(path: &str) {
                     .with_timing_offset(phase)
                     .with_threshold(threshold);
                 let mut hdlc = SoftHdlcDecoder::new();
-                let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 512];
+                let mut sym_buf = [DemodSymbol {
+                    bit: false,
+                    llr: 0,
+                    sample_idx: 0,
+                    raw_bit: false,
+                }; 512];
                 let mut hashes: Vec<u32> = Vec::new();
 
                 for chunk in samples.chunks(1024) {
                     let n = demod.process_samples(chunk, &mut sym_buf);
                     for sym in &sym_buf[..n] {
-                        if let Some(FrameResult::Valid(data)) | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym.llr) {
+                        if let Some(FrameResult::Valid(data))
+                        | Some(FrameResult::Recovered { data, .. }) = hdlc.feed_soft_bit(sym.llr)
+                        {
                             let mut h: u32 = 0x811c9dc5;
-                            for &b in data { h ^= b as u32; h = h.wrapping_mul(0x01000193); }
-                            if !hashes.contains(&h) { hashes.push(h); }
+                            for &b in data {
+                                h ^= b as u32;
+                                h = h.wrapping_mul(0x01000193);
+                            }
+                            if !hashes.contains(&h) {
+                                hashes.push(h);
+                            }
                         }
                     }
                 }
@@ -722,9 +926,17 @@ pub fn run_9600_attribution(path: &str) {
 
     // Calculate unique-to-this-decoder count
     for (i, r) in dec_results.iter().enumerate() {
-        let unique_count = r.hashes.iter().filter(|h| {
-            dec_results.iter().enumerate().filter(|(j, _)| *j != i).all(|(_j, other)| !other.hashes.contains(h))
-        }).count();
+        let unique_count = r
+            .hashes
+            .iter()
+            .filter(|h| {
+                dec_results
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .all(|(_j, other)| !other.hashes.contains(h))
+            })
+            .count();
         println!("{:<30} {:>8} {:>8}", r.label, r.hashes.len(), unique_count);
     }
 
@@ -742,19 +954,29 @@ pub fn run_9600_attribution(path: &str) {
         let mut best_gain = 0u32;
 
         for (ri, r) in dec_results.iter().enumerate() {
-            if selected.contains(&ri) { continue; }
-            let gain = r.hashes.iter().filter(|h| {
-                if let Some(pos) = all_hashes.iter().position(|ah| ah == *h) {
-                    !covered[pos]
-                } else { false }
-            }).count() as u32;
+            if selected.contains(&ri) {
+                continue;
+            }
+            let gain = r
+                .hashes
+                .iter()
+                .filter(|h| {
+                    if let Some(pos) = all_hashes.iter().position(|ah| ah == *h) {
+                        !covered[pos]
+                    } else {
+                        false
+                    }
+                })
+                .count() as u32;
             if gain > best_gain {
                 best_gain = gain;
                 best_idx = ri;
             }
         }
 
-        if best_gain == 0 { break; }
+        if best_gain == 0 {
+            break;
+        }
 
         for &h in &dec_results[best_idx].hashes {
             if let Some(pos) = all_hashes.iter().position(|ah| *ah == h) {
@@ -765,7 +987,14 @@ pub fn run_9600_attribution(path: &str) {
         selected.push(best_idx);
 
         let pct = cumulative as f64 / all_hashes.len().max(1) as f64 * 100.0;
-        println!("  #{}: +{:>3} = {:>4} ({:>5.1}%)  {}", step + 1, best_gain, cumulative, pct, dec_results[best_idx].label);
+        println!(
+            "  #{}: +{:>3} = {:>4} ({:>5.1}%)  {}",
+            step + 1,
+            best_gain,
+            cumulative,
+            pct,
+            dec_results[best_idx].label
+        );
     }
 
     println!();

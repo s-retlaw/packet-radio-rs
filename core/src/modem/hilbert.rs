@@ -59,7 +59,11 @@ impl<const N: usize> HilbertTransform<N> {
         let mut read_pos = self.write_pos;
         for i in 0..N {
             acc += self.delay_line[read_pos] as i32 * self.coeffs[i] as i32;
-            if read_pos == 0 { read_pos = N - 1; } else { read_pos -= 1; }
+            if read_pos == 0 {
+                read_pos = N - 1;
+            } else {
+                read_pos -= 1;
+            }
         }
         let imag = (acc >> 15).clamp(-32768, 32767) as i16;
 
@@ -90,11 +94,8 @@ pub fn hilbert_31() -> HilbertTransform<31> {
     // hamming(n) = 0.54 - 0.46·cos(2πn/30)
     // Antisymmetric: h[n] = -h[30-n], non-zero only at even array indices.
     let coeffs: [i16; 31] = [
-        -111,  0,  -192,  0,   -440,  0,   -922,  0,  -1753,  0,  -3213,
-           0,  -6343,   0, -20651,
-           0,
-        20651,  0,   6343,  0,   3213,  0,   1753,  0,    922,  0,    440,
-           0,    192,  0,    111,
+        -111, 0, -192, 0, -440, 0, -922, 0, -1753, 0, -3213, 0, -6343, 0, -20651, 0, 20651, 0,
+        6343, 0, 3213, 0, 1753, 0, 922, 0, 440, 0, 192, 0, 111,
     ];
 
     HilbertTransform::new(coeffs)
@@ -226,26 +227,34 @@ mod tests {
 
         // Positive y-axis: angle ≈ π/2 ≈ 16384
         let angle = fast_atan2(1000, 0);
-        assert!((angle - 16384_i16).abs() < 500,
-            "Expected ~16384 (π/2), got {}", angle);
+        assert!(
+            (angle - 16384_i16).abs() < 500,
+            "Expected ~16384 (π/2), got {}",
+            angle
+        );
 
         // Negative x-axis: angle ≈ ±π ≈ ±32768
         let angle = fast_atan2(0, -1000);
-        assert!(angle.abs() > 30000,
-            "Expected ~±32768 (π), got {}", angle);
+        assert!(angle.abs() > 30000, "Expected ~±32768 (π), got {}", angle);
 
         // Negative y-axis: angle ≈ −π/2 ≈ −16384
         let angle = fast_atan2(-1000, 0);
-        assert!((angle + 16384_i16).abs() < 500,
-            "Expected ~-16384 (-π/2), got {}", angle);
+        assert!(
+            (angle + 16384_i16).abs() < 500,
+            "Expected ~-16384 (-π/2), got {}",
+            angle
+        );
     }
 
     #[test]
     fn test_fast_atan2_45_degrees() {
         // 45 degrees: atan2(1, 1) ≈ π/4 ≈ 8192
         let angle = fast_atan2(1000, 1000);
-        assert!((angle - 8192_i16).abs() < 500,
-            "Expected ~8192 (π/4), got {}", angle);
+        assert!(
+            (angle - 8192_i16).abs() < 500,
+            "Expected ~8192 (π/4), got {}",
+            angle
+        );
     }
 
     #[test]
@@ -275,9 +284,11 @@ mod tests {
                 q15
             };
 
-            assert_eq!(h.coeffs[n], expected,
+            assert_eq!(
+                h.coeffs[n], expected,
                 "Coefficient mismatch at n={}, k={}: got {}, expected {}",
-                n, k, h.coeffs[n], expected);
+                n, k, h.coeffs[n], expected
+            );
         }
     }
 
@@ -286,9 +297,16 @@ mod tests {
     fn test_hilbert_antisymmetry() {
         let h = hilbert_31();
         for n in 0..15 {
-            assert_eq!(h.coeffs[n], -h.coeffs[30 - n],
+            assert_eq!(
+                h.coeffs[n],
+                -h.coeffs[30 - n],
                 "Antisymmetry failed at n={}: h[{}]={}, h[{}]={}",
-                n, n, h.coeffs[n], 30 - n, h.coeffs[30 - n]);
+                n,
+                n,
+                h.coeffs[n],
+                30 - n,
+                h.coeffs[30 - n]
+            );
         }
         assert_eq!(h.coeffs[15], 0, "Center tap must be zero");
     }
@@ -324,9 +342,14 @@ mod tests {
         // Check that all steady-state envelopes are within 25% of the mean
         for (i, &env) in steady.iter().enumerate() {
             let ratio = (env as f64) / (mean as f64);
-            assert!(ratio > 0.75 && ratio < 1.25,
+            assert!(
+                ratio > 0.75 && ratio < 1.25,
                 "Envelope at sample {} deviates too much: ratio={:.3}, env={}, mean={}",
-                i + transient, ratio, env, mean);
+                i + transient,
+                ratio,
+                env,
+                mean
+            );
         }
     }
 
@@ -362,8 +385,11 @@ mod tests {
         let mean: i64 = steady.iter().map(|&f| f as i64).sum::<i64>() / steady.len() as i64;
         let mean_hz = mean as f64 / 256.0;
 
-        assert!((mean as i32 - expected_fp).abs() < tolerance,
+        assert!(
+            (mean as i32 - expected_fp).abs() < tolerance,
             "Mean frequency estimate {:.1} Hz deviates from expected {:.1} Hz by more than 10%",
-            mean_hz, freq);
+            mean_hz,
+            freq
+        );
     }
 }

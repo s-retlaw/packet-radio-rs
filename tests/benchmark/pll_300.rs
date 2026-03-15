@@ -22,8 +22,14 @@ pub fn run_pll_300(path: &str) {
 
     let duration_secs = samples.len() as f64 / sample_rate as f64;
     let spb = sample_rate as f64 / get_baud() as f64;
-    println!("Duration: {:.1}s, {} samples at {} Hz (SPB={:.1}, baud={})",
-        duration_secs, samples.len(), sample_rate, spb, get_baud());
+    println!(
+        "Duration: {:.1}s, {} samples at {} Hz (SPB={:.1}, baud={})",
+        duration_secs,
+        samples.len(),
+        sample_rate,
+        spb,
+        get_baud()
+    );
     println!();
 
     // Baselines
@@ -42,8 +48,8 @@ pub fn run_pll_300(path: &str) {
     println!("  {}", "─".repeat(22));
 
     let alphas: &[i16] = &[
-        200, 400, 600, 800, 936, 1200, 1500, 2000, 2500, 3000,
-        4000, 5000, 6000, 8000, 10000, 12000, 15000, 20000,
+        200, 400, 600, 800, 936, 1200, 1500, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000,
+        12000, 15000, 20000,
     ];
 
     let mut best_hard = 0usize;
@@ -56,9 +62,15 @@ pub fn run_pll_300(path: &str) {
         let (soft, saves) = decode_dm_pll_soft(&samples, sample_rate, a, 0, false, 0, 0);
         let hard_count = hard.frames.len();
         let soft_count = soft.frames.len();
-        let marker = if hard_count >= best_hard && hard_count > 0 { " ★" } else { "" };
-        println!("  {:>6}  {:>5}  {:>5} ({} saves){}",
-            a, hard_count, soft_count, saves, marker);
+        let marker = if hard_count >= best_hard && hard_count > 0 {
+            " ★"
+        } else {
+            ""
+        };
+        println!(
+            "  {:>6}  {:>5}  {:>5} ({} saves){}",
+            a, hard_count, soft_count, saves, marker
+        );
         if hard_count > best_hard {
             best_hard = hard_count;
             best_hard_alpha = a;
@@ -70,8 +82,14 @@ pub fn run_pll_300(path: &str) {
     }
 
     println!();
-    println!("  Best hard: alpha={} → {} frames", best_hard_alpha, best_hard);
-    println!("  Best soft: alpha={} → {} frames", best_soft_alpha, best_soft);
+    println!(
+        "  Best hard: alpha={} → {} frames",
+        best_hard_alpha, best_hard
+    );
+    println!(
+        "  Best soft: alpha={} → {} frames",
+        best_soft_alpha, best_soft
+    );
 
     // Beta sweep at best alpha
     if best_hard_alpha > 0 {
@@ -90,17 +108,28 @@ pub fn run_pll_300(path: &str) {
     println!("  {:>6}  {:>5}", "Alpha", "Pkts");
     println!("  {}", "─".repeat(14));
 
-    for &a in &[200i16, 400, 600, 936, 1500, 2000, 3000, 5000, 8000, 12000, 20000] {
+    for &a in &[
+        200i16, 400, 600, 936, 1500, 2000, 3000, 5000, 8000, 12000, 20000,
+    ] {
         let config = config_for_rate(sample_rate, get_baud());
         let pll = packet_radio_core::modem::pll::ClockRecoveryPll::new_gardner(
-            sample_rate, get_baud(), a, 0,
-        ).with_error_shift(8);
+            sample_rate,
+            get_baud(),
+            a,
+            0,
+        )
+        .with_error_shift(8);
         let mut demod = CorrelationDemodulator::new(config)
             .with_adaptive_gain()
             .with_custom_pll(pll);
         let mut hdlc = HdlcDecoder::new();
         let mut frames: Vec<Vec<u8>> = Vec::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 1024];
 
         for chunk in samples.chunks(1024) {
             let n = demod.process_samples(chunk, &mut symbols);

@@ -35,7 +35,9 @@ pub fn run_xor(path: &str) {
     let duration_secs = samples.len() as f64 / sample_rate as f64;
     println!(
         "Duration: {:.1}s, {} samples at {} Hz",
-        duration_secs, samples.len(), sample_rate
+        duration_secs,
+        samples.len(),
+        sample_rate
     );
     println!();
 
@@ -44,19 +46,27 @@ pub fn run_xor(path: &str) {
     let fast = decode_fast(&samples, sample_rate);
     let dm = decode_dm(&samples, sample_rate);
 
-    println!("  XOR hard:     {:>4} packets in {:.2}s ({:.0}x real-time)",
+    println!(
+        "  XOR hard:     {:>4} packets in {:.2}s ({:.0}x real-time)",
         xor.frames.len(),
         xor.elapsed.as_secs_f64(),
-        duration_secs / xor.elapsed.as_secs_f64());
-    println!("  XOR quality:  {:>4} packets in {:.2}s ({:.0}x real-time, {} soft saves)",
+        duration_secs / xor.elapsed.as_secs_f64()
+    );
+    println!(
+        "  XOR quality:  {:>4} packets in {:.2}s ({:.0}x real-time, {} soft saves)",
         xor_q.frames.len(),
         xor_q.elapsed.as_secs_f64(),
         duration_secs / xor_q.elapsed.as_secs_f64(),
-        xor_soft);
-    println!("  Fast:         {:>4} packets (Goertzel baseline)",
-        fast.frames.len());
-    println!("  DM:           {:>4} packets (delay-multiply baseline)",
-        dm.frames.len());
+        xor_soft
+    );
+    println!(
+        "  Fast:         {:>4} packets (Goertzel baseline)",
+        fast.frames.len()
+    );
+    println!(
+        "  DM:           {:>4} packets (delay-multiply baseline)",
+        dm.frames.len()
+    );
     let gain_hard = xor.frames.len() as i64 - fast.frames.len() as i64;
     let gain_dm = xor.frames.len() as i64 - dm.frames.len() as i64;
     println!("  Gain vs fast: {:>+4} packets", gain_hard);
@@ -89,10 +99,20 @@ pub fn run_xor(path: &str) {
     println!("    XOR unique frames:        {:>4}", xor_set.len());
     println!("    Smart3 unique frames:     {:>4}", smart3_set.len());
     println!("    Multi unique frames:      {:>4}", multi_set.len());
-    println!("    XOR not in Smart3:        {:>4}  ← MCU-relevant exclusives", xor_not_in_smart3);
+    println!(
+        "    XOR not in Smart3:        {:>4}  ← MCU-relevant exclusives",
+        xor_not_in_smart3
+    );
     println!("    XOR qual not in Smart3:   {:>4}", xor_q_not_in_smart3);
-    println!("    XOR not in Fast+DM:       {:>4}", xor_not_in_mcu_singles);
+    println!(
+        "    XOR not in Fast+DM:       {:>4}",
+        xor_not_in_mcu_singles
+    );
     println!("    XOR not in Multi:         {:>4}", xor_not_in_multi);
-    println!("    Smart3+XOR combined:      {:>4}  (Smart3 alone: {})", smart3_xor.len(), smart3_set.len());
+    println!(
+        "    Smart3+XOR combined:      {:>4}  (Smart3 alone: {})",
+        smart3_xor.len(),
+        smart3_set.len()
+    );
     println!();
 }

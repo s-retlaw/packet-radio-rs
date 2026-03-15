@@ -112,17 +112,21 @@ pub fn optimal_delay(sample_rate: u32) -> usize {
     // Hardcoded optimal delays for common sample rates.
     // All use τ ≈ 363 μs which gives mark→negative, space→positive.
     match sample_rate {
-        11025 => 4,   // 363 μs: mark→−0.92, space→+0.30
-        22050 => 8,   // 363 μs: mark→−0.92, space→+0.30
-        44100 => 16,  // 363 μs: mark→−0.92, space→+0.30
-        48000 => 17,  // 354 μs: mark→−0.89, space→+0.18
+        11025 => 4,  // 363 μs: mark→−0.92, space→+0.30
+        22050 => 8,  // 363 μs: mark→−0.92, space→+0.30
+        44100 => 16, // 363 μs: mark→−0.92, space→+0.30
+        48000 => 17, // 354 μs: mark→−0.89, space→+0.18
         _ => {
             // For other sample rates, approximate: τ ≈ 1/(f_mark+f_space)
             // In samples: delay ≈ sample_rate / (1200 + 2200)
             let approx = sample_rate / 3400;
-            if approx < 1 { 1 }
-            else if approx >= MAX_DELAY as u32 { MAX_DELAY - 1 }
-            else { approx as usize }
+            if approx < 1 {
+                1
+            } else if approx >= MAX_DELAY as u32 {
+                MAX_DELAY - 1
+            } else {
+                approx as usize
+            }
         }
     }
 }
@@ -130,9 +134,9 @@ pub fn optimal_delay(sample_rate: u32) -> usize {
 #[cfg(test)]
 mod tests {
     extern crate alloc;
-    use alloc::vec::Vec;
-    use super::*;
     use super::super::filter::BiquadFilter;
+    use super::*;
+    use alloc::vec::Vec;
 
     /// Generate a sine wave at a given frequency.
     fn generate_tone(freq_hz: f64, sample_rate: u32, num_samples: usize) -> Vec<i16> {
@@ -163,7 +167,8 @@ mod tests {
         let mut det = DelayMultiplyDetector::with_delay(delay, BiquadFilter::passthrough());
         let mark_tone = generate_tone(1200.0, sample_rate, 200);
         let mut mark_sum: i64 = 0;
-        for &s in &mark_tone[50..] { // Skip transient
+        for &s in &mark_tone[50..] {
+            // Skip transient
             mark_sum += det.process(s) as i64;
         }
         let mark_avg = mark_sum / 150;
@@ -181,7 +186,8 @@ mod tests {
         assert!(
             (mark_avg > 0 && space_avg < 0) || (mark_avg < 0 && space_avg > 0),
             "Mark ({}) and space ({}) should have opposite polarity",
-            mark_avg, space_avg
+            mark_avg,
+            space_avg
         );
     }
 

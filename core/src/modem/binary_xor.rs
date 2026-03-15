@@ -14,9 +14,9 @@
 //! discards amplitude info, making it inherently robust to de-emphasis and
 //! level variations.
 
-use super::DemodConfig;
 use super::demod::DemodSymbol;
 use super::filter::BiquadFilter;
+use super::DemodConfig;
 
 /// Binary XOR correlator demodulator.
 ///
@@ -89,11 +89,11 @@ impl BinaryXorDemodulator {
     fn xor_delay(config: &DemodConfig) -> usize {
         if config.baud_rate == 300 {
             match config.sample_rate {
-                8000 => 27,   // 3375 μs (~1 symbol)
-                11025 => 37,  // 3356 μs (~1 symbol)
-                22050 => 37,  // 1678 μs (MAX_DELAY limited)
-                44100 => 47,  // 1066 μs (MAX_DELAY limited)
-                48000 => 47,  // 979 μs (MAX_DELAY limited)
+                8000 => 27,  // 3375 μs (~1 symbol)
+                11025 => 37, // 3356 μs (~1 symbol)
+                22050 => 37, // 1678 μs (MAX_DELAY limited)
+                44100 => 47, // 1066 μs (MAX_DELAY limited)
+                48000 => 47, // 979 μs (MAX_DELAY limited)
                 _ => {
                     let d = config.sample_rate as usize / 300;
                     d.clamp(1, super::MAX_DELAY - 1)
@@ -101,12 +101,12 @@ impl BinaryXorDemodulator {
             }
         } else {
             match config.sample_rate {
-                11025 => 8,   // 726 μs
-                13200 => 10,  // 758 μs
-                22050 => 16,  // 726 μs
-                26400 => 19,  // 720 μs
-                44100 => 31,  // 703 μs
-                48000 => 31,  // 646 μs
+                11025 => 8,  // 726 μs
+                13200 => 10, // 758 μs
+                22050 => 16, // 726 μs
+                26400 => 19, // 720 μs
+                44100 => 31, // 703 μs
+                48000 => 31, // 646 μs
                 _ => {
                     let d = config.sample_rate as usize / 1400;
                     d.clamp(1, super::MAX_DELAY - 1)
@@ -136,8 +136,16 @@ impl BinaryXorDemodulator {
         match (delay, sample_rate) {
             // Standard delays where DM says mark→positive (not negative):
             // XOR inverts: mark→negative. So is_mark_positive = false.
-            (1, _) | (2, 11025) | (2, 13200) | (3, 22050) | (4, 26400) | (7, 44100) | (8, 48000) => false,
-            (8, 11025) | (10, 13200) | (16, 22050) | (19, 26400) | (31, 44100) | (31, 48000) => false,
+            (1, _)
+            | (2, 11025)
+            | (2, 13200)
+            | (3, 22050)
+            | (4, 26400)
+            | (7, 44100)
+            | (8, 48000) => false,
+            (8, 11025) | (10, 13200) | (16, 22050) | (19, 26400) | (31, 44100) | (31, 48000) => {
+                false
+            }
             // d=5 at 11025 etc: DM says mark→negative, so XOR says mark→positive
             (5, 11025) | (6, 13200) | (10, 22050) | (12, 26400) | (20, 44100) => true,
             _ => {
@@ -185,7 +193,11 @@ impl BinaryXorDemodulator {
     }
 
     /// Create with a custom BPF filter and timing phase offset.
-    pub fn with_filter_and_offset(config: DemodConfig, bpf: BiquadFilter, phase_offset: u32) -> Self {
+    pub fn with_filter_and_offset(
+        config: DemodConfig,
+        bpf: BiquadFilter,
+        phase_offset: u32,
+    ) -> Self {
         let delay = Self::xor_delay(&config);
         let lpf = if config.baud_rate == 300 {
             super::filter::post_detect_lpf_300(config.sample_rate)
@@ -212,7 +224,10 @@ impl BinaryXorDemodulator {
 
     /// Override the delay value (builder pattern).
     pub fn with_delay(mut self, delay: usize) -> Self {
-        assert!(delay > 0 && delay <= 31, "delay must be 1..=31 (packed in u32)");
+        assert!(
+            delay > 0 && delay <= 31,
+            "delay must be 1..=31 (packed in u32)"
+        );
         self.delay = delay;
         self.mark_is_positive = Self::is_mark_positive(delay, self.config.sample_rate);
         self
@@ -250,11 +265,7 @@ impl BinaryXorDemodulator {
     ///
     /// Decoded symbols are written to `symbols_out`. Returns the number
     /// of symbols produced.
-    pub fn process_samples(
-        &mut self,
-        samples: &[i16],
-        symbols_out: &mut [DemodSymbol],
-    ) -> usize {
+    pub fn process_samples(&mut self, samples: &[i16], symbols_out: &mut [DemodSymbol]) -> usize {
         let mut sym_count = 0;
         let sample_rate = self.config.sample_rate;
         let baud_rate = self.config.baud_rate;
@@ -343,7 +354,12 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = BinaryXorDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         // Should produce some symbols without panicking
@@ -356,7 +372,12 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = BinaryXorDemodulator::new(config);
         let noise = [1000i16; 100];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 50];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 50];
 
         demod.process_samples(&noise, &mut symbols);
         assert!(demod.samples_processed > 0);
@@ -401,8 +422,18 @@ mod tests {
 
         let mut demod_mark = BinaryXorDemodulator::new(config);
         let mut demod_space = BinaryXorDemodulator::new(config);
-        let mut sym_mark = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
-        let mut sym_space = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
+        let mut sym_mark = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 200];
+        let mut sym_space = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 200];
 
         let n_mark = demod_mark.process_samples(&mark_samples, &mut sym_mark);
         let n_space = demod_space.process_samples(&space_samples, &mut sym_space);
@@ -412,12 +443,15 @@ mod tests {
 
         // Both pure tones: constant raw decision → NRZI=true (no transitions) → positive LLR.
         // Verify high confidence for settled symbols (skip first few for filter settling).
-        let settled_mark = &sym_mark[n_mark/2..n_mark];
-        let settled_space = &sym_space[n_space/2..n_space];
+        let settled_mark = &sym_mark[n_mark / 2..n_mark];
+        let settled_space = &sym_space[n_space / 2..n_space];
 
         let avg_mark_conf: i32 = settled_mark.iter().map(|s| s.llr.abs() as i32).sum::<i32>()
             / settled_mark.len().max(1) as i32;
-        let avg_space_conf: i32 = settled_space.iter().map(|s| s.llr.abs() as i32).sum::<i32>()
+        let avg_space_conf: i32 = settled_space
+            .iter()
+            .map(|s| s.llr.abs() as i32)
+            .sum::<i32>()
             / settled_space.len().max(1) as i32;
 
         // Both should have reasonable confidence (> 10)
@@ -465,7 +499,12 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = BinaryXorDemodulator::new(config);
         let mut hdlc = HdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 1024];
         let mut decoded_frames = 0;
 
         for chunk in audio[..audio_len].chunks(256) {

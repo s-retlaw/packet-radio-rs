@@ -242,7 +242,7 @@ impl Agc9600 {
             (config.agc_attack as i32, config.agc_decay as i32)
         };
         Self {
-            peak: 1000,    // Start with small non-zero to avoid division issues
+            peak: 1000, // Start with small non-zero to avoid division issues
             valley: -1000,
             attack,
             decay,
@@ -333,7 +333,11 @@ impl DwPll {
         // At ≤4.5 sps, use wider lock window (period/6) to reduce lock/unlock cycling.
         // At higher sps, standard period/8 is fine.
         let sps_x10 = sample_rate * 10 / baud_rate;
-        let lock_threshold = if sps_x10 <= 47 { period / 6 } else { period / 8 };
+        let lock_threshold = if sps_x10 <= 47 {
+            period / 6
+        } else {
+            period / 8
+        };
         Self {
             phase: 0,
             period,
@@ -378,8 +382,8 @@ impl DwPll {
         // Check for symbol boundary — with 3-point quadratic Farrow interpolation
         if self.phase >= self.period {
             let overshoot = self.phase - self.period; // Q8 fraction past ideal point
-            // u = fractional position from prev_sample toward current sample (Q8)
-            // u=0 means ideal point is at prev_sample, u=256 at current sample
+                                                      // u = fractional position from prev_sample toward current sample (Q8)
+                                                      // u=0 means ideal point is at prev_sample, u=256 at current sample
             let u = 256 - overshoot;
 
             // 3-point Lagrange interpolation centered at prev_sample:
@@ -552,11 +556,7 @@ impl Demod9600Direwolf {
     /// Process a buffer of audio samples.
     ///
     /// Returns the number of symbols produced in `symbols_out`.
-    pub fn process_samples(
-        &mut self,
-        samples: &[i16],
-        symbols_out: &mut [DemodSymbol],
-    ) -> usize {
+    pub fn process_samples(&mut self, samples: &[i16], symbols_out: &mut [DemodSymbol]) -> usize {
         let mut sym_count = 0;
 
         for &sample in samples {
@@ -594,7 +594,12 @@ impl Demod9600Direwolf {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count, raw_bit: false };
+                    symbols_out[sym_count] = DemodSymbol {
+                        bit: nrzi_bit,
+                        llr,
+                        sample_idx: self.sample_count,
+                        raw_bit: false,
+                    };
                     sym_count += 1;
                 }
             }
@@ -642,7 +647,7 @@ impl Demod9600Gardner {
         let lpf = select_9600_lpf(config.sample_rate, config.lpf_cutoff_hz());
         let mut pll = DwPll::new(config.sample_rate, config.baud_rate);
         // Lower inertia = faster tracking, more jitter (diversity vs Algorithm 1)
-        pll.locked_inertia = 205;    // 0.80 (vs 0.89 in DW-style)
+        pll.locked_inertia = 205; // 0.80 (vs 0.89 in DW-style)
         pll.searching_inertia = 128; // 0.50 (vs 0.67 in DW-style)
 
         Self {
@@ -716,11 +721,7 @@ impl Demod9600Gardner {
     }
 
     /// Process a buffer of audio samples.
-    pub fn process_samples(
-        &mut self,
-        samples: &[i16],
-        symbols_out: &mut [DemodSymbol],
-    ) -> usize {
+    pub fn process_samples(&mut self, samples: &[i16], symbols_out: &mut [DemodSymbol]) -> usize {
         let mut sym_count = 0;
 
         for &sample in samples {
@@ -740,7 +741,12 @@ impl Demod9600Gardner {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count, raw_bit: false };
+                    symbols_out[sym_count] = DemodSymbol {
+                        bit: nrzi_bit,
+                        llr,
+                        sample_idx: self.sample_count,
+                        raw_bit: false,
+                    };
                     sym_count += 1;
                 }
             }
@@ -814,11 +820,7 @@ impl Demod9600EarlyLate {
     }
 
     /// Process a buffer of audio samples.
-    pub fn process_samples(
-        &mut self,
-        samples: &[i16],
-        symbols_out: &mut [DemodSymbol],
-    ) -> usize {
+    pub fn process_samples(&mut self, samples: &[i16], symbols_out: &mut [DemodSymbol]) -> usize {
         let mut sym_count = 0;
 
         for &sample in samples {
@@ -838,7 +840,12 @@ impl Demod9600EarlyLate {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count, raw_bit: false };
+                    symbols_out[sym_count] = DemodSymbol {
+                        bit: nrzi_bit,
+                        llr,
+                        sample_idx: self.sample_count,
+                        raw_bit: false,
+                    };
                     sym_count += 1;
                 }
             }
@@ -912,11 +919,7 @@ impl Demod9600MuellerMuller {
     }
 
     /// Process a buffer of audio samples.
-    pub fn process_samples(
-        &mut self,
-        samples: &[i16],
-        symbols_out: &mut [DemodSymbol],
-    ) -> usize {
+    pub fn process_samples(&mut self, samples: &[i16], symbols_out: &mut [DemodSymbol]) -> usize {
         let mut sym_count = 0;
 
         for &sample in samples {
@@ -936,7 +939,12 @@ impl Demod9600MuellerMuller {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count, raw_bit: false };
+                    symbols_out[sym_count] = DemodSymbol {
+                        bit: nrzi_bit,
+                        llr,
+                        sample_idx: self.sample_count,
+                        raw_bit: false,
+                    };
                     sym_count += 1;
                 }
             }
@@ -1048,11 +1056,7 @@ impl Demod9600Rrc {
     }
 
     /// Process a buffer of audio samples.
-    pub fn process_samples(
-        &mut self,
-        samples: &[i16],
-        symbols_out: &mut [DemodSymbol],
-    ) -> usize {
+    pub fn process_samples(&mut self, samples: &[i16], symbols_out: &mut [DemodSymbol]) -> usize {
         let mut sym_count = 0;
 
         for &sample in samples {
@@ -1073,7 +1077,12 @@ impl Demod9600Rrc {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count, raw_bit: false };
+                    symbols_out[sym_count] = DemodSymbol {
+                        bit: nrzi_bit,
+                        llr,
+                        sample_idx: self.sample_count,
+                        raw_bit: false,
+                    };
                     sym_count += 1;
                 }
             }
@@ -1133,25 +1142,55 @@ pub fn select_9600_lpf(sample_rate: u32, cutoff_hz: u32) -> BiquadFilter {
 // Computed from Audio EQ Cookbook: fc, Q=0.707, Fs → Q15 biquad.
 
 // 48000 Hz sample rate
-pub const fn lpf_9600_48k_4800() -> BiquadFilter { BiquadFilter::new(2210, 4420, 2210, -37451, 13524) }
-pub const fn lpf_9600_48k_5400() -> BiquadFilter { BiquadFilter::new(2689, 5379, 2689, -34149, 12141) }
-pub const fn lpf_9600_48k_6000() -> BiquadFilter { BiquadFilter::new(3199, 6398, 3199, -30892, 10920) }
-pub const fn lpf_9600_48k_6600() -> BiquadFilter { BiquadFilter::new(3734, 7469, 3734, -27677, 9849) }
-pub const fn lpf_9600_48k_7200() -> BiquadFilter { BiquadFilter::new(4295, 8591, 4295, -24502, 8917) }
+pub const fn lpf_9600_48k_4800() -> BiquadFilter {
+    BiquadFilter::new(2210, 4420, 2210, -37451, 13524)
+}
+pub const fn lpf_9600_48k_5400() -> BiquadFilter {
+    BiquadFilter::new(2689, 5379, 2689, -34149, 12141)
+}
+pub const fn lpf_9600_48k_6000() -> BiquadFilter {
+    BiquadFilter::new(3199, 6398, 3199, -30892, 10920)
+}
+pub const fn lpf_9600_48k_6600() -> BiquadFilter {
+    BiquadFilter::new(3734, 7469, 3734, -27677, 9849)
+}
+pub const fn lpf_9600_48k_7200() -> BiquadFilter {
+    BiquadFilter::new(4295, 8591, 4295, -24502, 8917)
+}
 
 // 44100 Hz sample rate
-pub const fn lpf_9600_44k_4800() -> BiquadFilter { BiquadFilter::new(2546, 5093, 2546, -35110, 12528) }
-pub const fn lpf_9600_44k_5400() -> BiquadFilter { BiquadFilter::new(3092, 6185, 3092, -31553, 11157) }
-pub const fn lpf_9600_44k_6000() -> BiquadFilter { BiquadFilter::new(3671, 7343, 3671, -28047, 9966) }
-pub const fn lpf_9600_44k_6600() -> BiquadFilter { BiquadFilter::new(4280, 8560, 4280, -24588, 8941) }
-pub const fn lpf_9600_44k_7200() -> BiquadFilter { BiquadFilter::new(4917, 9834, 4917, -21170, 8070) }
+pub const fn lpf_9600_44k_4800() -> BiquadFilter {
+    BiquadFilter::new(2546, 5093, 2546, -35110, 12528)
+}
+pub const fn lpf_9600_44k_5400() -> BiquadFilter {
+    BiquadFilter::new(3092, 6185, 3092, -31553, 11157)
+}
+pub const fn lpf_9600_44k_6000() -> BiquadFilter {
+    BiquadFilter::new(3671, 7343, 3671, -28047, 9966)
+}
+pub const fn lpf_9600_44k_6600() -> BiquadFilter {
+    BiquadFilter::new(4280, 8560, 4280, -24588, 8941)
+}
+pub const fn lpf_9600_44k_7200() -> BiquadFilter {
+    BiquadFilter::new(4917, 9834, 4917, -21170, 8070)
+}
 
 // 38400 Hz sample rate
-pub const fn lpf_9600_38k_4800() -> BiquadFilter { BiquadFilter::new(3199, 6398, 3199, -30892, 10920) }
-pub const fn lpf_9600_38k_5400() -> BiquadFilter { BiquadFilter::new(3872, 7745, 3872, -26880, 9603) }
-pub const fn lpf_9600_38k_6000() -> BiquadFilter { BiquadFilter::new(4585, 9170, 4585, -22927, 8500) }
-pub const fn lpf_9600_38k_6600() -> BiquadFilter { BiquadFilter::new(5333, 10667, 5333, -19026, 7593) }
-pub const fn lpf_9600_38k_7200() -> BiquadFilter { BiquadFilter::new(6117, 12234, 6117, -15168, 6869) }
+pub const fn lpf_9600_38k_4800() -> BiquadFilter {
+    BiquadFilter::new(3199, 6398, 3199, -30892, 10920)
+}
+pub const fn lpf_9600_38k_5400() -> BiquadFilter {
+    BiquadFilter::new(3872, 7745, 3872, -26880, 9603)
+}
+pub const fn lpf_9600_38k_6000() -> BiquadFilter {
+    BiquadFilter::new(4585, 9170, 4585, -22927, 8500)
+}
+pub const fn lpf_9600_38k_6600() -> BiquadFilter {
+    BiquadFilter::new(5333, 10667, 5333, -19026, 7593)
+}
+pub const fn lpf_9600_38k_7200() -> BiquadFilter {
+    BiquadFilter::new(6117, 12234, 6117, -15168, 6869)
+}
 
 /// Compute RRC (root raised cosine) FIR coefficients at runtime.
 ///
@@ -1177,13 +1216,20 @@ fn compute_rrc_coeffs(coeffs: &mut [i16], sps: usize, alpha_pct: u32) {
             1.0 - alpha + 4.0 * alpha / core::f64::consts::PI
         } else if (t.abs() - 1.0 / (4.0 * alpha)).abs() < 1e-10 && alpha > 0.0 {
             alpha / core::f64::consts::SQRT_2
-                * ((1.0 + 2.0 / core::f64::consts::PI) * libm::sin(core::f64::consts::PI / (4.0 * alpha))
-                    + (1.0 - 2.0 / core::f64::consts::PI) * libm::cos(core::f64::consts::PI / (4.0 * alpha)))
+                * ((1.0 + 2.0 / core::f64::consts::PI)
+                    * libm::sin(core::f64::consts::PI / (4.0 * alpha))
+                    + (1.0 - 2.0 / core::f64::consts::PI)
+                        * libm::cos(core::f64::consts::PI / (4.0 * alpha)))
         } else {
             let pi_t = core::f64::consts::PI * t;
-            let num = libm::sin(pi_t * (1.0 - alpha)) + 4.0 * alpha * t * libm::cos(pi_t * (1.0 + alpha));
+            let num =
+                libm::sin(pi_t * (1.0 - alpha)) + 4.0 * alpha * t * libm::cos(pi_t * (1.0 + alpha));
             let den = pi_t * (1.0 - (4.0 * alpha * t) * (4.0 * alpha * t));
-            if den.abs() < 1e-20 { 0.0 } else { num / den }
+            if den.abs() < 1e-20 {
+                0.0
+            } else {
+                num / den
+            }
         };
 
         *coeff = val;
@@ -1204,11 +1250,9 @@ fn compute_rrc_coeffs(coeffs: &mut [i16], sps: usize, alpha_pct: u32) {
 /// Normalized to Q15.
 #[allow(dead_code)]
 const RRC_48K_5SPS: [i16; 40] = [
-     -171,  -245,  -186,    52,   376,   614,   575,   177,
-     -511, -1173, -1352,  -742,   627,  2414,  3970,  4547,
-     3715,  1577, -1323, -4197, -6001, -5698, -3229,   785,
-     5500,  9730, 12281, 12547, 10608,  7050,  2831,  -846,
-    -3326, -4181, -3497, -1757,   409,  2248,  3124,  2821,
+    -171, -245, -186, 52, 376, 614, 575, 177, -511, -1173, -1352, -742, 627, 2414, 3970, 4547,
+    3715, 1577, -1323, -4197, -6001, -5698, -3229, 785, 5500, 9730, 12281, 12547, 10608, 7050,
+    2831, -846, -3326, -4181, -3497, -1757, 409, 2248, 3124, 2821,
 ];
 
 /// Get precomputed RRC coefficients for no_std targets.
@@ -1227,17 +1271,13 @@ fn rrc_coeffs_precomputed(n_taps: usize) -> [i16; MAX_RRC_TAPS] {
 #[cfg(test)]
 mod tests {
     extern crate alloc;
-    use alloc::vec::Vec;
-    use super::*;
     use super::super::scrambler::Scrambler;
+    use super::*;
+    use alloc::vec::Vec;
 
     /// Generate a clean 9600 baud baseband signal for testing.
     /// Returns samples at the given sample rate.
-    fn generate_9600_test_signal(
-        data: &[bool],
-        sample_rate: u32,
-        amplitude: i16,
-    ) -> Vec<i16> {
+    fn generate_9600_test_signal(data: &[bool], sample_rate: u32, amplitude: i16) -> Vec<i16> {
         let sps = sample_rate / 9600;
         let mut scrambler = Scrambler::new();
         let mut samples = Vec::new();
@@ -1330,12 +1370,16 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 300];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
         // Should produce approximately 200 symbols
-        assert!(n > 150 && n < 250,
-            "Expected ~200 symbols, got {}", n);
+        assert!(n > 150 && n < 250, "Expected ~200 symbols, got {}", n);
     }
 
     #[test]
@@ -1352,11 +1396,15 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 300];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
-        assert!(n > 150 && n < 250,
-            "Expected ~200 symbols, got {}", n);
+        assert!(n > 150 && n < 250, "Expected ~200 symbols, got {}", n);
     }
 
     #[test]
@@ -1373,11 +1421,15 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 300];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
-        assert!(n > 150 && n < 250,
-            "Expected ~200 symbols, got {}", n);
+        assert!(n > 150 && n < 250, "Expected ~200 symbols, got {}", n);
     }
 
     #[test]
@@ -1394,11 +1446,15 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 300];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
-        assert!(n > 150 && n < 250,
-            "Expected ~200 symbols, got {}", n);
+        assert!(n > 150 && n < 250, "Expected ~200 symbols, got {}", n);
     }
 
     #[test]
@@ -1415,11 +1471,15 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 300];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
-        assert!(n > 100 && n < 300,
-            "Expected ~200 symbols, got {}", n);
+        assert!(n > 100 && n < 300, "Expected ~200 symbols, got {}", n);
     }
 
     #[test]
@@ -1458,7 +1518,11 @@ mod tests {
             let sample: i16 = if i % 2 == 0 { 10000 } else { -10000 };
             out_val = cascaded.process(sample);
         }
-        assert!(out_val.abs() < 2000, "Nyquist should be attenuated, got {}", out_val);
+        assert!(
+            out_val.abs() < 2000,
+            "Nyquist should be attenuated, got {}",
+            out_val
+        );
     }
 
     #[test]
@@ -1469,15 +1533,22 @@ mod tests {
         let sps_approx = 5; // close enough for signal gen
 
         for i in 0..44100 {
-            let val: i16 = if (i / sps_approx) % 2 == 0 { 10000 } else { -10000 };
+            let val: i16 = if (i / sps_approx) % 2 == 0 {
+                10000
+            } else {
+                -10000
+            };
             if pll.update(val).is_some() {
                 boundaries += 1;
             }
         }
         // At 44100/9600 = 4.59375 sps, we expect floor(44100/4.59375)≈9600 boundaries
         // With integer sample stepping, actual count varies; 8800-10200 is acceptable
-        assert!(boundaries > 8500 && boundaries < 10500,
-            "Expected ~9600 boundaries at 44100 Hz, got {}", boundaries);
+        assert!(
+            boundaries > 8500 && boundaries < 10500,
+            "Expected ~9600 boundaries at 44100 Hz, got {}",
+            boundaries
+        );
     }
 
     #[test]
@@ -1508,7 +1579,10 @@ mod tests {
         }
 
         // Should produce ~9600 symbols per second
-        assert!(boundaries > 9000 && boundaries < 10200,
-            "Expected ~9600 boundaries, got {}", boundaries);
+        assert!(
+            boundaries > 9000 && boundaries < 10200,
+            "Expected ~9600 boundaries, got {}",
+            boundaries
+        );
     }
 }
