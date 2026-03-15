@@ -1353,11 +1353,11 @@ mod tests {
     fn test_multi_decoder_creation() {
         let config = DemodConfig::default_1200();
         let multi = MultiDecoder::new(config);
-        // Fast: 9 base + 8 freq + 3 AGC + 8 gain + 4 cross = 32 (std)
+        // Fast: 9 base + 8 freq + 3 AGC + 8 gain + 4 cross + 3 preemph = 35 (std)
         // Fast: 9 base + 2 freq + 3 AGC + 3 gain = 17 (no_std)
         // DM: 2 PLL + 3 Bresenham d=8 + 1 Bresenham d=5 = 6 decoders
         #[cfg(feature = "std")]
-        assert_eq!(multi.num_decoders(), 38);
+        assert_eq!(multi.num_decoders(), 41);
         #[cfg(not(feature = "std"))]
         assert_eq!(multi.num_decoders(), 23);
         assert_eq!(multi.total_decoded, 0);

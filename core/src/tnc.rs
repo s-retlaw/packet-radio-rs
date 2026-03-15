@@ -55,6 +55,9 @@ use crate::modem::multi::{MiniDecoder, MultiDecoder, TwistMiniDecoder};
 #[cfg(feature = "multi-decoder")]
 use crate::modem::corr_slicer::CorrSlicerDecoder;
 
+#[cfg(feature = "fx25")]
+use crate::fx25::decode::Fx25Decoder;
+
 // Re-export for use in tests (HdlcDecoder used directly in hdlc_encode_data roundtrip test)
 #[cfg(test)]
 use crate::ax25::frame::HdlcDecoder;
@@ -115,6 +118,10 @@ pub struct TncConfig {
     pub full_duplex: bool,
     /// Baud rate for flag timing calculations
     pub baud_rate: u32,
+    /// FX.25 TX mode: minimum RS check bytes (0 = disabled, 16/32/64 = FEC level).
+    /// When enabled, TX frames are wrapped in FX.25 FEC instead of plain HDLC.
+    #[cfg(feature = "fx25")]
+    pub fx25_tx_check_bytes: u16,
 }
 
 impl Default for TncConfig {
@@ -126,6 +133,8 @@ impl Default for TncConfig {
             txtail: 10,
             full_duplex: false,
             baud_rate: 1200,
+            #[cfg(feature = "fx25")]
+            fx25_tx_check_bytes: 0, // disabled by default
         }
     }
 }
@@ -655,16 +664,45 @@ impl<D: Demodulate, M: Modulate> TncEngine<D, M> {
         ((self.config.txtail as u32 * self.config.baud_rate / 800) as usize).max(1)
     }
 
-    /// Dequeue a frame, HDLC-encode it (CRC + bit stuffing), and transition
-    /// to Transmitting state.
+    /// Dequeue a frame, encode it (HDLC or FX.25), and transition to Transmitting state.
     fn begin_frame_tx(&mut self) {
         let mut frame_data = [0u8; MAX_FRAME_LEN];
         if let Some(frame_len) = self.tx_queue.dequeue_into(&mut frame_data) {
+            #[cfg(feature = "fx25")]
+            {
+                if self.config.fx25_tx_check_bytes > 0 {
+                    // FX.25 mode: compute CRC, then RS-encode with correlation tag.
+                    // The FX.25 block is sent as raw bits (no bit-stuffing).
+                    let crc = crc16_ccitt(&frame_data[..frame_len]);
+                    let mut frame_with_crc = [0u8; MAX_FRAME_LEN + 2];
+                    frame_with_crc[..frame_len].copy_from_slice(&frame_data[..frame_len]);
+                    frame_with_crc[frame_len] = crc as u8;
+                    frame_with_crc[frame_len + 1] = (crc >> 8) as u8;
+                    let total = frame_len + 2;
+
+                    if let Some(block) = crate::fx25::encode::fx25_encode(
+                        &frame_with_crc[..total],
+                        self.config.fx25_tx_check_bytes,
+                    ) {
+                        // Copy FX.25 bits to tx_bits
+                        let count = block.bit_count.min(MAX_TX_BITS);
+                        for i in 0..count {
+                            self.tx_bits[i] = block.bits[i];
+                        }
+                        self.tx_bit_count = count;
+                        self.tx_state = TxState::Transmitting { bit_index: 0 };
+                        return;
+                    }
+                    // Fallthrough to HDLC if FX.25 encode fails (frame too large)
+                }
+            }
+
+            // Standard HDLC encoding (CRC + bit stuffing)
             self.tx_bit_count =
                 hdlc_encode_data(&frame_data[..frame_len], &mut self.tx_bits);
             self.tx_state = TxState::Transmitting { bit_index: 0 };
         } else {
-            // Queue was empty (shouldn't happen) — go to tail
+            // Queue was empty — go to tail
             let num_flags = self.txtail_flags();
             self.tx_state = TxState::TxTail {
                 flags_sent: 0,
@@ -727,6 +765,8 @@ const ADAPTER_SYMBOL_BUF: usize = 256;
 pub struct FastAdapter {
     demod: FastDemodulator,
     hdlc: AnyHdlc,
+    #[cfg(feature = "fx25")]
+    fx25: Fx25Decoder,
 }
 
 impl FastAdapter {
@@ -735,6 +775,8 @@ impl FastAdapter {
         Self {
             demod: FastDemodulator::new(config),
             hdlc: AnyHdlc::new(),
+            #[cfg(feature = "fx25")]
+            fx25: Fx25Decoder::new(),
         }
     }
 }
@@ -749,6 +791,10 @@ impl Demodulate for FastAdapter {
                 if let Some((frame, _cost)) = self.hdlc.feed(sym.bit, sym.llr) {
                     handler(frame);
                 }
+                #[cfg(feature = "fx25")]
+                if let Some(frame) = self.fx25.feed_bit(sym.bit) {
+                    handler(frame);
+                }
             }
         }
     }
@@ -758,6 +804,8 @@ impl Demodulate for FastAdapter {
 pub struct QualityAdapter {
     demod: FastDemodulator,
     hdlc: AnyHdlc,
+    #[cfg(feature = "fx25")]
+    fx25: Fx25Decoder,
 }
 
 impl QualityAdapter {
@@ -766,6 +814,8 @@ impl QualityAdapter {
         Self {
             demod: FastDemodulator::new(config).with_energy_llr(),
             hdlc: AnyHdlc::new(),
+            #[cfg(feature = "fx25")]
+            fx25: Fx25Decoder::new(),
         }
     }
 }
@@ -780,6 +830,10 @@ impl Demodulate for QualityAdapter {
                 if let Some((frame, _cost)) = self.hdlc.feed(sym.bit, sym.llr) {
                     handler(frame);
                 }
+                #[cfg(feature = "fx25")]
+                if let Some(frame) = self.fx25.feed_bit(sym.bit) {
+                    handler(frame);
+                }
             }
         }
     }
@@ -789,6 +843,8 @@ impl Demodulate for QualityAdapter {
 pub struct DmAdapter {
     demod: DmDemodulator,
     hdlc: AnyHdlc,
+    #[cfg(feature = "fx25")]
+    fx25: Fx25Decoder,
 }
 
 impl DmAdapter {
@@ -797,6 +853,8 @@ impl DmAdapter {
         Self {
             demod: DmDemodulator::with_bpf_pll(config),
             hdlc: AnyHdlc::new(),
+            #[cfg(feature = "fx25")]
+            fx25: Fx25Decoder::new(),
         }
     }
 }
@@ -811,6 +869,10 @@ impl Demodulate for DmAdapter {
                 if let Some((frame, _cost)) = self.hdlc.feed(sym.bit, sym.llr) {
                     handler(frame);
                 }
+                #[cfg(feature = "fx25")]
+                if let Some(frame) = self.fx25.feed_bit(sym.bit) {
+                    handler(frame);
+                }
             }
         }
     }
@@ -820,6 +882,8 @@ impl Demodulate for DmAdapter {
 pub struct CorrAdapter {
     demod: CorrelationDemodulator,
     hdlc: AnyHdlc,
+    #[cfg(feature = "fx25")]
+    fx25: Fx25Decoder,
 }
 
 impl CorrAdapter {
@@ -828,6 +892,8 @@ impl CorrAdapter {
         Self {
             demod: CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr(),
             hdlc: AnyHdlc::new(),
+            #[cfg(feature = "fx25")]
+            fx25: Fx25Decoder::new(),
         }
     }
 }
@@ -840,6 +906,10 @@ impl Demodulate for CorrAdapter {
             let n = self.demod.process_samples(chunk, &mut symbols);
             for sym in &symbols[..n] {
                 if let Some((frame, _cost)) = self.hdlc.feed(sym.bit, sym.llr) {
+                    handler(frame);
+                }
+                #[cfg(feature = "fx25")]
+                if let Some(frame) = self.fx25.feed_bit(sym.bit) {
                     handler(frame);
                 }
             }

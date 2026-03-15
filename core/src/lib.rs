@@ -41,6 +41,8 @@ pub mod ax25;
 pub mod aprs;
 pub mod kiss;
 pub mod tnc;
+#[cfg(feature = "fx25")]
+pub mod fx25;
 
 /// Maximum AX.25 frame length (bytes), per spec
 pub const MAX_FRAME_LEN: usize = 330;
