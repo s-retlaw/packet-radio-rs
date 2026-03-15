@@ -115,7 +115,7 @@ pub fn run_smart3_sweep(path: &str) {
                     .frequencies(mark, space).with_energy_llr();
                 let mut soft_hdlc = SoftHdlcDecoder::new();
                 let mut frames: Vec<Vec<u8>> = Vec::new();
-                let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+                let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
 
                 for chunk in samples.chunks(1024) {
                     let n = demod.process_samples(chunk, &mut symbols);
@@ -224,7 +224,7 @@ pub fn run_smart3_sweep(path: &str) {
                     let mut h3 = SoftHdlcDecoder::new();
 
                     let mut all_frames: HashSet<Vec<u8>> = HashSet::new();
-                    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+                    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
 
                     for chunk in samples.chunks(1024) {
                         let n1 = d1.process_samples(chunk, &mut symbols);

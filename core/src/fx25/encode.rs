@@ -88,8 +88,11 @@ pub fn fx25_encode_with_tag(frame_with_crc: &[u8], tag_idx: usize) -> Option<Fx2
         tag_index: tag_idx as u8,
     };
 
-    // 1. Correlation tag: 64 bits, MSB first
-    for b in (0..64).rev() {
+    // 1. Correlation tag: 64 bits, LSB first
+    // DW receiver uses right-shift register (new bit at MSB), so the first
+    // transmitted bit ends up at position 0. Sending LSB first ensures the
+    // shift register matches the tag value after all 64 bits arrive.
+    for b in 0..64 {
         block.bits[block.bit_count] = ((tag.tag >> b) & 1) as u8;
         block.bit_count += 1;
     }
@@ -225,11 +228,18 @@ mod tests {
     #[test]
     fn encode_with_specific_tag() {
         let frame = make_test_frame();
-        // Tag 0: RS(255,239), 16 check bytes
-        let block = fx25_encode_with_tag(&frame, 0).unwrap();
-        assert_eq!(block.tag_index, 0);
+        // Tag 1: RS(255,239), 16 check bytes
+        let block = fx25_encode_with_tag(&frame, 1).unwrap();
+        assert_eq!(block.tag_index, 1);
         let expected = 64 + 255 * 8;
         assert_eq!(block.bit_count, expected);
+    }
+
+    #[test]
+    fn encode_reserved_tag_fails() {
+        let frame = make_test_frame();
+        // Tag 0 is reserved (no FEC)
+        assert!(fx25_encode_with_tag(&frame, 0).is_none());
     }
 
     #[test]

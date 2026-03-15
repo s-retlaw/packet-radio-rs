@@ -97,8 +97,11 @@ fn generator_poly(nsym: usize, gen: &mut [u8; MAX_CHECK + 1]) {
 /// Encode a data block using systematic RS(n, k).
 ///
 /// Uses polynomial long division: computes remainder of `data(x) * x^nsym / g(x)`.
+/// For shortened codes (data.len() < 255 - nsym), the data is implicitly padded
+/// with leading zeros to the full RS(255, 255-nsym) block before encoding,
+/// matching the standard shortened RS convention used by Dire Wolf.
 ///
-/// - `data`: k-byte message
+/// - `data`: k-byte message (may be shorter than 255 - nsym for shortened codes)
 /// - `nsym`: number of check bytes (n - k)
 /// - `parity_out`: output buffer for `nsym` parity bytes
 ///
@@ -110,30 +113,27 @@ pub fn rs_encode(data: &[u8], nsym: usize, parity_out: &mut [u8]) -> Result<(), 
 
     let mut gen = [0u8; MAX_CHECK + 1];
     generator_poly(nsym, &mut gen);
-    // gen is high-to-low, length nsym+1, gen[0] = 1
 
-    // Long division: divide [data | 0...0] by gen.
-    // Work on a copy: dividend = [data_0, ..., data_{k-1}, 0, ..., 0] (k + nsym bytes)
-    // After division, the last nsym bytes are the remainder = parity.
-    let k = data.len();
-    let n = k + nsym;
+    // For shortened codes, pad with leading zeros to full RS(255, 255-nsym) length.
+    // The full data length is 255 - nsym. Padding count = (255 - nsym) - data.len().
+    let full_k = MAX_N - nsym; // 255 - nsym
+    let pad = full_k - data.len().min(full_k);
+
+    // Long division on [zeros(pad) | data | zeros(nsym)]
     let mut dividend = [0u8; MAX_N];
-    dividend[..k].copy_from_slice(data);
-    // dividend[k..n] already zero
+    dividend[pad..pad + data.len()].copy_from_slice(data);
 
-    for i in 0..k {
+    for i in 0..full_k {
         let coeff = dividend[i];
         if coeff != 0 {
-            // Subtract coeff * gen from dividend[i..i+nsym+1]
-            // gen[0] = 1, so dividend[i] -= coeff * 1 = 0 (intended)
             for j in 1..=nsym {
                 dividend[i + j] = gf_add(dividend[i + j], gf_mul(coeff, gen[j]));
             }
         }
     }
 
-    // The remainder is in dividend[k..n]
-    parity_out[..nsym].copy_from_slice(&dividend[k..n]);
+    // Parity is in the last nsym bytes
+    parity_out[..nsym].copy_from_slice(&dividend[full_k..full_k + nsym]);
     Ok(())
 }
 
@@ -306,8 +306,11 @@ fn forney(
 /// Decode a Reed-Solomon codeword in place.
 ///
 /// - `codeword`: the n-byte block `[data | parity]` (corrected in place)
-/// - `n`: total codeword length
+/// - `n`: total codeword length (may be < 255 for shortened codes)
 /// - `nsym`: number of check bytes (n - k)
+///
+/// For shortened codes, the codeword is internally padded with leading zeros
+/// to the full 255-byte RS(255, 255-nsym) block for decoding.
 ///
 /// Returns number of corrected byte errors, or `Err` if uncorrectable.
 pub fn rs_decode(codeword: &mut [u8], n: usize, nsym: usize) -> Result<usize, RsError> {
@@ -315,9 +318,14 @@ pub fn rs_decode(codeword: &mut [u8], n: usize, nsym: usize) -> Result<usize, Rs
         return Err(RsError::InvalidParams);
     }
 
-    // 1. Syndromes
+    // For shortened codes, pad to 255 bytes with leading zeros.
+    let pad = MAX_N - n;
+    let mut padded = [0u8; MAX_N];
+    padded[pad..].copy_from_slice(&codeword[..n]);
+
+    // 1. Syndromes (on the full 255-byte padded codeword)
     let mut syndromes = [0u8; MAX_CHECK];
-    if compute_syndromes(&codeword[..n], nsym, &mut syndromes) {
+    if compute_syndromes(&padded, nsym, &mut syndromes) {
         return Ok(0);
     }
 
@@ -328,28 +336,36 @@ pub fn rs_decode(codeword: &mut [u8], n: usize, nsym: usize) -> Result<usize, Rs
         return Err(RsError::TooManyErrors);
     }
 
-    // 3. Chien search
+    // 3. Chien search (over full 255-byte block)
     let mut positions = [0u8; MAX_CHECK];
-    chien_search(&lambda, num_errors, n, &mut positions)?;
+    chien_search(&lambda, num_errors, MAX_N, &mut positions)?;
 
     // 4. Forney
     let mut magnitudes = [0u8; MAX_CHECK];
-    forney(&syndromes[..nsym], &lambda, num_errors, &positions, n, nsym, &mut magnitudes);
+    forney(&syndromes[..nsym], &lambda, num_errors, &positions, MAX_N, nsym, &mut magnitudes);
 
-    // 5. Correct
+    // 5. Correct (on padded block)
     for i in 0..num_errors {
         let pos = positions[i] as usize;
-        if pos >= n {
+        if pos < pad {
+            // Error in padding area — this means the block is uncorrectable
+            // (padding should be all zeros, errors there indicate too many errors)
             return Err(RsError::TooManyErrors);
         }
-        codeword[pos] = gf_add(codeword[pos], magnitudes[i]);
+        if pos >= MAX_N {
+            return Err(RsError::TooManyErrors);
+        }
+        padded[pos] = gf_add(padded[pos], magnitudes[i]);
     }
 
-    // 6. Verify
+    // 6. Verify (on padded block)
     let mut verify = [0u8; MAX_CHECK];
-    if !compute_syndromes(&codeword[..n], nsym, &mut verify) {
+    if !compute_syndromes(&padded, nsym, &mut verify) {
         return Err(RsError::TooManyErrors);
     }
+
+    // Copy corrected data back (strip padding)
+    codeword[..n].copy_from_slice(&padded[pad..]);
 
     Ok(num_errors)
 }
@@ -357,6 +373,22 @@ pub fn rs_decode(codeword: &mut [u8], n: usize, nsym: usize) -> Result<usize, Rs
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encode_shortened_matches_python_reference() {
+        // RS(144,128) with 16 check bytes — shortened from RS(255,239)
+        // Data: [1, 2, 3, ..., 128]
+        // Python reference parity (using same GF(256) poly 0x11D, FCR=1, prim=1):
+        let data: [u8; 128] = core::array::from_fn(|i| (i + 1) as u8);
+        let expected_parity: [u8; 16] = [
+            0x59, 0xed, 0x75, 0xbf, 0x86, 0x6f, 0x16, 0x42,
+            0x1f, 0xd5, 0x35, 0x63, 0x9b, 0xfe, 0x52, 0xd9,
+        ];
+        let mut parity = [0u8; 64];
+        rs_encode(&data, 16, &mut parity).unwrap();
+        assert_eq!(&parity[..16], &expected_parity,
+            "RS(144,128) parity mismatch with Python reference");
+    }
 
     fn encode_test_block(data: &[u8], nsym: usize) -> ([u8; MAX_N], usize) {
         let n = data.len() + nsym;

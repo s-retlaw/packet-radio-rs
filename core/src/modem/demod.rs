@@ -36,6 +36,9 @@ pub struct DemodSymbol {
     /// Absolute sample index when this symbol was detected.
     /// Used by multi-decoders for precise time-window deduplication.
     pub sample_idx: u32,
+    /// Raw (pre-NRZI) bit decision. Used by FX.25 decoder which operates
+    /// on the raw bit stream (correlation tags are defined pre-NRZI).
+    pub raw_bit: bool,
 }
 
 /// Right-shift applied to Goertzel energies before AGC peak tracking/comparison.
@@ -777,6 +780,7 @@ impl FastDemodulator {
                         bit: decoded_bit,
                         llr,
                         sample_idx: self.samples_processed as u32,
+                        raw_bit,
                     };
                     sym_count += 1;
                 }
@@ -1203,6 +1207,7 @@ impl QualityDemodulator {
                         bit: decoded_bit,
                         llr: decoded_llr,
                         sample_idx: self.samples_processed as u32,
+                        raw_bit,
                     };
                     sym_count += 1;
                 }
@@ -1826,6 +1831,7 @@ impl DmDemodulator {
                         bit: decoded_bit,
                         llr,
                         sample_idx: self.samples_processed as u32,
+                        raw_bit,
                     };
                     sym_count += 1;
                 }
@@ -2256,6 +2262,7 @@ impl CorrelationDemodulator {
                         bit: decoded_bit,
                         llr,
                         sample_idx: self.samples_processed as u32,
+                        raw_bit,
                     };
                     sym_count += 1;
                 }
@@ -2290,7 +2297,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         // Silence should produce some symbols (PLL runs, but data is garbage)
@@ -2303,7 +2310,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = QualityDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         assert!(n < 200);
@@ -2314,7 +2321,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
         let noise = [1000i16; 100];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 50];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 50];
 
         demod.process_samples(&noise, &mut symbols);
         demod.reset();
@@ -2333,7 +2340,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = CorrelationDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         assert!(n < 200);
@@ -2351,7 +2358,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = CorrelationDemodulator::new(config).with_pll();
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         // PLL should still produce symbols (at approximately baud rate)
@@ -2363,7 +2370,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = CorrelationDemodulator::new(config);
         let noise = [1000i16; 100];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 50];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 50];
 
         demod.process_samples(&noise, &mut symbols);
         demod.reset();
@@ -2581,7 +2588,7 @@ mod tests {
         // Demodulate with fast path
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 8192];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Feed demodulated bits into HDLC decoder
@@ -2633,7 +2640,7 @@ mod tests {
         // Demodulate with quality path
         let config = DemodConfig::default_1200();
         let mut demod = QualityDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 8192];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Feed into soft HDLC decoder
@@ -2683,7 +2690,7 @@ mod tests {
 
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config).with_agc();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 8192];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -2743,7 +2750,7 @@ mod tests {
         // AGC decoder should succeed on de-emphasized signal
         let config = DemodConfig::default_1200();
         let mut demod_agc = FastDemodulator::new(config).with_agc();
-        let mut symbols_agc = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 8192];
+        let mut symbols_agc = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 8192];
         let num_agc = demod_agc.process_samples(&audio[..audio_len], &mut symbols_agc);
 
         let mut decoder_agc = HdlcDecoder::new();
@@ -2800,7 +2807,7 @@ mod tests {
         // Demodulate
         let config = DemodConfig::default_1200();
         let mut demod = FastDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 8192];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Decode
@@ -2899,7 +2906,7 @@ mod tests {
 
         let config = DemodConfig::default_1200_22k();
         let mut demod = DmDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 256];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 256];
         let num = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut shift_reg: u8 = 0;
@@ -2934,7 +2941,7 @@ mod tests {
 
         let config = DemodConfig::default_1200_22k();
         let mut demod = DmDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 256];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 256];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Check for flags
@@ -2968,7 +2975,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = DmDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         // Silence should produce some symbols (PLL runs), no panics/overflow
@@ -2980,7 +2987,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = DmDemodulator::new(config);
         let noise = [1000i16; 100];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 50];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 50];
 
         demod.process_samples(&noise, &mut symbols);
         demod.reset();
@@ -3027,7 +3034,7 @@ mod tests {
         // Demodulate with DM path at 22050 Hz
         let config = DemodConfig::default_1200_22k();
         let mut demod = DmDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 16384];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         // Feed demodulated bits into HDLC decoder
@@ -3122,7 +3129,7 @@ mod tests {
 
         let config = DemodConfig::default_1200();
         let mut demod = CorrelationDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 8192];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 8192];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3179,7 +3186,7 @@ mod tests {
 
         let config = DemodConfig::default_1200_22k();
         let mut demod = DmDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 16384];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3235,7 +3242,7 @@ mod tests {
 
         let config = DemodConfig::default_300();
         let mut demod = FastDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 16384];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3287,7 +3294,7 @@ mod tests {
 
         let config = DemodConfig::default_300();
         let mut demod = DmDemodulator::with_bpf(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 16384];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();
@@ -3339,7 +3346,7 @@ mod tests {
 
         let config = DemodConfig::default_300();
         let mut demod = CorrelationDemodulator::new(config);
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 16384];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 16384];
         let num_symbols = demod.process_samples(&audio[..audio_len], &mut symbols);
 
         let mut decoder = HdlcDecoder::new();

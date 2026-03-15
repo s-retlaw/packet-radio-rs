@@ -26,8 +26,8 @@ fn decode_fusion(
     let mut corr = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut g_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1];
-    let mut c_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1];
+    let mut g_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
+    let mut c_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
 
     let start = Instant::now();
 
@@ -77,8 +77,8 @@ fn decode_fusion_maxconf(samples: &[i16], sample_rate: u32) -> (DecodeResult, u3
     let mut corr = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut g_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1];
-    let mut c_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1];
+    let mut g_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
+    let mut c_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
 
     let start = Instant::now();
 
@@ -128,8 +128,8 @@ fn decode_fusion_sum(samples: &[i16], sample_rate: u32) -> (DecodeResult, u32) {
     let mut corr = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut g_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1];
-    let mut c_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1];
+    let mut g_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
+    let mut c_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
 
     let start = Instant::now();
 
@@ -185,8 +185,8 @@ fn decode_fusion_windowed(
     let mut corr = CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr();
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut g_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1];
-    let mut c_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1];
+    let mut g_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
+    let mut c_sym = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1];
 
     let start = Instant::now();
 

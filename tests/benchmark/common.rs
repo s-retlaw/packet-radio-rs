@@ -56,7 +56,7 @@ pub fn run_hard_decode(
 ) -> DecodeResult {
     let mut hdlc = HdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; DECODE_CHUNK];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; DECODE_CHUNK];
 
     let start = Instant::now();
     for chunk in samples.chunks(DECODE_CHUNK) {
@@ -77,7 +77,7 @@ pub fn run_soft_decode(
 ) -> (DecodeResult, u32) {
     let mut soft_hdlc = SoftHdlcDecoder::new();
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; DECODE_CHUNK];
+    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; DECODE_CHUNK];
 
     let start = Instant::now();
     for chunk in samples.chunks(DECODE_CHUNK) {
@@ -345,7 +345,7 @@ pub fn decode_corr_3phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
         let mut demod = CorrelationDemodulator::new(config).with_adaptive_gain();
         demod.set_bit_phase(offset);
         let mut hdlc = HdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
         let mut frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
         let mut sample_pos: usize = 0;
 
@@ -389,7 +389,7 @@ pub fn decode_corr_3phase_quality(samples: &[i16], sample_rate: u32) -> (DecodeR
             offset,
         ).with_adaptive_gain().with_energy_llr();
         let mut soft_hdlc = SoftHdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
         let mut frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
         let mut sample_pos: usize = 0;
 

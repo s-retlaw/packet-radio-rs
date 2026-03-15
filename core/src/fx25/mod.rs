@@ -49,39 +49,38 @@ impl Fx25Tag {
 
 /// All 16 FX.25 correlation tags from the specification.
 ///
-/// Tag values from Dire Wolf / Stensat FX.25 specification.
-/// NRZI-invariant form (tags are defined for the decoded bit stream).
+/// Tag values from Dire Wolf `fx25_init.c` (verified against Stensat spec).
+/// These are the bit patterns seen in the NRZI-decoded bit stream.
 pub static FX25_TAGS: [Fx25Tag; 16] = [
+    // Tag 0x00: reserved (no FEC)
+    Fx25Tag { tag: 0x566E_D271_7946_107E, rs_n: 0, rs_k: 0, check_bytes: 0 },
     // Tag 0x01: RS(255, 239), 16 check bytes
     Fx25Tag { tag: 0xB74D_B7DF_8A53_2F3E, rs_n: 255, rs_k: 239, check_bytes: 16 },
-    // Tag 0x02: RS(144, 128), 16 check bytes
-    Fx25Tag { tag: 0x26FF_60A6_00CC_8FDA, rs_n: 144, rs_k: 128, check_bytes: 16 },
-    // Tag 0x03: RS(80, 64), 16 check bytes
-    Fx25Tag { tag: 0xCC7B_BAE0_0B29_D935, rs_n: 80, rs_k: 64, check_bytes: 16 },
-    // Tag 0x04: RS(48, 32), 16 check bytes
-    Fx25Tag { tag: 0xF689_6719_6C07_88AB, rs_n: 48, rs_k: 32, check_bytes: 16 },
+    // Tag 0x02: RS(144, 128), 16 check bytes (shortened)
+    Fx25Tag { tag: 0x26FF_60A6_00CC_8FDE, rs_n: 144, rs_k: 128, check_bytes: 16 },
+    // Tag 0x03: RS(80, 64), 16 check bytes (shortened)
+    Fx25Tag { tag: 0xC7DC_0508_F3D9_B09E, rs_n: 80, rs_k: 64, check_bytes: 16 },
+    // Tag 0x04: RS(48, 32), 16 check bytes (shortened)
+    Fx25Tag { tag: 0x8F05_6EB4_3696_60EE, rs_n: 48, rs_k: 32, check_bytes: 16 },
     // Tag 0x05: RS(255, 223), 32 check bytes
-    Fx25Tag { tag: 0x6E26_0B12_30F1_DC52, rs_n: 255, rs_k: 223, check_bytes: 32 },
-    // Tag 0x06: RS(160, 128), 32 check bytes
+    Fx25Tag { tag: 0x6E26_0B1A_C583_5FAE, rs_n: 255, rs_k: 223, check_bytes: 32 },
+    // Tag 0x06: RS(160, 128), 32 check bytes (shortened)
     Fx25Tag { tag: 0xFF94_DC63_4F1C_FF4E, rs_n: 160, rs_k: 128, check_bytes: 32 },
-    // Tag 0x07: RS(96, 64), 32 check bytes
-    Fx25Tag { tag: 0x1EB7_B946_0E19_850F, rs_n: 96, rs_k: 64, check_bytes: 32 },
-    // Tag 0x08: RS(64, 32), 32 check bytes
-    Fx25Tag { tag: 0xDBB3_2C50_9442_3B12, rs_n: 64, rs_k: 32, check_bytes: 32 },
+    // Tag 0x07: RS(96, 64), 32 check bytes (shortened)
+    Fx25Tag { tag: 0x1EB7_B9CD_BC09_C00E, rs_n: 96, rs_k: 64, check_bytes: 32 },
+    // Tag 0x08: RS(64, 32), 32 check bytes (shortened)
+    Fx25Tag { tag: 0xDBF8_69BD_2DBB_1776, rs_n: 64, rs_k: 32, check_bytes: 32 },
     // Tag 0x09: RS(255, 191), 64 check bytes
     Fx25Tag { tag: 0x3ADB_0C13_DEAE_2836, rs_n: 255, rs_k: 191, check_bytes: 64 },
-    // Tag 0x0A: RS(192, 128), 64 check bytes
-    Fx25Tag { tag: 0xAB69_DB6A_5431_3A22, rs_n: 192, rs_k: 128, check_bytes: 64 },
-    // Tag 0x0B: RS(128, 64), 64 check bytes
+    // Tag 0x0A: RS(192, 128), 64 check bytes (shortened)
+    Fx25Tag { tag: 0xAB69_DB6A_5431_88D6, rs_n: 192, rs_k: 128, check_bytes: 64 },
+    // Tag 0x0B: RS(128, 64), 64 check bytes (shortened)
     Fx25Tag { tag: 0x4A4A_BEC4_A724_B796, rs_n: 128, rs_k: 64, check_bytes: 64 },
-    // Tags 0x0C-0x10: reserved / less common — use placeholder values
-    // These are defined in the spec but rarely used in practice.
-    // Using the "no FEC" and smaller codes:
-    Fx25Tag { tag: 0x0293_61B2_A4E1_6B9C, rs_n: 255, rs_k: 255, check_bytes: 0 }, // no FEC (passthrough)
-    Fx25Tag { tag: 0xFC41_04A7_4D01_0516, rs_n: 255, rs_k: 247, check_bytes: 8 },
-    Fx25Tag { tag: 0x1986_39F0_F5FF_A5B4, rs_n: 160, rs_k: 152, check_bytes: 8 },
-    Fx25Tag { tag: 0x8507_D56F_DEAD_BAD1, rs_n: 96, rs_k: 88, check_bytes: 8 },
-    Fx25Tag { tag: 0xF22B_B2A3_3764_1C60, rs_n: 64, rs_k: 56, check_bytes: 8 },
+    // Tags 0x0C-0x0F: undefined/reserved in spec
+    Fx25Tag { tag: 0x0293_D578_626B_67E6, rs_n: 0, rs_k: 0, check_bytes: 0 },
+    Fx25Tag { tag: 0xE3B0_B0D6_917E_58A6, rs_n: 0, rs_k: 0, check_bytes: 0 },
+    Fx25Tag { tag: 0x7202_67AF_1BE1_F846, rs_n: 0, rs_k: 0, check_bytes: 0 },
+    Fx25Tag { tag: 0x9321_0201_E8F4_C706, rs_n: 0, rs_k: 0, check_bytes: 0 },
 ];
 
 /// Look up a correlation tag by matching against all known tags.

@@ -251,7 +251,7 @@ pub fn run_corr_lpf_sweep(path: &str) {
             .with_corr_lpf(lpf);
         let mut hdlc = HdlcDecoder::new();
         let mut frames: Vec<Vec<u8>> = Vec::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
         for chunk in samples.chunks(1024) {
             let n = demod.process_samples(chunk, &mut symbols);
             for sym in &symbols[..n] {
@@ -270,7 +270,7 @@ pub fn run_corr_lpf_sweep(path: &str) {
             .with_corr_lpf(lpf2);
         let mut soft_hdlc = SoftHdlcDecoder::new();
         let mut frames2: Vec<Vec<u8>> = Vec::new();
-        let mut symbols2 = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+        let mut symbols2 = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
         for chunk in samples.chunks(1024) {
             let n = demod2.process_samples(chunk, &mut symbols2);
             for sym in &symbols2[..n] {
@@ -339,7 +339,7 @@ fn decode_corr_2phase(samples: &[i16], sample_rate: u32) -> DecodeResult {
         let mut demod = CorrelationDemodulator::new(config).with_adaptive_gain();
         demod.set_bit_phase(offset);
         let mut hdlc = HdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
         let mut frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
         let mut sample_pos: usize = 0;
 
@@ -377,7 +377,7 @@ fn decode_corr_2phase_pll(samples: &[i16], sample_rate: u32) -> DecodeResult {
             .with_pll();
         demod.set_bit_phase(offset);
         let mut hdlc = HdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
         let mut frames: Vec<(u64, usize, Vec<u8>)> = Vec::new();
         let mut sample_pos: usize = 0;
 

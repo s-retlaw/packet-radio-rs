@@ -271,7 +271,7 @@ pub fn run_9600_diag(path: &str) {
     let algo_names = ["DW-style", "Gardner", "Early-Late", "M&M", "RRC"];
 
     for (idx, name) in algo_names.iter().enumerate() {
-        let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 2048];
+        let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 2048];
         let mut total_syms = 0usize;
         let mut ones = 0usize;
         let mut flag_count = 0usize;
@@ -320,7 +320,7 @@ pub fn run_9600_diag(path: &str) {
 
     // Persistent state test - this is the real test
     for (idx, name) in algo_names.iter().enumerate() {
-        let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 2048];
+        let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 2048];
         let mut total_syms = 0usize;
         let mut ones = 0usize;
         let mut flag_count = 0usize;
@@ -465,7 +465,7 @@ pub fn run_9600_tune(path: &str) {
                         }
 
                         let mut hdlc = SoftHdlcDecoder::new();
-                        let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 512];
+                        let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 512];
                         let mut hashes: Vec<u32> = Vec::new();
 
                         for chunk in samples.chunks(1024) {
@@ -513,7 +513,7 @@ pub fn run_9600_tune(path: &str) {
                         // cutoff variation is less relevant for Gardner
 
                         let mut hdlc = SoftHdlcDecoder::new();
-                        let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 512];
+                        let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 512];
                         let mut hashes: Vec<u32> = Vec::new();
 
                         for chunk in samples.chunks(1024) {
@@ -658,7 +658,7 @@ pub fn run_9600_attribution(path: &str) {
                     .with_timing_offset(phase)
                     .with_threshold(threshold);
                 let mut hdlc = SoftHdlcDecoder::new();
-                let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 512];
+                let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 512];
                 let mut hashes: Vec<u32> = Vec::new();
 
                 for chunk in samples.chunks(1024) {
@@ -687,7 +687,7 @@ pub fn run_9600_attribution(path: &str) {
                     .with_timing_offset(phase)
                     .with_threshold(threshold);
                 let mut hdlc = SoftHdlcDecoder::new();
-                let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 512];
+                let mut sym_buf = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 512];
                 let mut hashes: Vec<u32> = Vec::new();
 
                 for chunk in samples.chunks(1024) {

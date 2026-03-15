@@ -410,7 +410,7 @@ impl MultiDecoder {
     pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
         self.samples_processed += samples.len() as u64;
         let mut output = MultiOutput::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
 
         // Process fast (Goertzel) decoders
         for d in 0..self.num_active {
@@ -594,7 +594,7 @@ impl MiniDecoder {
     pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
         self.samples_processed += samples.len() as u64;
         let mut output = MultiOutput::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
 
         for d in 0..MINI_DECODERS {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
@@ -786,7 +786,7 @@ impl TwistMiniDecoder {
     pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
         self.samples_processed += samples.len() as u64;
         let mut output = MultiOutput::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
 
         for d in 0..TWIST_DECODERS {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
@@ -1269,7 +1269,7 @@ impl MultiDecoder {
 
         self.samples_processed += samples.len() as u64;
         let mut output = MultiOutput::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
         let mut raw_hits: Vec<(usize, u32)> = Vec::new();
         // hash -> list of decoder indices
         let mut frame_decoder_map: BTreeMap<u32, Vec<usize>> = BTreeMap::new();

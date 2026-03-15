@@ -594,7 +594,7 @@ impl Demod9600Direwolf {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count };
+                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count, raw_bit: false };
                     sym_count += 1;
                 }
             }
@@ -740,7 +740,7 @@ impl Demod9600Gardner {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count };
+                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count, raw_bit: false };
                     sym_count += 1;
                 }
             }
@@ -838,7 +838,7 @@ impl Demod9600EarlyLate {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count };
+                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count, raw_bit: false };
                     sym_count += 1;
                 }
             }
@@ -936,7 +936,7 @@ impl Demod9600MuellerMuller {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count };
+                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count, raw_bit: false };
                     sym_count += 1;
                 }
             }
@@ -1073,7 +1073,7 @@ impl Demod9600Rrc {
                 let llr = if nrzi_bit { confidence } else { -confidence };
 
                 if sym_count < symbols_out.len() {
-                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count };
+                    symbols_out[sym_count] = DemodSymbol { bit: nrzi_bit, llr, sample_idx: self.sample_count, raw_bit: false };
                     sym_count += 1;
                 }
             }
@@ -1330,7 +1330,7 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 300];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
         // Should produce approximately 200 symbols
@@ -1352,7 +1352,7 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 300];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
         assert!(n > 150 && n < 250,
@@ -1373,7 +1373,7 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 300];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
         assert!(n > 150 && n < 250,
@@ -1394,7 +1394,7 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 300];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
         assert!(n > 150 && n < 250,
@@ -1415,7 +1415,7 @@ mod tests {
             }
         }
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 300];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 300];
         let n = demod.process_samples(&samples, &mut symbols);
 
         assert!(n > 100 && n < 300,

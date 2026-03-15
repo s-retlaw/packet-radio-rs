@@ -311,6 +311,7 @@ impl BinaryXorDemodulator {
                         bit: decoded_bit,
                         llr,
                         sample_idx: self.samples_processed as u32,
+                        raw_bit,
                     };
                     sym_count += 1;
                 }
@@ -342,7 +343,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = BinaryXorDemodulator::new(config);
         let silence = [0i16; 1000];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
 
         let n = demod.process_samples(&silence, &mut symbols);
         // Should produce some symbols without panicking
@@ -355,7 +356,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = BinaryXorDemodulator::new(config);
         let noise = [1000i16; 100];
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 50];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 50];
 
         demod.process_samples(&noise, &mut symbols);
         assert!(demod.samples_processed > 0);
@@ -400,8 +401,8 @@ mod tests {
 
         let mut demod_mark = BinaryXorDemodulator::new(config);
         let mut demod_space = BinaryXorDemodulator::new(config);
-        let mut sym_mark = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
-        let mut sym_space = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 200];
+        let mut sym_mark = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
+        let mut sym_space = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 200];
 
         let n_mark = demod_mark.process_samples(&mark_samples, &mut sym_mark);
         let n_space = demod_space.process_samples(&space_samples, &mut sym_space);
@@ -464,7 +465,7 @@ mod tests {
         let config = DemodConfig::default_1200();
         let mut demod = BinaryXorDemodulator::new(config);
         let mut hdlc = HdlcDecoder::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; 1024];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
         let mut decoded_frames = 0;
 
         for chunk in audio[..audio_len].chunks(256) {

@@ -127,8 +127,9 @@ impl Fx25Decoder {
 
         match self.state {
             State::Hunting => {
-                // Shift bit into the 64-bit register
-                self.shift_reg = (self.shift_reg << 1) | (bit as u64);
+                // Shift bit into the 64-bit register (right-shift, new bit at MSB)
+                // This matches Dire Wolf's convention: F->accum >>= 1; if(dbit) accum |= 1<<63
+                self.shift_reg = (self.shift_reg >> 1) | ((bit as u64) << 63);
                 self.bits_shifted = self.bits_shifted.saturating_add(1);
 
                 if self.bits_shifted >= MIN_BITS_BEFORE_DETECT {
@@ -258,11 +259,11 @@ mod tests {
         codeword[..k].copy_from_slice(&data[..k]);
         codeword[k..n].copy_from_slice(&parity[..nsym]);
 
-        // Convert to bit stream: 64-bit tag (MSB first) + codeword bytes (LSB first)
+        // Convert to bit stream: 64-bit tag (LSB first) + codeword bytes (LSB first)
         let mut bits = Vec::new();
 
-        // Tag bits: MSB first (bit 63 first)
-        for b in (0..64).rev() {
+        // Tag bits: LSB first (bit 0 first) — matches DW right-shift register convention
+        for b in 0..64 {
             bits.push((tag.tag >> b) & 1 == 1);
         }
 

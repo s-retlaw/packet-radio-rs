@@ -333,7 +333,7 @@ impl Multi9600Decoder {
         self.samples_processed += samples.len() as u64;
         let mut output = Multi9600Output::new();
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; MAX_SYMBOLS];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; MAX_SYMBOLS];
 
         for decoder_idx in 0..self.decoders.len() {
             let n_syms = self.decoders[decoder_idx].process_samples(samples, &mut symbols);
@@ -492,7 +492,7 @@ impl Single9600Decoder {
     /// Returns all decoded frames (up to 4) found in this batch.
     pub fn process_samples(&mut self, samples: &[i16]) -> Single9600Output {
         let mut output = Single9600Output::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; MAX_SYMBOLS];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; MAX_SYMBOLS];
 
         let n_syms = match &mut self.algo {
             SingleAlgo::Direwolf(d) => d.process_samples(samples, &mut symbols),
@@ -682,7 +682,7 @@ impl Mini9600Decoder {
         self.samples_processed += samples.len() as u64;
         let mut output = Multi9600Output::new();
 
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0 }; MAX_SYMBOLS];
+        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; MAX_SYMBOLS];
 
         for (slot, decoder) in self.decoders.iter_mut().enumerate() {
             let n_syms = decoder.process_samples(samples, &mut symbols);

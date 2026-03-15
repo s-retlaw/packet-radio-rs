@@ -244,6 +244,11 @@ enum Command {
         /// Path to WAV file
         file: PathBuf,
     },
+    /// Validate FX.25 decode against a Dire Wolf-generated FX.25 WAV file
+    Fx25 {
+        /// Path to FX.25 WAV file (generate with: gen_packets -X 16 -n 10 -o file.wav)
+        file: PathBuf,
+    },
 }
 
 fn main() {
@@ -365,5 +370,199 @@ fn main() {
             println!("Quality:    {} frames", quality.frames.len());
             println!("Preemph:    {} frames ({} soft)", preemph.frames.len(), soft_p);
         }
+        Command::Fx25 { file } => {
+            let path = file.to_string_lossy();
+            if path == "loopback" {
+                run_fx25_loopback();
+            } else {
+                run_fx25_validate(&path);
+            }
+        }
     }
+}
+
+fn run_fx25_loopback() {
+    use packet_radio_core::modem::afsk::AfskModulator;
+    use packet_radio_core::modem::demod::{FastDemodulator, DemodSymbol};
+    use packet_radio_core::modem::{DemodConfig, ModConfig};
+    use packet_radio_core::fx25::decode::Fx25Decoder;
+    use packet_radio_core::fx25::encode::fx25_encode;
+
+    println!("=== FX.25 Loopback Test ===");
+
+    // Create a test frame (with CRC)
+    let mut frame = [0u8; 18];
+    for (i, &c) in b"TEST  ".iter().enumerate() { frame[i] = c << 1; }
+    frame[6] = 0x60;
+    for (i, &c) in b"SRC   ".iter().enumerate() { frame[7 + i] = c << 1; }
+    frame[13] = 0x61;
+    frame[14] = 0x03;
+    frame[15] = 0xF0;
+    frame[16] = b'H';
+    frame[17] = b'i';
+
+    // Add CRC
+    let crc = packet_radio_core::ax25::crc16_ccitt(&frame);
+    let mut frame_crc = [0u8; 20];
+    frame_crc[..18].copy_from_slice(&frame);
+    frame_crc[18] = crc as u8;
+    frame_crc[19] = (crc >> 8) as u8;
+
+    // FX.25 encode
+    let block = fx25_encode(&frame_crc, 16).expect("encode failed");
+    println!("Encoded: tag_idx={}, {} bits", block.tag_index, block.bit_count);
+
+    // Modulate: preamble flags + FX.25 block + postamble
+    let mod_config = ModConfig::default_1200();
+    let mut modulator = AfskModulator::new(mod_config);
+    let mut audio = Vec::new();
+    let mut sym_buf = [0i16; 64];
+
+    // 50 preamble flags
+    for _ in 0..50 {
+        for &flag_bit in &[false, true, true, true, true, true, true, false] {
+            let n = modulator.modulate_bit(flag_bit, &mut sym_buf);
+            audio.extend_from_slice(&sym_buf[..n]);
+        }
+    }
+
+    // FX.25 block bits
+    for bit in block.iter_bits() {
+        let n = modulator.modulate_bit(bit, &mut sym_buf);
+        audio.extend_from_slice(&sym_buf[..n]);
+    }
+
+    // 10 postamble flags
+    for _ in 0..10 {
+        for &flag_bit in &[false, true, true, true, true, true, true, false] {
+            let n = modulator.modulate_bit(flag_bit, &mut sym_buf);
+            audio.extend_from_slice(&sym_buf[..n]);
+        }
+    }
+
+    println!("Generated {} audio samples at {} Hz", audio.len(), 11025);
+
+    // Demodulate
+    let demod_config = DemodConfig::default_1200();
+    let mut demod = FastDemodulator::new(demod_config).with_adaptive_gain();
+    let mut fx25 = Fx25Decoder::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+
+    let mut fx25_count = 0u32;
+    let mut shift_reg: u64 = 0;
+    let mut bit_idx: u64 = 0;
+    let mut best_hamming = 64u32;
+
+    for chunk in audio.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for sym in &symbols[..n] {
+            // Use NRZI-decoded bits (same as DW convention)
+            shift_reg = (shift_reg >> 1) | ((sym.bit as u64) << 63);
+            bit_idx += 1;
+            if bit_idx >= 64 {
+                for t in packet_radio_core::fx25::FX25_TAGS.iter() {
+                    let dist = (shift_reg ^ t.tag).count_ones();
+                    if dist < best_hamming {
+                        best_hamming = dist;
+                    }
+                }
+            }
+
+            if let Some(f) = fx25.feed_bit(sym.bit) {
+                fx25_count += 1;
+                println!("  Decoded frame: {} bytes", f.len());
+            }
+        }
+    }
+
+    println!("Results: FX.25 frames={}, tags={}, best_hamming={}",
+        fx25_count, fx25.stats_tags_detected, best_hamming);
+    println!("  RS clean={}, corrected={}, failed={}",
+        fx25.stats_rs_clean, fx25.stats_rs_corrected, fx25.stats_rs_failed);
+}
+
+fn run_fx25_validate(path: &str) {
+    use packet_radio_core::modem::demod::{FastDemodulator, DemodSymbol};
+    use packet_radio_core::modem::hdlc_bank::AnyHdlc;
+    use packet_radio_core::fx25::decode::Fx25Decoder;
+
+    let (sr, samples) = common::read_wav_file(path).expect("failed to read WAV");
+    println!("=== FX.25 Validation: {} ===", path);
+    println!("Sample rate: {} Hz, {} samples ({:.1}s)",
+        sr, samples.len(), samples.len() as f64 / sr as f64);
+
+    let config = common::config_for_rate(sr, common::get_baud());
+    // Use QualityAdapter-style demod for better bit recovery
+    let mut demod = FastDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+    let mut hdlc = AnyHdlc::new();
+    let mut fx25 = Fx25Decoder::new();
+    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+
+    let mut hdlc_count = 0u32;
+    let mut fx25_count = 0u32;
+
+    // Also run a raw tag scan: check DW's actual tag values
+    let mut shift_reg: u64 = 0;
+    let mut bit_idx: u64 = 0;
+    let mut best_hamming = 64u32;
+    let mut best_tag_val: u64 = 0;
+    let mut best_bit_pos: u64 = 0;
+
+    for chunk in samples.chunks(1024) {
+        let n = demod.process_samples(chunk, &mut symbols);
+        for sym in &symbols[..n] {
+            if hdlc.feed(sym.bit, sym.llr).is_some() {
+                hdlc_count += 1;
+            }
+
+            // Track shift register: NRZI-decoded, right-shift (DW convention)
+            shift_reg = (shift_reg >> 1) | ((sym.bit as u64) << 63);
+            bit_idx += 1;
+            if bit_idx >= 64 {
+                // Check min hamming across ALL tags with generous threshold
+                for (ti, t) in packet_radio_core::fx25::FX25_TAGS.iter().enumerate() {
+                    let dist = (shift_reg ^ t.tag).count_ones();
+                    if dist < best_hamming {
+                        best_hamming = dist;
+                        best_tag_val = shift_reg;
+                        best_bit_pos = bit_idx;
+                        if dist <= 12 {
+                            println!("  [bit {}] Near match: tag[{}] hamming={}, reg=0x{:016X} vs tag=0x{:016X}",
+                                bit_idx, ti, dist, shift_reg, t.tag);
+                        }
+                    }
+                }
+                if let Some((idx, dist)) = packet_radio_core::fx25::match_tag(shift_reg, 10) {
+                    if dist < best_hamming {
+                        best_hamming = dist;
+                        best_tag_val = shift_reg;
+                        best_bit_pos = bit_idx;
+                        if dist <= 5 {
+                            println!("  [bit {}] Tag match: idx={}, hamming={}, reg=0x{:016X}",
+                                bit_idx, idx, dist, shift_reg);
+                        }
+                    }
+                }
+            }
+
+            if let Some(frame) = fx25.feed_bit(sym.bit) {
+                fx25_count += 1;
+                let preview: String = frame.iter().take(20)
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<Vec<_>>().join(" ");
+                println!("  FX.25 frame {}: {} bytes [{}...]", fx25_count, frame.len(), preview);
+            }
+        }
+    }
+
+    println!();
+    println!("Results:");
+    println!("  HDLC frames:         {}", hdlc_count);
+    println!("  FX.25 frames:        {}", fx25_count);
+    println!("  Tags detected:       {}", fx25.stats_tags_detected);
+    println!("  RS clean (0 errors): {}", fx25.stats_rs_clean);
+    println!("  RS corrected:        {}", fx25.stats_rs_corrected);
+    println!("  RS failed:           {}", fx25.stats_rs_failed);
+    println!("  Best tag hamming:    {} (at bit {}, reg=0x{:016X})",
+        best_hamming, best_bit_pos, best_tag_val);
 }
