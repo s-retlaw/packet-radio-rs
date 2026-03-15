@@ -84,7 +84,7 @@ pub(crate) struct Scenario {
 
 impl Scenario {
     /// Convenience: original-style scenario (SNR + freq + drift only).
-    const fn basic(
+    pub(crate) const fn basic(
         name: &'static str,
         tier: Tier,
         snr_db: Option<f64>,
@@ -92,9 +92,16 @@ impl Scenario {
         clock_drift: Option<f64>,
     ) -> Self {
         Self {
-            name, tier, snr_db, freq_offset_hz, clock_drift,
-            de_emphasis_alpha: None, clip_threshold: None,
-            timing_jitter: None, impulse_density: None, amplitude_scale: None,
+            name,
+            tier,
+            snr_db,
+            freq_offset_hz,
+            clock_drift,
+            de_emphasis_alpha: None,
+            clip_threshold: None,
+            timing_jitter: None,
+            impulse_density: None,
+            amplitude_scale: None,
         }
     }
 }
@@ -112,7 +119,6 @@ pub(crate) fn all_scenarios() -> Vec<Scenario> {
             clip_threshold: Some(14745),
             ..Scenario::basic("", Tier::Easy, None, None, None)
         },
-
         // ── Medium (5 scenarios, 500 max) ──
         Scenario::basic("10 dB SNR", Tier::Medium, Some(10.0), None, None),
         Scenario {
@@ -121,7 +127,13 @@ pub(crate) fn all_scenarios() -> Vec<Scenario> {
             de_emphasis_alpha: Some(0.3),
             ..Scenario::basic("", Tier::Medium, None, None, None)
         },
-        Scenario::basic("+50 Hz + 1% drift", Tier::Medium, None, Some(50.0), Some(1.01)),
+        Scenario::basic(
+            "+50 Hz + 1% drift",
+            Tier::Medium,
+            None,
+            Some(50.0),
+            Some(1.01),
+        ),
         Scenario {
             name: "Jitter +/-0.5 samp",
             tier: Tier::Medium,
@@ -135,7 +147,6 @@ pub(crate) fn all_scenarios() -> Vec<Scenario> {
             snr_db: Some(15.0),
             ..Scenario::basic("", Tier::Medium, None, None, None)
         },
-
         // ── Hard (7 scenarios, 700 max) ──
         Scenario::basic("6 dB SNR", Tier::Hard, Some(6.0), None, None),
         Scenario {
@@ -144,7 +155,13 @@ pub(crate) fn all_scenarios() -> Vec<Scenario> {
             de_emphasis_alpha: Some(0.6),
             ..Scenario::basic("", Tier::Hard, None, None, None)
         },
-        Scenario::basic("+100 Hz + 2% drift", Tier::Hard, None, Some(100.0), Some(1.02)),
+        Scenario::basic(
+            "+100 Hz + 2% drift",
+            Tier::Hard,
+            None,
+            Some(100.0),
+            Some(1.02),
+        ),
         Scenario {
             name: "Clip 50% (8192) + 10dB",
             tier: Tier::Hard,
@@ -168,7 +185,6 @@ pub(crate) fn all_scenarios() -> Vec<Scenario> {
             ..Scenario::basic("", Tier::Hard, None, None, None)
         },
         Scenario::basic("0 dB SNR (noise floor)", Tier::Hard, Some(0.0), None, None),
-
         // ── Very Hard (4 scenarios, 400 max) ──
         Scenario::basic("3 dB SNR", Tier::VeryHard, Some(3.0), None, None),
         Scenario {
@@ -220,8 +236,8 @@ pub(crate) fn generate_synthetic_audio(_sample_rate: u32) -> Vec<i16> {
     };
 
     let callsigns = [
-        "N0CALL", "WA1ABC", "VE3XYZ", "K4DEF", "W5GHI",
-        "KA6JKL", "N7MNO", "W8PQR", "K9STU", "WB0VWX",
+        "N0CALL", "WA1ABC", "VE3XYZ", "K4DEF", "W5GHI", "KA6JKL", "N7MNO", "W8PQR", "K9STU",
+        "WB0VWX",
     ];
 
     let mut clean_audio: Vec<i16> = Vec::new();
@@ -314,7 +330,12 @@ pub fn run_synthetic_benchmark() {
             if let Some(prev_tier) = current_tier {
                 let tier_max = tier_count * num_packets;
                 print_tier_subtotals(
-                    prev_tier.name(), tier_fast, tier_preemph, tier_quality, tier_multi, tier_max,
+                    prev_tier.name(),
+                    tier_fast,
+                    tier_preemph,
+                    tier_quality,
+                    tier_multi,
+                    tier_max,
                 );
                 tier_fast = 0;
                 tier_preemph = 0;
@@ -333,10 +354,15 @@ pub fn run_synthetic_benchmark() {
         }
 
         let signal = apply_impairments(
-            &clean_audio, sample_rate,
-            scenario.snr_db, scenario.freq_offset_hz, scenario.clock_drift,
-            scenario.de_emphasis_alpha, scenario.clip_threshold,
-            scenario.timing_jitter, scenario.impulse_density,
+            &clean_audio,
+            sample_rate,
+            scenario.snr_db,
+            scenario.freq_offset_hz,
+            scenario.clock_drift,
+            scenario.de_emphasis_alpha,
+            scenario.clip_threshold,
+            scenario.timing_jitter,
+            scenario.impulse_density,
             scenario.amplitude_scale,
         );
 
@@ -361,19 +387,35 @@ pub fn run_synthetic_benchmark() {
         tier_count += 1;
 
         match scenario.tier {
-            Tier::Easy => { easy_multi += m; easy_max += num_packets; }
-            Tier::Medium => { medium_multi += m; medium_max += num_packets; }
-            Tier::Hard => { hard_multi += m; hard_max += num_packets; }
-            Tier::VeryHard => { vhard_multi += m; vhard_max += num_packets; }
+            Tier::Easy => {
+                easy_multi += m;
+                easy_max += num_packets;
+            }
+            Tier::Medium => {
+                medium_multi += m;
+                medium_max += num_packets;
+            }
+            Tier::Hard => {
+                hard_multi += m;
+                hard_max += num_packets;
+            }
+            Tier::VeryHard => {
+                vhard_multi += m;
+                vhard_max += num_packets;
+            }
         }
 
         println!(
             "  {:<34}  {:>5}/{:<4}  {:>5}/{:<4}  {:>5}/{:<4}  {:>5}/{:<4}  {:>10}",
             scenario.name,
-            f, num_packets,
-            p, num_packets,
-            q, num_packets,
-            m, num_packets,
+            f,
+            num_packets,
+            p,
+            num_packets,
+            q,
+            num_packets,
+            m,
+            num_packets,
             soft_saves
         );
     }
@@ -382,7 +424,12 @@ pub fn run_synthetic_benchmark() {
     if let Some(prev_tier) = current_tier {
         let tier_max = tier_count * num_packets;
         print_tier_subtotals(
-            prev_tier.name(), tier_fast, tier_preemph, tier_quality, tier_multi, tier_max,
+            prev_tier.name(),
+            tier_fast,
+            tier_preemph,
+            tier_quality,
+            tier_multi,
+            tier_max,
         );
     }
 
@@ -393,10 +440,14 @@ pub fn run_synthetic_benchmark() {
     println!(
         "  {:<34}  {:>5}/{:<4}  {:>5}/{:<4}  {:>5}/{:<4}  {:>5}/{:<4}",
         "OVERALL TOTAL",
-        total_fast, max_total,
-        total_preemph, max_total,
-        total_quality, max_total,
-        total_multi, max_total,
+        total_fast,
+        max_total,
+        total_preemph,
+        max_total,
+        total_quality,
+        max_total,
+        total_multi,
+        max_total,
     );
     println!(
         "  {:<34}  {:>9.1}%  {:>9.1}%  {:>9.1}%  {:>9.1}%",
@@ -411,11 +462,16 @@ pub fn run_synthetic_benchmark() {
     println!();
     println!(
         "TIER easy={}/{} medium={}/{} hard={}/{} vhard={}/{} total={}/{}",
-        easy_multi, easy_max,
-        medium_multi, medium_max,
-        hard_multi, hard_max,
-        vhard_multi, vhard_max,
-        total_multi, max_total,
+        easy_multi,
+        easy_max,
+        medium_multi,
+        medium_max,
+        hard_multi,
+        hard_max,
+        vhard_multi,
+        vhard_max,
+        total_multi,
+        max_total,
     );
 }
 
@@ -431,10 +487,14 @@ fn print_tier_subtotals(
     println!(
         "  {:<34}  {:>5}/{:<4}  {:>5}/{:<4}  {:>5}/{:<4}  {:>5}/{:<4}",
         format!("{} subtotal", tier_name),
-        fast, max,
-        preemph, max,
-        quality, max,
-        multi, max,
+        fast,
+        max,
+        preemph,
+        max,
+        quality,
+        max,
+        multi,
+        max,
     );
     if max > 0 {
         println!(
@@ -447,4 +507,3 @@ fn print_tier_subtotals(
         );
     }
 }
-

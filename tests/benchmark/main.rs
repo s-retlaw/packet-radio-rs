@@ -13,23 +13,24 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-mod common;
-mod suite;
-mod compare;
-mod synthetic;
-mod dm;
-mod corr;
-mod smart3;
-mod diff;
 mod attribution;
+mod baud9600;
+mod common;
+mod compare;
+mod corr;
+mod diff;
+mod dm;
 mod export;
+mod fusion;
+mod fx25;
+mod pll_300;
+mod smart3;
 mod soft_diag;
-mod xor;
+mod suite;
+mod synthetic;
 mod twist;
 mod window;
-mod pll_300;
-mod fusion;
-mod baud9600;
+mod xor;
 
 /// Packet Radio RS — Benchmark Runner
 #[derive(Parser)]
@@ -249,6 +250,8 @@ enum Command {
         /// Path to FX.25 WAV file (generate with: gen_packets -X 16 -n 10 -o file.wav)
         file: PathBuf,
     },
+    /// FX.25 synthetic benchmark: 500 frames × 20 scenarios (easy/medium/hard/extreme)
+    Fx25Bench,
 }
 
 fn main() {
@@ -262,7 +265,12 @@ fn main() {
             suite::run_single_wav(&file.to_string_lossy(), cli.mcu_only);
         }
         Command::Suite { directory } => {
-            suite::run_suite(&directory.to_string_lossy(), cli.rate, cli.all_rates, cli.mcu_only);
+            suite::run_suite(
+                &directory.to_string_lossy(),
+                cli.rate,
+                cli.all_rates,
+                cli.mcu_only,
+            );
         }
         Command::CompareApproaches { file } => {
             compare::run_compare_approaches(&file.to_string_lossy());
@@ -289,7 +297,10 @@ fn main() {
             export::run_export(&file.to_string_lossy(), &output_dir.to_string_lossy());
         }
         Command::Diff { file, reference } => {
-            diff::run_diff(&file.to_string_lossy(), reference.as_ref().map(|p| p.to_str().unwrap_or("")));
+            diff::run_diff(
+                &file.to_string_lossy(),
+                reference.as_ref().map(|p| p.to_str().unwrap_or("")),
+            );
         }
         Command::Attribution { file } => {
             attribution::run_attribution(&file.to_string_lossy());
@@ -368,7 +379,11 @@ fn main() {
             let (preemph, soft_p) = common::decode_fast_preemph(&samples, sr);
             println!("Fast:       {} frames", fast.frames.len());
             println!("Quality:    {} frames", quality.frames.len());
-            println!("Preemph:    {} frames ({} soft)", preemph.frames.len(), soft_p);
+            println!(
+                "Preemph:    {} frames ({} soft)",
+                preemph.frames.len(),
+                soft_p
+            );
         }
         Command::Fx25 { file } => {
             let path = file.to_string_lossy();
@@ -378,39 +393,76 @@ fn main() {
                 run_fx25_validate(&path);
             }
         }
+        Command::Fx25Bench => {
+            fx25::run_fx25_benchmark();
+        }
     }
 }
 
 fn run_fx25_loopback() {
-    use packet_radio_core::modem::afsk::AfskModulator;
-    use packet_radio_core::modem::demod::{FastDemodulator, DemodSymbol};
-    use packet_radio_core::modem::{DemodConfig, ModConfig};
     use packet_radio_core::fx25::decode::Fx25Decoder;
     use packet_radio_core::fx25::encode::fx25_encode;
+    use packet_radio_core::modem::afsk::AfskModulator;
+    use packet_radio_core::modem::demod::{DemodSymbol, FastDemodulator};
+    use packet_radio_core::modem::{DemodConfig, ModConfig};
 
     println!("=== FX.25 Loopback Test ===");
 
-    // Create a test frame (with CRC)
+    // Create a test frame (raw AX.25, no CRC — encoder handles CRC internally)
     let mut frame = [0u8; 18];
-    for (i, &c) in b"TEST  ".iter().enumerate() { frame[i] = c << 1; }
+    for (i, &c) in b"TEST  ".iter().enumerate() {
+        frame[i] = c << 1;
+    }
     frame[6] = 0x60;
-    for (i, &c) in b"SRC   ".iter().enumerate() { frame[7 + i] = c << 1; }
+    for (i, &c) in b"SRC   ".iter().enumerate() {
+        frame[7 + i] = c << 1;
+    }
     frame[13] = 0x61;
     frame[14] = 0x03;
     frame[15] = 0xF0;
     frame[16] = b'H';
     frame[17] = b'i';
 
-    // Add CRC
-    let crc = packet_radio_core::ax25::crc16_ccitt(&frame);
-    let mut frame_crc = [0u8; 20];
-    frame_crc[..18].copy_from_slice(&frame);
-    frame_crc[18] = crc as u8;
-    frame_crc[19] = (crc >> 8) as u8;
+    // FX.25 encode (DW-compatible: CRC + HDLC bit-stuffing done internally)
+    let block = fx25_encode(&frame, 16).expect("encode failed");
+    println!(
+        "Encoded: tag_idx={}, {} bits",
+        block.tag_index, block.bit_count
+    );
 
-    // FX.25 encode
-    let block = fx25_encode(&frame_crc, 16).expect("encode failed");
-    println!("Encoded: tag_idx={}, {} bits", block.tag_index, block.bit_count);
+    // Dump the RS codeword bytes for cross-validation
+    {
+        let tag_info = &packet_radio_core::fx25::FX25_TAGS[block.tag_index as usize];
+        let n = tag_info.rs_n as usize;
+        println!(
+            "RS({}, {}), {} check bytes",
+            tag_info.rs_n, tag_info.rs_k, tag_info.check_bytes
+        );
+
+        // Extract codeword bytes from bits (skip 64-bit tag)
+        let mut codeword = vec![0u8; n];
+        for byte_idx in 0..n {
+            let mut byte_val = 0u8;
+            for bit in 0..8 {
+                let bit_pos = 64 + byte_idx * 8 + bit;
+                if bit_pos < block.bit_count && block.bits[bit_pos] != 0 {
+                    byte_val |= 1 << bit;
+                }
+            }
+            codeword[byte_idx] = byte_val;
+        }
+        let k = tag_info.rs_k as usize;
+        print!("Data ({} bytes): ", k);
+        for &b in &codeword[..k] {
+            print!("{:02x} ", b);
+        }
+        println!();
+        print!("Parity ({} bytes): ", n - k);
+        for &b in &codeword[k..n] {
+            print!("{:02x} ", b);
+        }
+        println!();
+    }
 
     // Modulate: preamble flags + FX.25 block + postamble
     let mod_config = ModConfig::default_1200();
@@ -442,11 +494,41 @@ fn run_fx25_loopback() {
 
     println!("Generated {} audio samples at {} Hz", audio.len(), 11025);
 
+    // Save WAV for DW cross-validation
+    let wav_path = "/tmp/fx25_ours.wav";
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(wav_path).expect("create WAV");
+        let data_len = (audio.len() * 2) as u32;
+        let file_len = 36 + data_len;
+        f.write_all(b"RIFF").unwrap();
+        f.write_all(&file_len.to_le_bytes()).unwrap();
+        f.write_all(b"WAVEfmt ").unwrap();
+        f.write_all(&16u32.to_le_bytes()).unwrap(); // chunk size
+        f.write_all(&1u16.to_le_bytes()).unwrap(); // PCM
+        f.write_all(&1u16.to_le_bytes()).unwrap(); // mono
+        f.write_all(&11025u32.to_le_bytes()).unwrap(); // sample rate
+        f.write_all(&(11025u32 * 2).to_le_bytes()).unwrap(); // byte rate
+        f.write_all(&2u16.to_le_bytes()).unwrap(); // block align
+        f.write_all(&16u16.to_le_bytes()).unwrap(); // bits per sample
+        f.write_all(b"data").unwrap();
+        f.write_all(&data_len.to_le_bytes()).unwrap();
+        for &s in &audio {
+            f.write_all(&s.to_le_bytes()).unwrap();
+        }
+    }
+    println!("Saved to {}", wav_path);
+
     // Demodulate
     let demod_config = DemodConfig::default_1200();
     let mut demod = FastDemodulator::new(demod_config).with_adaptive_gain();
     let mut fx25 = Fx25Decoder::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+    let mut symbols = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1024];
 
     let mut fx25_count = 0u32;
     let mut shift_reg: u64 = 0;
@@ -475,38 +557,48 @@ fn run_fx25_loopback() {
         }
     }
 
-    println!("Results: FX.25 frames={}, tags={}, best_hamming={}",
-        fx25_count, fx25.stats_tags_detected, best_hamming);
-    println!("  RS clean={}, corrected={}, failed={}",
-        fx25.stats_rs_clean, fx25.stats_rs_corrected, fx25.stats_rs_failed);
+    println!(
+        "Results: FX.25 frames={}, tags={}, best_hamming={}",
+        fx25_count, fx25.stats_tags_detected, best_hamming
+    );
+    println!(
+        "  RS clean={}, corrected={}, failed={}",
+        fx25.stats_rs_clean, fx25.stats_rs_corrected, fx25.stats_rs_failed
+    );
 }
 
 fn run_fx25_validate(path: &str) {
-    use packet_radio_core::modem::demod::{FastDemodulator, DemodSymbol};
-    use packet_radio_core::modem::hdlc_bank::AnyHdlc;
     use packet_radio_core::fx25::decode::Fx25Decoder;
+    use packet_radio_core::modem::demod::{DemodSymbol, FastDemodulator};
+    use packet_radio_core::modem::hdlc_bank::AnyHdlc;
+    use packet_radio_core::modem::multi::MultiDecoder;
 
     let (sr, samples) = common::read_wav_file(path).expect("failed to read WAV");
     println!("=== FX.25 Validation: {} ===", path);
-    println!("Sample rate: {} Hz, {} samples ({:.1}s)",
-        sr, samples.len(), samples.len() as f64 / sr as f64);
+    println!(
+        "Sample rate: {} Hz, {} samples ({:.1}s)",
+        sr,
+        samples.len(),
+        samples.len() as f64 / sr as f64
+    );
 
     let config = common::config_for_rate(sr, common::get_baud());
-    // Use QualityAdapter-style demod for better bit recovery
-    let mut demod = FastDemodulator::new(config).with_adaptive_gain().with_energy_llr();
+
+    // ── Single decoder (baseline) ──
+    let mut demod = FastDemodulator::new(config)
+        .with_adaptive_gain()
+        .with_energy_llr();
     let mut hdlc = AnyHdlc::new();
     let mut fx25 = Fx25Decoder::new();
-    let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+    let mut symbols = [DemodSymbol {
+        bit: false,
+        llr: 0,
+        sample_idx: 0,
+        raw_bit: false,
+    }; 1024];
 
     let mut hdlc_count = 0u32;
     let mut fx25_count = 0u32;
-
-    // Also run a raw tag scan: check DW's actual tag values
-    let mut shift_reg: u64 = 0;
-    let mut bit_idx: u64 = 0;
-    let mut best_hamming = 64u32;
-    let mut best_tag_val: u64 = 0;
-    let mut best_bit_pos: u64 = 0;
 
     for chunk in samples.chunks(1024) {
         let n = demod.process_samples(chunk, &mut symbols);
@@ -514,55 +606,60 @@ fn run_fx25_validate(path: &str) {
             if hdlc.feed(sym.bit, sym.llr).is_some() {
                 hdlc_count += 1;
             }
-
-            // Track shift register: NRZI-decoded, right-shift (DW convention)
-            shift_reg = (shift_reg >> 1) | ((sym.bit as u64) << 63);
-            bit_idx += 1;
-            if bit_idx >= 64 {
-                // Check min hamming across ALL tags with generous threshold
-                for (ti, t) in packet_radio_core::fx25::FX25_TAGS.iter().enumerate() {
-                    let dist = (shift_reg ^ t.tag).count_ones();
-                    if dist < best_hamming {
-                        best_hamming = dist;
-                        best_tag_val = shift_reg;
-                        best_bit_pos = bit_idx;
-                        if dist <= 12 {
-                            println!("  [bit {}] Near match: tag[{}] hamming={}, reg=0x{:016X} vs tag=0x{:016X}",
-                                bit_idx, ti, dist, shift_reg, t.tag);
-                        }
-                    }
-                }
-                if let Some((idx, dist)) = packet_radio_core::fx25::match_tag(shift_reg, 10) {
-                    if dist < best_hamming {
-                        best_hamming = dist;
-                        best_tag_val = shift_reg;
-                        best_bit_pos = bit_idx;
-                        if dist <= 5 {
-                            println!("  [bit {}] Tag match: idx={}, hamming={}, reg=0x{:016X}",
-                                bit_idx, idx, dist, shift_reg);
-                        }
-                    }
-                }
-            }
-
             if let Some(frame) = fx25.feed_bit(sym.bit) {
                 fx25_count += 1;
-                let preview: String = frame.iter().take(20)
+                let preview: String = frame
+                    .iter()
+                    .take(20)
                     .map(|b| format!("{:02x}", b))
-                    .collect::<Vec<_>>().join(" ");
-                println!("  FX.25 frame {}: {} bytes [{}...]", fx25_count, frame.len(), preview);
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                println!(
+                    "  [single] FX.25 frame {}: {} bytes [{}...]",
+                    fx25_count,
+                    frame.len(),
+                    preview
+                );
             }
         }
     }
 
     println!();
-    println!("Results:");
+    println!("Single decoder:");
     println!("  HDLC frames:         {}", hdlc_count);
     println!("  FX.25 frames:        {}", fx25_count);
     println!("  Tags detected:       {}", fx25.stats_tags_detected);
     println!("  RS clean (0 errors): {}", fx25.stats_rs_clean);
     println!("  RS corrected:        {}", fx25.stats_rs_corrected);
     println!("  RS failed:           {}", fx25.stats_rs_failed);
-    println!("  Best tag hamming:    {} (at bit {}, reg=0x{:016X})",
-        best_hamming, best_bit_pos, best_tag_val);
+
+    // ── Multi-decoder (FX.25 integrated) ──
+    let mut multi = MultiDecoder::new(config);
+    let mut multi_frame_count = 0u32;
+
+    for chunk in samples.chunks(1024) {
+        let output = multi.process_samples(chunk);
+        for i in 0..output.len() {
+            multi_frame_count += 1;
+            let frame = output.frame(i);
+            let preview: String = frame
+                .iter()
+                .take(20)
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            println!(
+                "  [multi]  frame {}: {} bytes [{}...]",
+                multi_frame_count,
+                frame.len(),
+                preview
+            );
+        }
+    }
+
+    println!();
+    println!("Multi-decoder ({} decoders):", multi.num_decoders());
+    println!("  Total frames (HDLC+FX.25): {}", multi_frame_count);
+    println!("  Total decoded (raw):       {}", multi.total_decoded);
+    println!("  Total unique:              {}", multi.total_unique);
 }

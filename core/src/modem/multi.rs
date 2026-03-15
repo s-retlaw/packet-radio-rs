@@ -17,10 +17,13 @@ use super::demod::{DemodSymbol, DmDemodulator, FastDemodulator};
 use super::filter::BiquadFilter;
 use super::frame_output::FrameOutputBuffer;
 use super::hdlc_bank::HdlcBank;
-use super::{DedupRing, DedupAction};
 #[cfg(feature = "std")]
 use super::pll::ClockRecoveryPll;
 use super::DemodConfig;
+use super::{DedupAction, DedupRing};
+
+#[cfg(feature = "fx25")]
+use crate::fx25::decode::Fx25Decoder;
 
 /// PLL alpha for DM decoders at 1200 baud (primary, tighter bandwidth).
 const PLL_ALPHA_1200_PRIMARY: i16 = 936;
@@ -64,6 +67,15 @@ pub struct MultiDecoder {
     dm_decoders: [DmDemodulator; MAX_DM_DECODERS],
     dm_hdlc: HdlcBank<MAX_DM_DECODERS>,
     dm_active: usize,
+    /// FX.25 decoders — one per Goertzel sub-decoder.
+    #[cfg(feature = "fx25")]
+    fx25: [Fx25Decoder; MAX_DECODERS],
+    /// FX.25 decoders — one per DM sub-decoder.
+    #[cfg(feature = "fx25")]
+    dm_fx25: [Fx25Decoder; MAX_DM_DECODERS],
+    /// Samples per symbol (for FX.25 dedup expiry computation).
+    #[cfg(feature = "fx25")]
+    fx25_sps: u64,
     /// Time-windowed deduplication ring (full frame hash).
     dedup: DedupRing<DEDUP_RING_SIZE>,
     /// Total audio samples processed.
@@ -88,11 +100,7 @@ impl MultiDecoder {
         let std_bpf = super::filter::select_std_bpf(config.baud_rate, config.sample_rate);
         let narrow_bpf = super::filter::select_narrow_bpf(config.baud_rate, config.sample_rate);
         let wide_bpf = super::filter::select_wide_bpf(config.baud_rate, config.sample_rate);
-        let filters = [
-            narrow_bpf,
-            std_bpf,
-            wide_bpf,
-        ];
+        let filters = [narrow_bpf, std_bpf, wide_bpf];
 
         // Timing offsets: 0, 1/3 symbol, 2/3 symbol (in phase accumulator units)
         // The Bresenham counter wraps at sample_rate, so 1/3 symbol = sample_rate/3
@@ -107,8 +115,9 @@ impl MultiDecoder {
         for &filter in &filters {
             for &offset in &offsets {
                 if idx < MAX_DECODERS {
-                    decoders[idx] =
-                        FastDemodulator::new(config).filter(filter).phase_offset(offset);
+                    decoders[idx] = FastDemodulator::new(config)
+                        .filter(filter)
+                        .phase_offset(offset);
                     idx += 1;
                 }
             }
@@ -118,10 +127,8 @@ impl MultiDecoder {
         // These detect de-emphasized audio during preamble and compensate.
         if config.baud_rate != 300 {
             for i in (0..9).step_by(3) {
-                decoders[i] = core::mem::replace(
-                    &mut decoders[i],
-                    FastDemodulator::new(config),
-                ).with_adaptive_preemph();
+                decoders[i] = core::mem::replace(&mut decoders[i], FastDemodulator::new(config))
+                    .with_adaptive_preemph();
             }
         }
 
@@ -145,11 +152,17 @@ impl MultiDecoder {
                 let bpf = super::filter::bandpass_coeffs(config.sample_rate, center, bpf_bw);
                 // Only first offset pair gets timing diversity (to stay within budget)
                 let small_limit = if config.baud_rate == 300 { 10 } else { 50 };
-                let timing_variants = if offset.abs() <= small_limit { &offsets[..] } else { &offsets[..1] };
+                let timing_variants = if offset.abs() <= small_limit {
+                    &offsets[..]
+                } else {
+                    &offsets[..1]
+                };
                 for &phase in timing_variants {
                     if idx < MAX_DECODERS {
                         decoders[idx] = FastDemodulator::new(config)
-                            .filter(bpf).phase_offset(phase).frequencies(mark, space);
+                            .filter(bpf)
+                            .phase_offset(phase)
+                            .frequencies(mark, space);
                         idx += 1;
                     }
                 }
@@ -158,13 +171,19 @@ impl MultiDecoder {
         #[cfg(not(feature = "std"))]
         {
             // On no_std, use wide BPF with shifted Goertzel only
-            let freq_off: [i32; 2] = if config.baud_rate == 300 { [-10, 10] } else { [-50, 50] };
+            let freq_off: [i32; 2] = if config.baud_rate == 300 {
+                [-10, 10]
+            } else {
+                [-50, 50]
+            };
             for &offset in &freq_off {
                 if idx < MAX_DECODERS {
                     let mark = (config.mark_freq as i32 + offset) as u32;
                     let space = (config.space_freq as i32 + offset) as u32;
                     decoders[idx] = FastDemodulator::new(config)
-                        .filter(wide_bpf).phase_offset(0).frequencies(mark, space);
+                        .filter(wide_bpf)
+                        .phase_offset(0)
+                        .frequencies(mark, space);
                     idx += 1;
                 }
             }
@@ -211,19 +230,25 @@ impl MultiDecoder {
         #[cfg(feature = "std")]
         {
             let (cross_combos, bpf_bw): ([(i32, u16); 4], f64) = if config.baud_rate == 300 {
-                ([
-                    (-10, 868),   // -10 Hz, +5.3 dB
-                    (10, 868),    // +10 Hz, +5.3 dB
-                    (-10, 1440),  // -10 Hz, +7.5 dB
-                    (10, 1440),   // +10 Hz, +7.5 dB
-                ], 500.0)
+                (
+                    [
+                        (-10, 868),  // -10 Hz, +5.3 dB
+                        (10, 868),   // +10 Hz, +5.3 dB
+                        (-10, 1440), // -10 Hz, +7.5 dB
+                        (10, 1440),  // +10 Hz, +7.5 dB
+                    ],
+                    500.0,
+                )
             } else {
-                ([
-                    (-50, 868),   // -50 Hz, +5.3 dB
-                    (50, 868),    // +50 Hz, +5.3 dB
-                    (-50, 1440),  // -50 Hz, +7.5 dB
-                    (50, 1440),   // +50 Hz, +7.5 dB
-                ], 2000.0)
+                (
+                    [
+                        (-50, 868),  // -50 Hz, +5.3 dB
+                        (50, 868),   // +50 Hz, +5.3 dB
+                        (-50, 1440), // -50 Hz, +7.5 dB
+                        (50, 1440),  // +50 Hz, +7.5 dB
+                    ],
+                    2000.0,
+                )
             };
             let center_freq = (config.mark_freq + config.space_freq) as f64 / 2.0;
             for &(offset, gain) in &cross_combos {
@@ -233,7 +258,8 @@ impl MultiDecoder {
                     let center = center_freq + offset as f64;
                     let bpf = super::filter::bandpass_coeffs(config.sample_rate, center, bpf_bw);
                     decoders[idx] = FastDemodulator::new(config)
-                        .filter(bpf).frequencies(mark, space)
+                        .filter(bpf)
+                        .frequencies(mark, space)
                         .with_space_gain(gain);
                     idx += 1;
                 }
@@ -302,8 +328,8 @@ impl MultiDecoder {
             for &offset in &baud_offsets {
                 if idx < MAX_DECODERS {
                     let adjusted_baud = (config.baud_rate as i32 + offset) as u32;
-                    decoders[idx] = FastDemodulator::new(config)
-                        .with_timing_baud_rate(adjusted_baud);
+                    decoders[idx] =
+                        FastDemodulator::new(config).with_timing_baud_rate(adjusted_baud);
                     idx += 1;
                 }
             }
@@ -311,12 +337,19 @@ impl MultiDecoder {
             // tracks intra-packet drift that fixed Bresenham cannot.
             // Higher alpha (8000) for 300 baud to track wider drift range.
             if idx < MAX_DECODERS {
-                let goertzel_pll_alpha: i16 = if config.baud_rate == 300 { PLL_ALPHA_300_SECONDARY } else { 600 };
+                let goertzel_pll_alpha: i16 = if config.baud_rate == 300 {
+                    PLL_ALPHA_300_SECONDARY
+                } else {
+                    600
+                };
                 let pll = ClockRecoveryPll::new_gardner(
-                    config.sample_rate, config.baud_rate, goertzel_pll_alpha, PLL_BETA,
-                ).with_error_shift(8);
-                decoders[idx] = FastDemodulator::new(config)
-                    .with_custom_pll(pll);
+                    config.sample_rate,
+                    config.baud_rate,
+                    goertzel_pll_alpha,
+                    PLL_BETA,
+                )
+                .with_error_shift(8);
+                decoders[idx] = FastDemodulator::new(config).with_custom_pll(pll);
                 idx += 1;
             }
         }
@@ -340,10 +373,8 @@ impl MultiDecoder {
         #[cfg(feature = "std")]
         {
             for decoder in decoders[..idx].iter_mut() {
-                *decoder = core::mem::replace(
-                    decoder,
-                    FastDemodulator::new(config),
-                ).with_energy_llr();
+                *decoder =
+                    core::mem::replace(decoder, FastDemodulator::new(config)).with_energy_llr();
             }
         }
 
@@ -354,6 +385,12 @@ impl MultiDecoder {
             dm_decoders,
             dm_hdlc,
             dm_active: dm_idx,
+            #[cfg(feature = "fx25")]
+            fx25: core::array::from_fn(|_| Fx25Decoder::new()),
+            #[cfg(feature = "fx25")]
+            dm_fx25: core::array::from_fn(|_| Fx25Decoder::new()),
+            #[cfg(feature = "fx25")]
+            fx25_sps: config.sample_rate as u64 / config.baud_rate as u64,
             dedup: DedupRing::with_overlap_from_config(config.samples_per_symbol()),
             samples_processed: 0,
 
@@ -393,6 +430,12 @@ impl MultiDecoder {
             dm_decoders,
             dm_hdlc,
             dm_active: 0, // no DM decoders in custom diversity mode
+            #[cfg(feature = "fx25")]
+            fx25: core::array::from_fn(|_| Fx25Decoder::new()),
+            #[cfg(feature = "fx25")]
+            dm_fx25: core::array::from_fn(|_| Fx25Decoder::new()),
+            #[cfg(feature = "fx25")]
+            fx25_sps: config.sample_rate as u64 / config.baud_rate as u64,
             dedup: DedupRing::with_overlap_from_config(config.samples_per_symbol()),
             samples_processed: 0,
 
@@ -410,7 +453,12 @@ impl MultiDecoder {
     pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
         self.samples_processed += samples.len() as u64;
         let mut output = MultiOutput::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 1024];
 
         // Process fast (Goertzel) decoders
         for d in 0..self.num_active {
@@ -424,6 +472,30 @@ impl MultiDecoder {
                     let hash = super::frame_hash(&frame_copy[..len]);
                     let start = sym.sample_idx as u64;
                     match self.dedup.check(hash, start, cost) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_copy[..len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
+                    }
+                }
+                #[cfg(feature = "fx25")]
+                if let Some(frame) = self.fx25[d].feed_bit(sym.bit) {
+                    let len = frame.len().min(330);
+                    let mut frame_copy = [0u8; 330];
+                    frame_copy[..len].copy_from_slice(&frame[..len]);
+                    self.total_decoded += 1;
+                    let hash = super::frame_hash(&frame_copy[..len]);
+                    let start = sym.sample_idx as u64;
+                    let fx25_expiry = self.fx25[d].last_block_bits() as u64 * self.fx25_sps;
+                    let cost = 0u16; // FX.25: RS-verified, zero cost
+                    match self.dedup.check_with_expiry(hash, start, cost, fx25_expiry) {
                         DedupAction::New => {
                             if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
                                 self.dedup.record_with_info(hash, start, cost, slot);
@@ -465,6 +537,30 @@ impl MultiDecoder {
                         DedupAction::Duplicate => {}
                     }
                 }
+                #[cfg(feature = "fx25")]
+                if let Some(frame) = self.dm_fx25[d].feed_bit(sym.bit) {
+                    let len = frame.len().min(330);
+                    let mut frame_copy = [0u8; 330];
+                    frame_copy[..len].copy_from_slice(&frame[..len]);
+                    self.total_decoded += 1;
+                    let hash = super::frame_hash(&frame_copy[..len]);
+                    let start = sym.sample_idx as u64;
+                    let fx25_expiry = self.dm_fx25[d].last_block_bits() as u64 * self.fx25_sps;
+                    let cost = 0u16;
+                    match self.dedup.check_with_expiry(hash, start, cost, fx25_expiry) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_copy[..len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
+                    }
+                }
             }
         }
 
@@ -476,10 +572,14 @@ impl MultiDecoder {
         for d in 0..self.num_active {
             self.decoders[d].reset();
             self.hdlc.reset(d);
+            #[cfg(feature = "fx25")]
+            self.fx25[d].reset();
         }
         for d in 0..self.dm_active {
             self.dm_decoders[d].reset();
             self.dm_hdlc.reset(d);
+            #[cfg(feature = "fx25")]
+            self.dm_fx25[d].reset();
         }
         self.dedup.reset();
         self.samples_processed = 0;
@@ -503,7 +603,6 @@ impl MultiDecoder {
         self.hdlc.total_false_positives(self.num_active)
             + self.dm_hdlc.total_false_positives(self.dm_active)
     }
-
 }
 
 // ─── MiniDecoder ("Smart 3") ─────────────────────────────────────────────
@@ -524,6 +623,12 @@ const MINI_DECODERS: usize = 3;
 pub struct MiniDecoder {
     decoders: [FastDemodulator; MINI_DECODERS],
     hdlc: HdlcBank<MINI_DECODERS>,
+    /// FX.25 decoders — one per sub-decoder.
+    #[cfg(feature = "fx25")]
+    fx25: [Fx25Decoder; MINI_DECODERS],
+    /// Samples per symbol (for FX.25 dedup expiry computation).
+    #[cfg(feature = "fx25")]
+    fx25_sps: u64,
     /// Time-windowed deduplication ring (full frame hash).
     dedup: DedupRing<DEDUP_RING_SIZE>,
     /// Total audio samples processed.
@@ -546,11 +651,17 @@ impl MiniDecoder {
         let decoders = if config.baud_rate == 300 {
             let std_bpf = super::filter::select_std_bpf(config.baud_rate, config.sample_rate);
             [
-                FastDemodulator::new(config).filter(std_bpf).phase_offset(offsets[1])
+                FastDemodulator::new(config)
+                    .filter(std_bpf)
+                    .phase_offset(offsets[1])
                     .with_energy_llr(),
-                FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[0])
+                FastDemodulator::new(config)
+                    .filter(narrow_bpf)
+                    .phase_offset(offsets[0])
                     .with_energy_llr(),
-                FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[2])
+                FastDemodulator::new(config)
+                    .filter(narrow_bpf)
+                    .phase_offset(offsets[2])
                     .with_energy_llr(),
             ]
         } else {
@@ -570,18 +681,32 @@ impl MiniDecoder {
                 _ => super::filter::afsk_bandpass_wide_11025(),
             };
             [
-                FastDemodulator::new(config).filter(shifted_bpf).phase_offset(offsets[2])
-                    .frequencies(mark_shifted, space_shifted).with_energy_llr().with_adaptive_preemph(),
-                FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[0])
-                    .with_energy_llr().with_adaptive_preemph(),
-                FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[1])
-                    .with_energy_llr().with_adaptive_preemph(),
+                FastDemodulator::new(config)
+                    .filter(shifted_bpf)
+                    .phase_offset(offsets[2])
+                    .frequencies(mark_shifted, space_shifted)
+                    .with_energy_llr()
+                    .with_adaptive_preemph(),
+                FastDemodulator::new(config)
+                    .filter(narrow_bpf)
+                    .phase_offset(offsets[0])
+                    .with_energy_llr()
+                    .with_adaptive_preemph(),
+                FastDemodulator::new(config)
+                    .filter(narrow_bpf)
+                    .phase_offset(offsets[1])
+                    .with_energy_llr()
+                    .with_adaptive_preemph(),
             ]
         };
 
         Self {
             decoders,
             hdlc: HdlcBank::new(),
+            #[cfg(feature = "fx25")]
+            fx25: core::array::from_fn(|_| Fx25Decoder::new()),
+            #[cfg(feature = "fx25")]
+            fx25_sps: config.sample_rate as u64 / config.baud_rate as u64,
             dedup: DedupRing::with_overlap_from_config(config.samples_per_symbol()),
             samples_processed: 0,
 
@@ -594,7 +719,12 @@ impl MiniDecoder {
     pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
         self.samples_processed += samples.len() as u64;
         let mut output = MultiOutput::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 1024];
 
         for d in 0..MINI_DECODERS {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
@@ -620,6 +750,30 @@ impl MiniDecoder {
                         DedupAction::Duplicate => {}
                     }
                 }
+                #[cfg(feature = "fx25")]
+                if let Some(frame) = self.fx25[d].feed_bit(sym.bit) {
+                    let len = frame.len().min(330);
+                    let mut frame_copy = [0u8; 330];
+                    frame_copy[..len].copy_from_slice(&frame[..len]);
+                    self.total_decoded += 1;
+                    let hash = super::frame_hash(&frame_copy[..len]);
+                    let start = sym.sample_idx as u64;
+                    let fx25_expiry = self.fx25[d].last_block_bits() as u64 * self.fx25_sps;
+                    let cost = 0u16;
+                    match self.dedup.check_with_expiry(hash, start, cost, fx25_expiry) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_copy[..len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
+                    }
+                }
             }
         }
 
@@ -631,6 +785,8 @@ impl MiniDecoder {
         for d in 0..MINI_DECODERS {
             self.decoders[d].reset();
             self.hdlc.reset(d);
+            #[cfg(feature = "fx25")]
+            self.fx25[d].reset();
         }
         self.dedup.reset();
         self.samples_processed = 0;
@@ -652,7 +808,6 @@ impl MiniDecoder {
     pub fn total_false_positives(&self) -> u32 {
         self.hdlc.total_false_positives(MINI_DECODERS)
     }
-
 }
 
 // ─── TwistMiniDecoder ───────────────────────────────────────────────────
@@ -675,6 +830,12 @@ const TWIST_DECODERS: usize = 6;
 pub struct TwistMiniDecoder {
     decoders: [FastDemodulator; TWIST_DECODERS],
     hdlc: HdlcBank<TWIST_DECODERS>,
+    /// FX.25 decoders — one per sub-decoder.
+    #[cfg(feature = "fx25")]
+    fx25: [Fx25Decoder; TWIST_DECODERS],
+    /// Samples per symbol (for FX.25 dedup expiry computation).
+    #[cfg(feature = "fx25")]
+    fx25_sps: u64,
     /// Time-windowed deduplication ring (full frame hash).
     dedup: DedupRing<DEDUP_RING_SIZE>,
     /// Total audio samples processed.
@@ -750,30 +911,47 @@ impl TwistMiniDecoder {
 
         let decoders = [
             // Smart3 original 3
-            FastDemodulator::new(config).filter(shifted_bpf).phase_offset(offsets[2])
-                .frequencies(mark_shifted, space_shifted).with_energy_llr(),
-            FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[0])
+            FastDemodulator::new(config)
+                .filter(shifted_bpf)
+                .phase_offset(offsets[2])
+                .frequencies(mark_shifted, space_shifted)
                 .with_energy_llr(),
-            FastDemodulator::new(config).filter(narrow_bpf).phase_offset(offsets[1])
+            FastDemodulator::new(config)
+                .filter(narrow_bpf)
+                .phase_offset(offsets[0])
+                .with_energy_llr(),
+            FastDemodulator::new(config)
+                .filter(narrow_bpf)
+                .phase_offset(offsets[1])
                 .with_energy_llr(),
             // Twist decoder 4: BPF+0Hz, gain=+1.5dB (362 Q8)
             // At 12k: t2 (top T2 winner); otherwise: t0
-            FastDemodulator::new(config).filter(std_bpf).phase_offset(twist4_phase)
+            FastDemodulator::new(config)
+                .filter(std_bpf)
+                .phase_offset(twist4_phase)
                 .with_space_gain(362)
                 .with_energy_llr(),
             // Twist decoder 5: BPF+200Hz (or +300Hz@12k), gain=+1.5dB (362 Q8), t2
-            FastDemodulator::new(config).filter(bpf_twist5).phase_offset(twist5_phase)
+            FastDemodulator::new(config)
+                .filter(bpf_twist5)
+                .phase_offset(twist5_phase)
                 .with_space_gain(362)
                 .with_energy_llr(),
             // Twist decoder 6: BPF-200Hz, gain=0dB
             // At 12k: t1; otherwise: t0
-            FastDemodulator::new(config).filter(bpf_minus200).phase_offset(twist6_phase)
+            FastDemodulator::new(config)
+                .filter(bpf_minus200)
+                .phase_offset(twist6_phase)
                 .with_energy_llr(),
         ];
 
         Self {
             decoders,
             hdlc: HdlcBank::new(),
+            #[cfg(feature = "fx25")]
+            fx25: core::array::from_fn(|_| Fx25Decoder::new()),
+            #[cfg(feature = "fx25")]
+            fx25_sps: config.sample_rate as u64 / config.baud_rate as u64,
             dedup: DedupRing::with_overlap_from_config(config.samples_per_symbol()),
             samples_processed: 0,
 
@@ -786,7 +964,12 @@ impl TwistMiniDecoder {
     pub fn process_samples(&mut self, samples: &[i16]) -> MultiOutput {
         self.samples_processed += samples.len() as u64;
         let mut output = MultiOutput::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 1024];
 
         for d in 0..TWIST_DECODERS {
             let n = self.decoders[d].process_samples(samples, &mut symbols);
@@ -812,6 +995,30 @@ impl TwistMiniDecoder {
                         DedupAction::Duplicate => {}
                     }
                 }
+                #[cfg(feature = "fx25")]
+                if let Some(frame) = self.fx25[d].feed_bit(sym.bit) {
+                    let len = frame.len().min(330);
+                    let mut frame_copy = [0u8; 330];
+                    frame_copy[..len].copy_from_slice(&frame[..len]);
+                    self.total_decoded += 1;
+                    let hash = super::frame_hash(&frame_copy[..len]);
+                    let start = sym.sample_idx as u64;
+                    let fx25_expiry = self.fx25[d].last_block_bits() as u64 * self.fx25_sps;
+                    let cost = 0u16;
+                    match self.dedup.check_with_expiry(hash, start, cost, fx25_expiry) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_copy[..len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
+                    }
+                }
             }
         }
 
@@ -823,6 +1030,8 @@ impl TwistMiniDecoder {
         for d in 0..TWIST_DECODERS {
             self.decoders[d].reset();
             self.hdlc.reset(d);
+            #[cfg(feature = "fx25")]
+            self.fx25[d].reset();
         }
         self.dedup.reset();
         self.samples_processed = 0;
@@ -832,7 +1041,6 @@ impl TwistMiniDecoder {
     pub fn num_decoders(&self) -> usize {
         TWIST_DECODERS
     }
-
 }
 
 // frame_hash is now centralized in super::frame_hash
@@ -957,8 +1165,7 @@ impl AttributionReport {
 
         // Build per-decoder frame sets
         let n = self.configs.len();
-        let mut decoder_frames: alloc::vec::Vec<BTreeSet<u32>> =
-            alloc::vec![BTreeSet::new(); n];
+        let mut decoder_frames: alloc::vec::Vec<BTreeSet<u32>> = alloc::vec![BTreeSet::new(); n];
         for (&hash, decoders) in &self.frame_map {
             for &d in decoders {
                 if d < n {
@@ -1014,7 +1221,8 @@ impl AttributionReport {
             let mut total = 0usize;
             let mut exclusive = 0usize;
             // Count frames found by any decoder with this tag
-            let decoder_set: alloc::collections::BTreeSet<usize> = decoders.iter().copied().collect();
+            let decoder_set: alloc::collections::BTreeSet<usize> =
+                decoders.iter().copied().collect();
             let mut tag_frames = 0usize;
             for frame_decoders in self.frame_map.values() {
                 let any_in_tag = frame_decoders.iter().any(|d| decoder_set.contains(d));
@@ -1030,11 +1238,14 @@ impl AttributionReport {
             for &d in decoders {
                 total += self.stats[d].total;
             }
-            result.insert(*tag, DecoderStats {
-                total,
-                first: tag_frames,  // reuse "first" to mean "any in tag found"
-                exclusive,
-            });
+            result.insert(
+                *tag,
+                DecoderStats {
+                    total,
+                    first: tag_frames, // reuse "first" to mean "any in tag found"
+                    exclusive,
+                },
+            );
         }
         result
     }
@@ -1060,7 +1271,7 @@ impl MultiDecoder {
                 if idx < self.num_active {
                     configs.push(DecoderConfig {
                         index: idx,
-                        label: format!("G:{}/{}",  bpf_name, timing_name),
+                        label: format!("G:{}/{}", bpf_name, timing_name),
                         algorithm: "goertzel",
                         tags: vec!["goertzel", "base", bpf_name, timing_name],
                     });
@@ -1079,7 +1290,7 @@ impl MultiDecoder {
                     if idx < self.num_active {
                         configs.push(DecoderConfig {
                             index: idx,
-                            label: format!("G:freq{:+}/{}",  offset, timing_name),
+                            label: format!("G:freq{:+}/{}", offset, timing_name),
                             algorithm: "goertzel",
                             tags: vec!["goertzel", "freq-shift"],
                         });
@@ -1121,7 +1332,9 @@ impl MultiDecoder {
         #[cfg(feature = "std")]
         {
             let gains_q8: [u16; 8] = [64, 107, 181, 511, 868, 1440, 2445, 4057];
-            let gain_db: [&str; 8] = ["-12dB", "-7.6dB", "-3dB", "+6dB", "+10.6dB", "+15dB", "+19.6dB", "+24dB"];
+            let gain_db: [&str; 8] = [
+                "-12dB", "-7.6dB", "-3dB", "+6dB", "+10.6dB", "+15dB", "+19.6dB", "+24dB",
+            ];
             for (i, &_gain) in gains_q8.iter().enumerate() {
                 if idx < self.num_active {
                     configs.push(DecoderConfig {
@@ -1212,7 +1425,9 @@ impl MultiDecoder {
                     tags: vec!["goertzel", "pll"],
                 });
                 #[allow(unused_assignments)]
-                { idx += 1; }
+                {
+                    idx += 1;
+                }
             }
         }
 
@@ -1256,7 +1471,9 @@ impl MultiDecoder {
                 tags: vec!["dm", "bresenham", "alt-delay"],
             });
             #[allow(unused_assignments)]
-            { dm_idx += 1; }
+            {
+                dm_idx += 1;
+            }
         }
 
         configs
@@ -1264,12 +1481,17 @@ impl MultiDecoder {
 
     /// Process audio with per-decoder attribution tracking.
     pub fn process_samples_attributed(&mut self, samples: &[i16]) -> AttributedOutput {
-        use alloc::vec::Vec;
         use alloc::collections::BTreeMap;
+        use alloc::vec::Vec;
 
         self.samples_processed += samples.len() as u64;
         let mut output = MultiOutput::new();
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; 1024];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; 1024];
         let mut raw_hits: Vec<(usize, u32)> = Vec::new();
         // hash -> list of decoder indices
         let mut frame_decoder_map: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
@@ -1301,6 +1523,32 @@ impl MultiDecoder {
                         DedupAction::Duplicate => {}
                     }
                 }
+                #[cfg(feature = "fx25")]
+                if let Some(frame) = self.fx25[d].feed_bit(sym.bit) {
+                    self.total_decoded += 1;
+                    let len = frame.len().min(330);
+                    let mut frame_copy = [0u8; 330];
+                    frame_copy[..len].copy_from_slice(&frame[..len]);
+                    let hash = super::frame_hash(&frame_copy[..len]);
+                    raw_hits.push((d, hash));
+                    frame_decoder_map.entry(hash).or_default().push(d);
+                    let start = sym.sample_idx as u64;
+                    let fx25_expiry = self.fx25[d].last_block_bits() as u64 * self.fx25_sps;
+                    let cost = 0u16;
+                    match self.dedup.check_with_expiry(hash, start, cost, fx25_expiry) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_copy[..len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
+                    }
+                }
             }
         }
 
@@ -1316,9 +1564,41 @@ impl MultiDecoder {
                     frame_copy[..len].copy_from_slice(&frame_bytes[..len]);
                     let hash = super::frame_hash(&frame_copy[..len]);
                     raw_hits.push((dm_start + d, hash));
-                    frame_decoder_map.entry(hash).or_default().push(dm_start + d);
+                    frame_decoder_map
+                        .entry(hash)
+                        .or_default()
+                        .push(dm_start + d);
                     let start = sym.sample_idx as u64;
                     match self.dedup.check(hash, start, cost) {
+                        DedupAction::New => {
+                            if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
+                                self.dedup.record_with_info(hash, start, cost, slot);
+                                self.total_unique += 1;
+                            }
+                        }
+                        DedupAction::Replace(old_slot) => {
+                            output.replace(old_slot, &frame_copy[..len], cost);
+                            self.dedup.update_entry(old_slot, cost, old_slot);
+                        }
+                        DedupAction::Duplicate => {}
+                    }
+                }
+                #[cfg(feature = "fx25")]
+                if let Some(frame) = self.dm_fx25[d].feed_bit(sym.bit) {
+                    self.total_decoded += 1;
+                    let len = frame.len().min(330);
+                    let mut frame_copy = [0u8; 330];
+                    frame_copy[..len].copy_from_slice(&frame[..len]);
+                    let hash = super::frame_hash(&frame_copy[..len]);
+                    raw_hits.push((dm_start + d, hash));
+                    frame_decoder_map
+                        .entry(hash)
+                        .or_default()
+                        .push(dm_start + d);
+                    let start = sym.sample_idx as u64;
+                    let fx25_expiry = self.dm_fx25[d].last_block_bits() as u64 * self.fx25_sps;
+                    let cost = 0u16;
+                    match self.dedup.check_with_expiry(hash, start, cost, fx25_expiry) {
                         DedupAction::New => {
                             if let Some(slot) = output.push_with_cost(&frame_copy[..len], cost) {
                                 self.dedup.record_with_info(hash, start, cost, slot);
@@ -1379,7 +1659,8 @@ mod tests {
         use crate::modem::afsk::AfskModulator;
         use crate::modem::ModConfig;
 
-        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Multi");
+        let (frame_data, frame_len) =
+            build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Multi");
         let raw = &frame_data[..frame_len];
         let encoded = hdlc_encode(raw);
 
@@ -1405,9 +1686,16 @@ mod tests {
         let output = multi.process_samples(&audio[..audio_len]);
 
         // At least one decoder should find the frame (deduplicated to 1)
-        assert_eq!(output.len(), 1, "Multi-decoder should decode exactly 1 unique frame");
+        assert_eq!(
+            output.len(),
+            1,
+            "Multi-decoder should decode exactly 1 unique frame"
+        );
         assert_eq!(output.frame(0), raw);
-        assert!(multi.total_decoded >= 1, "At least 1 decoder should find it");
+        assert!(
+            multi.total_decoded >= 1,
+            "At least 1 decoder should find it"
+        );
     }
 
     #[test]
@@ -1416,8 +1704,14 @@ mod tests {
         let data2 = b"Hello, World!";
         let data3 = b"Hello, World?";
 
-        assert_eq!(crate::modem::frame_hash(data1), crate::modem::frame_hash(data2));
-        assert_ne!(crate::modem::frame_hash(data1), crate::modem::frame_hash(data3));
+        assert_eq!(
+            crate::modem::frame_hash(data1),
+            crate::modem::frame_hash(data2)
+        );
+        assert_ne!(
+            crate::modem::frame_hash(data1),
+            crate::modem::frame_hash(data3)
+        );
     }
 
     #[test]
@@ -1444,7 +1738,8 @@ mod tests {
         use crate::modem::afsk::AfskModulator;
         use crate::modem::ModConfig;
 
-        let (frame_data, frame_len) = build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Mini");
+        let (frame_data, frame_len) =
+            build_test_frame("N0CALL", "APRS", b"!4903.50N/07201.75W-Mini");
         let raw = &frame_data[..frame_len];
         let encoded = hdlc_encode(raw);
 
@@ -1466,7 +1761,11 @@ mod tests {
         let mut mini = MiniDecoder::new(config);
         let output = mini.process_samples(&audio[..audio_len]);
 
-        assert_eq!(output.len(), 1, "MiniDecoder should decode exactly 1 unique frame");
+        assert_eq!(
+            output.len(),
+            1,
+            "MiniDecoder should decode exactly 1 unique frame"
+        );
         assert_eq!(output.frame(0), raw);
         assert!(mini.total_decoded >= 1, "At least 1 decoder should find it");
     }

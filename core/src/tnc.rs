@@ -36,24 +36,24 @@
 //! }
 //! ```
 
-use crate::MAX_FRAME_LEN;
-use crate::kiss::{self, KissDecoder, Command};
 use crate::ax25::crc16_ccitt;
+use crate::kiss::{self, Command, KissDecoder};
 use crate::modem::afsk::AfskModulator;
-use crate::modem::demod::{DemodSymbol, FastDemodulator};
-use crate::modem::demod::{CorrelationDemodulator, DmDemodulator};
-use crate::modem::hdlc_bank::AnyHdlc;
 use crate::modem::binary_xor::BinaryXorDemodulator;
-use crate::modem::{DemodConfig, ModConfig};
-#[cfg(feature = "9600-baud")]
-use crate::modem::scrambler::Scrambler;
+use crate::modem::demod::{CorrelationDemodulator, DmDemodulator};
+use crate::modem::demod::{DemodSymbol, FastDemodulator};
+use crate::modem::hdlc_bank::AnyHdlc;
 #[cfg(feature = "9600-baud")]
 use crate::modem::mod_9600::Mod9600Config;
+#[cfg(feature = "9600-baud")]
+use crate::modem::scrambler::Scrambler;
+use crate::modem::{DemodConfig, ModConfig};
+use crate::MAX_FRAME_LEN;
 
 #[cfg(feature = "multi-decoder")]
-use crate::modem::multi::{MiniDecoder, MultiDecoder, TwistMiniDecoder};
-#[cfg(feature = "multi-decoder")]
 use crate::modem::corr_slicer::CorrSlicerDecoder;
+#[cfg(feature = "multi-decoder")]
+use crate::modem::multi::{MiniDecoder, MultiDecoder, TwistMiniDecoder};
 
 #[cfg(feature = "fx25")]
 use crate::fx25::decode::Fx25Decoder;
@@ -466,10 +466,9 @@ impl<D: Demodulate, M: Modulate> TncEngine<D, M> {
                     flags_total,
                     bit_in_flag,
                 } => {
-                    let n = self.modulator.modulate_bit(
-                        FLAG_BITS[bit_in_flag as usize],
-                        &mut out[written..],
-                    );
+                    let n = self
+                        .modulator
+                        .modulate_bit(FLAG_BITS[bit_in_flag as usize], &mut out[written..]);
                     written += n;
                     let next_bit = bit_in_flag + 1;
                     if next_bit >= 8 {
@@ -517,10 +516,9 @@ impl<D: Demodulate, M: Modulate> TncEngine<D, M> {
                     flags_total,
                     bit_in_flag,
                 } => {
-                    let n = self.modulator.modulate_bit(
-                        FLAG_BITS[bit_in_flag as usize],
-                        &mut out[written..],
-                    );
+                    let n = self
+                        .modulator
+                        .modulate_bit(FLAG_BITS[bit_in_flag as usize], &mut out[written..]);
                     written += n;
                     let next_bit = bit_in_flag + 1;
                     if next_bit >= 8 {
@@ -671,17 +669,10 @@ impl<D: Demodulate, M: Modulate> TncEngine<D, M> {
             #[cfg(feature = "fx25")]
             {
                 if self.config.fx25_tx_check_bytes > 0 {
-                    // FX.25 mode: compute CRC, then RS-encode with correlation tag.
-                    // The FX.25 block is sent as raw bits (no bit-stuffing).
-                    let crc = crc16_ccitt(&frame_data[..frame_len]);
-                    let mut frame_with_crc = [0u8; MAX_FRAME_LEN + 2];
-                    frame_with_crc[..frame_len].copy_from_slice(&frame_data[..frame_len]);
-                    frame_with_crc[frame_len] = crc as u8;
-                    frame_with_crc[frame_len + 1] = (crc >> 8) as u8;
-                    let total = frame_len + 2;
-
+                    // FX.25 mode: encoder handles CRC, HDLC bit-stuffing, and RS encoding.
+                    // Pass raw frame (without CRC) — matches DW's format.
                     if let Some(block) = crate::fx25::encode::fx25_encode(
-                        &frame_with_crc[..total],
+                        &frame_data[..frame_len],
                         self.config.fx25_tx_check_bytes,
                     ) {
                         // Copy FX.25 bits to tx_bits
@@ -698,8 +689,7 @@ impl<D: Demodulate, M: Modulate> TncEngine<D, M> {
             }
 
             // Standard HDLC encoding (CRC + bit stuffing)
-            self.tx_bit_count =
-                hdlc_encode_data(&frame_data[..frame_len], &mut self.tx_bits);
+            self.tx_bit_count = hdlc_encode_data(&frame_data[..frame_len], &mut self.tx_bits);
             self.tx_state = TxState::Transmitting { bit_index: 0 };
         } else {
             // Queue was empty — go to tail
@@ -783,7 +773,12 @@ impl FastAdapter {
 
 impl Demodulate for FastAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; ADAPTER_SYMBOL_BUF];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; ADAPTER_SYMBOL_BUF];
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
@@ -822,7 +817,12 @@ impl QualityAdapter {
 
 impl Demodulate for QualityAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; ADAPTER_SYMBOL_BUF];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; ADAPTER_SYMBOL_BUF];
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
@@ -861,7 +861,12 @@ impl DmAdapter {
 
 impl Demodulate for DmAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; ADAPTER_SYMBOL_BUF];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; ADAPTER_SYMBOL_BUF];
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
@@ -890,7 +895,9 @@ impl CorrAdapter {
     /// Create a correlation demodulator with adaptive gain and energy LLR.
     pub fn new(config: DemodConfig) -> Self {
         Self {
-            demod: CorrelationDemodulator::new(config).with_adaptive_gain().with_energy_llr(),
+            demod: CorrelationDemodulator::new(config)
+                .with_adaptive_gain()
+                .with_energy_llr(),
             hdlc: AnyHdlc::new(),
             #[cfg(feature = "fx25")]
             fx25: Fx25Decoder::new(),
@@ -900,7 +907,12 @@ impl CorrAdapter {
 
 impl Demodulate for CorrAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; ADAPTER_SYMBOL_BUF];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; ADAPTER_SYMBOL_BUF];
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
@@ -938,7 +950,12 @@ impl CorrPllAdapter {
 
 impl Demodulate for CorrPllAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; ADAPTER_SYMBOL_BUF];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; ADAPTER_SYMBOL_BUF];
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
@@ -969,7 +986,12 @@ impl XorAdapter {
 
 impl Demodulate for XorAdapter {
     fn process_audio(&mut self, samples: &[i16], handler: &mut dyn FnMut(&[u8])) {
-        let mut symbols = [DemodSymbol { bit: false, llr: 0, sample_idx: 0, raw_bit: false }; ADAPTER_SYMBOL_BUF];
+        let mut symbols = [DemodSymbol {
+            bit: false,
+            llr: 0,
+            sample_idx: 0,
+            raw_bit: false,
+        }; ADAPTER_SYMBOL_BUF];
         let chunk_size = ADAPTER_SYMBOL_BUF * 8;
         for chunk in samples.chunks(chunk_size) {
             let n = self.demod.process_samples(chunk, &mut symbols);
@@ -1148,7 +1170,11 @@ impl Modulate for Fsk9600ModulateAdapter {
             self.prev_nrzi = !self.prev_nrzi;
         }
         let scrambled = self.scrambler.scramble(self.prev_nrzi);
-        let level = if scrambled { self.config.amplitude } else { -self.config.amplitude };
+        let level = if scrambled {
+            self.config.amplitude
+        } else {
+            -self.config.amplitude
+        };
 
         // Bresenham timing for fractional samples-per-symbol
         self.bit_phase += self.config.sample_rate;
@@ -1346,7 +1372,10 @@ mod tests {
             assert!(queue.enqueue(&[i as u8]), "enqueue {i} should succeed");
         }
         assert!(queue.is_full());
-        assert!(!queue.enqueue(&[0xFF]), "enqueue beyond capacity should fail");
+        assert!(
+            !queue.enqueue(&[0xFF]),
+            "enqueue beyond capacity should fail"
+        );
     }
 
     #[test]

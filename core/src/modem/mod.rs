@@ -34,31 +34,31 @@
 //!
 //! See docs/MODEM_DESIGN.md for detailed algorithm descriptions.
 
-pub mod afsk;
-pub mod demod;
-pub mod delay_multiply;
-pub mod filter;
-pub mod hilbert;
 pub mod adaptive;
-pub mod pll;
-pub mod soft_hdlc;
-#[cfg(feature = "multi-decoder")]
-pub mod multi;
-pub mod corr_slicer;
+pub mod afsk;
 pub mod binary_xor;
+pub mod corr_slicer;
+pub mod delay_multiply;
+pub mod demod;
+pub mod filter;
 pub mod fixed_vec;
 pub mod frame_output;
 pub mod hdlc_bank;
+pub mod hilbert;
+#[cfg(feature = "multi-decoder")]
+pub mod multi;
+pub mod pll;
+pub mod soft_hdlc;
 
 // 9600 baud G3RUH modules
-#[cfg(feature = "9600-baud")]
-pub mod scrambler;
 #[cfg(feature = "9600-baud")]
 pub mod demod_9600;
 #[cfg(feature = "9600-baud")]
 pub mod mod_9600;
 #[cfg(all(feature = "9600-baud", feature = "multi-decoder"))]
 pub mod multi_9600;
+#[cfg(feature = "9600-baud")]
+pub mod scrambler;
 
 /// Standard Bell 202 mark frequency (Hz)
 pub const MARK_FREQ: u32 = 1200;
@@ -125,8 +125,8 @@ impl DemodConfig {
             mark_freq: MARK_FREQ,
             space_freq: SPACE_FREQ,
             baud_rate: BAUD_RATE,
-            pll_alpha: 936,   // ~0.0286 in Q15 — moderate tracking
-            pll_beta: 0,      // beta=0 universally optimal (frequency correction hurts)
+            pll_alpha: 936, // ~0.0286 in Q15 — moderate tracking
+            pll_beta: 0,    // beta=0 universally optimal (frequency correction hurts)
         }
     }
 
@@ -220,38 +220,26 @@ impl ModConfig {
 /// 256-entry sine lookup table, Q15 format.
 /// SIN_TABLE[i] = round(sin(2π·i/256) × 32767)
 pub static SIN_TABLE_Q15: [i16; 256] = [
-        0,   804,  1608,  2410,  3212,  4011,  4808,  5602,
-     6393,  7179,  7962,  8739,  9512, 10278, 11039, 11793,
-    12539, 13279, 14010, 14732, 15446, 16151, 16846, 17530,
-    18204, 18868, 19519, 20159, 20787, 21403, 22005, 22594,
-    23170, 23731, 24279, 24811, 25329, 25832, 26319, 26790,
-    27245, 27683, 28105, 28510, 28898, 29268, 29621, 29956,
-    30273, 30571, 30852, 31113, 31356, 31580, 31785, 31971,
-    32137, 32285, 32412, 32521, 32609, 32678, 32728, 32757,
-    32767, 32757, 32728, 32678, 32609, 32521, 32412, 32285,
-    32137, 31971, 31785, 31580, 31356, 31113, 30852, 30571,
-    30273, 29956, 29621, 29268, 28898, 28510, 28105, 27683,
-    27245, 26790, 26319, 25832, 25329, 24811, 24279, 23731,
-    23170, 22594, 22005, 21403, 20787, 20159, 19519, 18868,
-    18204, 17530, 16846, 16151, 15446, 14732, 14010, 13279,
-    12539, 11793, 11039, 10278,  9512,  8739,  7962,  7179,
-     6393,  5602,  4808,  4011,  3212,  2410,  1608,   804,
-        0,  -804, -1608, -2410, -3212, -4011, -4808, -5602,
-    -6393, -7179, -7962, -8739, -9512,-10278,-11039,-11793,
-   -12539,-13279,-14010,-14732,-15446,-16151,-16846,-17530,
-   -18204,-18868,-19519,-20159,-20787,-21403,-22005,-22594,
-   -23170,-23731,-24279,-24811,-25329,-25832,-26319,-26790,
-   -27245,-27683,-28105,-28510,-28898,-29268,-29621,-29956,
-   -30273,-30571,-30852,-31113,-31356,-31580,-31785,-31971,
-   -32137,-32285,-32412,-32521,-32609,-32678,-32728,-32757,
-   -32767,-32757,-32728,-32678,-32609,-32521,-32412,-32285,
-   -32137,-31971,-31785,-31580,-31356,-31113,-30852,-30571,
-   -30273,-29956,-29621,-29268,-28898,-28510,-28105,-27683,
-   -27245,-26790,-26319,-25832,-25329,-24811,-24279,-23731,
-   -23170,-22594,-22005,-21403,-20787,-20159,-19519,-18868,
-   -18204,-17530,-16846,-16151,-15446,-14732,-14010,-13279,
-   -12539,-11793,-11039,-10278, -9512, -8739, -7962, -7179,
-    -6393, -5602, -4808, -4011, -3212, -2410, -1608,  -804,
+    0, 804, 1608, 2410, 3212, 4011, 4808, 5602, 6393, 7179, 7962, 8739, 9512, 10278, 11039, 11793,
+    12539, 13279, 14010, 14732, 15446, 16151, 16846, 17530, 18204, 18868, 19519, 20159, 20787,
+    21403, 22005, 22594, 23170, 23731, 24279, 24811, 25329, 25832, 26319, 26790, 27245, 27683,
+    28105, 28510, 28898, 29268, 29621, 29956, 30273, 30571, 30852, 31113, 31356, 31580, 31785,
+    31971, 32137, 32285, 32412, 32521, 32609, 32678, 32728, 32757, 32767, 32757, 32728, 32678,
+    32609, 32521, 32412, 32285, 32137, 31971, 31785, 31580, 31356, 31113, 30852, 30571, 30273,
+    29956, 29621, 29268, 28898, 28510, 28105, 27683, 27245, 26790, 26319, 25832, 25329, 24811,
+    24279, 23731, 23170, 22594, 22005, 21403, 20787, 20159, 19519, 18868, 18204, 17530, 16846,
+    16151, 15446, 14732, 14010, 13279, 12539, 11793, 11039, 10278, 9512, 8739, 7962, 7179, 6393,
+    5602, 4808, 4011, 3212, 2410, 1608, 804, 0, -804, -1608, -2410, -3212, -4011, -4808, -5602,
+    -6393, -7179, -7962, -8739, -9512, -10278, -11039, -11793, -12539, -13279, -14010, -14732,
+    -15446, -16151, -16846, -17530, -18204, -18868, -19519, -20159, -20787, -21403, -22005, -22594,
+    -23170, -23731, -24279, -24811, -25329, -25832, -26319, -26790, -27245, -27683, -28105, -28510,
+    -28898, -29268, -29621, -29956, -30273, -30571, -30852, -31113, -31356, -31580, -31785, -31971,
+    -32137, -32285, -32412, -32521, -32609, -32678, -32728, -32757, -32767, -32757, -32728, -32678,
+    -32609, -32521, -32412, -32285, -32137, -31971, -31785, -31580, -31356, -31113, -30852, -30571,
+    -30273, -29956, -29621, -29268, -28898, -28510, -28105, -27683, -27245, -26790, -26319, -25832,
+    -25329, -24811, -24279, -23731, -23170, -22594, -22005, -21403, -20787, -20159, -19519, -18868,
+    -18204, -17530, -16846, -16151, -15446, -14732, -14010, -13279, -12539, -11793, -11039, -10278,
+    -9512, -8739, -7962, -7179, -6393, -5602, -4808, -4011, -3212, -2410, -1608, -804,
 ];
 
 // ─── Shared utilities for multi-decoder modules ────────────────────────
@@ -291,7 +279,12 @@ struct DedupEntry {
 
 impl Default for DedupEntry {
     fn default() -> Self {
-        Self { hash: 0, start_sample: 0, cost: 0, slot: 0 }
+        Self {
+            hash: 0,
+            start_sample: 0,
+            cost: 0,
+            slot: 0,
+        }
     }
 }
 
@@ -418,6 +411,33 @@ impl<const N: usize> DedupRing<N> {
         DedupAction::New
     }
 
+    /// Check with a custom expiry window (for FX.25 which completes much later than HDLC).
+    pub fn check_with_expiry(
+        &self,
+        hash: u32,
+        start_sample: u64,
+        cost: u16,
+        expiry: u64,
+    ) -> DedupAction {
+        let limit = self.count.min(N);
+        for i in 0..limit {
+            let e = &self.entries[i];
+            let delta = start_sample.abs_diff(e.start_sample);
+            if delta > expiry {
+                continue;
+            }
+            let is_match = e.hash == hash || delta < self.overlap_window;
+            if is_match {
+                if cost < e.cost {
+                    return DedupAction::Replace(e.slot);
+                } else {
+                    return DedupAction::Duplicate;
+                }
+            }
+        }
+        DedupAction::New
+    }
+
     /// Record a frame in the ring.
     pub fn record(&mut self, hash: u32) {
         self.record_with_info(hash, 0, 0, 0);
@@ -425,7 +445,12 @@ impl<const N: usize> DedupRing<N> {
 
     /// Record a frame with full time-window info.
     pub fn record_with_info(&mut self, hash: u32, start_sample: u64, cost: u16, slot: u8) {
-        self.entries[self.write_idx] = DedupEntry { hash, start_sample, cost, slot };
+        self.entries[self.write_idx] = DedupEntry {
+            hash,
+            start_sample,
+            cost,
+            slot,
+        };
         self.write_idx = (self.write_idx + 1) % N;
         if self.count < N {
             self.count += 1;
@@ -451,4 +476,3 @@ impl<const N: usize> DedupRing<N> {
         self.count = 0;
     }
 }
-

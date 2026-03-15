@@ -5,6 +5,12 @@
 //! to detect correlation tags, then accumulates the exact number of raw bytes
 //! specified by the matched tag, and finally applies RS error correction.
 //!
+//! After RS decode, the data block contains DW-compatible HDLC-wrapped content:
+//! `[0x7E flag | bit-stuffed frame+CRC | 0x7E flag | 0x00 padding...]`
+//!
+//! The decoder feeds these bytes through an `HdlcDecoder` to extract the
+//! CRC-verified AX.25 frame.
+//!
 //! # State Machine
 //!
 //! ```text
@@ -15,6 +21,7 @@
 
 use super::rs;
 use super::{match_tag, FX25_TAGS};
+use crate::ax25::frame::HdlcDecoder;
 
 /// Maximum RS codeword size (RS over GF(256)).
 const MAX_BLOCK: usize = 255;
@@ -64,6 +71,9 @@ pub struct Fx25Decoder {
     output_len: usize,
     /// Maximum Hamming distance for tag correlation.
     max_hamming: u32,
+    /// Bit count of the last successfully decoded RS block (64 tag + rs_n*8 data).
+    /// Used by callers to backdate sample timestamps for dedup.
+    last_block_bits: usize,
 
     // Statistics
     /// Number of correlation tags detected.
@@ -74,6 +84,12 @@ pub struct Fx25Decoder {
     pub stats_rs_corrected: u32,
     /// Number of frames where RS decode failed (too many errors).
     pub stats_rs_failed: u32,
+}
+
+impl Default for Fx25Decoder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Fx25Decoder {
@@ -92,6 +108,7 @@ impl Fx25Decoder {
             output_buf: [0u8; MAX_BLOCK],
             output_len: 0,
             max_hamming: DEFAULT_MAX_HAMMING,
+            last_block_bits: 0,
             stats_tags_detected: 0,
             stats_rs_clean: 0,
             stats_rs_corrected: 0,
@@ -104,6 +121,12 @@ impl Fx25Decoder {
     pub fn with_max_hamming(mut self, max: u32) -> Self {
         self.max_hamming = max;
         self
+    }
+
+    /// Bit count of the last decoded block (64-bit tag + RS data).
+    /// Used to backdate sample timestamps for dedup against HDLC.
+    pub fn last_block_bits(&self) -> usize {
+        self.last_block_bits
     }
 
     /// Reset decoder state (clear shift register, return to Hunting).
@@ -166,6 +189,7 @@ impl Fx25Decoder {
 
                     // Check if we have the full block
                     if self.byte_count >= self.target_bytes {
+                        self.last_block_bits = 64 + self.target_bytes * 8;
                         self.decode_block();
                         self.state = State::Hunting;
                         self.shift_reg = 0;
@@ -181,16 +205,27 @@ impl Fx25Decoder {
         }
     }
 
-    /// Attempt RS decode on the accumulated block and extract the AX.25 frame.
-    /// Sets `output_len` on success.
+    /// Attempt RS decode on the accumulated block, then extract the HDLC-wrapped
+    /// AX.25 frame from the corrected data. Sets `output_len` on success.
+    ///
+    /// DW uses full RS(255, 255-nsym) with pad=0. The received n-byte block
+    /// must be rearranged into a 255-byte codeword before RS decoding:
+    /// `[data(k) | zeros(255-nsym-k) | parity(nsym)]`
     fn decode_block(&mut self) {
         let tag = &FX25_TAGS[self.tag_index as usize];
         let n = tag.rs_n as usize;
         let k = tag.rs_k as usize;
         let nsym = tag.check_bytes as usize;
 
-        // RS decode in place
-        match rs::rs_decode(&mut self.block_buf, n, nsym) {
+        // Rearrange received block into DW's 255-byte layout:
+        // Received block_buf[0..n] = [data(k) | parity(nsym)]
+        // Full layout: [data(k) | zeros(255-nsym-k) | parity(nsym)]
+        let mut full_block = [0u8; MAX_BLOCK]; // 255 bytes, zero-initialized
+        full_block[..k].copy_from_slice(&self.block_buf[..k]);
+        full_block[255 - nsym..255].copy_from_slice(&self.block_buf[k..n]);
+
+        // RS decode on full 255-byte codeword (pad=0, matching DW)
+        match rs::rs_decode(&mut full_block, 255, nsym) {
             Ok(0) => {
                 self.stats_rs_clean += 1;
             }
@@ -203,96 +238,185 @@ impl Fx25Decoder {
             }
         }
 
-        // The data portion is block_buf[0..k].
-        // It contains the AX.25 frame padded with trailing zeros to fill k bytes.
-        // Find the actual frame length by scanning backwards for the last non-zero byte.
-        // AX.25 frames end with a 2-byte CRC which is extremely unlikely to be 0x0000.
-        let frame_len = Self::find_frame_length(&self.block_buf[..k]);
-        if frame_len < 17 {
-            return;
+        // The corrected data is full_block[0..k] (DW-format HDLC-wrapped content).
+        // Feed each byte's bits (LSB first) through an HdlcDecoder to extract
+        // the CRC-verified AX.25 frame.
+        let mut hdlc = HdlcDecoder::new();
+        for &byte in &full_block[..k] {
+            for bit_pos in 0..8 {
+                let bit = (byte >> bit_pos) & 1 != 0;
+                if let Some(frame) = hdlc.feed_bit(bit) {
+                    if frame.len() >= 15 {
+                        let len = frame.len().min(MAX_BLOCK);
+                        self.output_buf[..len].copy_from_slice(&frame[..len]);
+                        self.output_len = len;
+                        return;
+                    }
+                }
+            }
         }
-
-        // Copy to output buffer (frame includes CRC — caller can verify/strip)
-        self.output_buf[..frame_len].copy_from_slice(&self.block_buf[..frame_len]);
-        self.output_len = frame_len;
-    }
-
-    /// Find the length of the AX.25 frame within a padded data block.
-    ///
-    /// Scans backward from the end to find the last non-zero byte.
-    /// Returns the length including that byte (0 if all zeros).
-    fn find_frame_length(data: &[u8]) -> usize {
-        let mut len = data.len();
-        while len > 0 && data[len - 1] == 0 {
-            len -= 1;
-        }
-        len
+        // No valid HDLC frame found in RS data
     }
 }
 
 #[cfg(test)]
 mod tests {
     extern crate alloc;
+    use super::*;
+    use crate::ax25::crc16_ccitt;
+    use crate::fx25::encode::fx25_encode;
+    use crate::fx25::rs::rs_encode;
     use alloc::vec;
     use alloc::vec::Vec;
-    use super::*;
-    use crate::fx25::rs::rs_encode;
 
-    /// Helper: build a complete FX.25 bit stream (tag + RS block) for testing.
-    fn build_fx25_bitstream(ax25_frame: &[u8], tag_idx: usize) -> (Vec<bool>, usize) {
+    /// Helper: build a DW-compatible FX.25 bit stream (tag + RS block) for testing.
+    ///
+    /// Takes a raw AX.25 frame (WITHOUT CRC), wraps it in HDLC (CRC + bit-stuff + flags),
+    /// zero-pads to k bytes, RS-encodes, and returns the bit stream.
+    fn build_fx25_bitstream(ax25_frame: &[u8], tag_idx: usize) -> Vec<bool> {
         let tag = &FX25_TAGS[tag_idx];
         let k = tag.rs_k as usize;
         let n = tag.rs_n as usize;
         let nsym = tag.check_bytes as usize;
 
-        // Pad data to k bytes
-        let mut data = [0u8; MAX_BLOCK];
-        let frame_len = ax25_frame.len().min(k);
-        data[..frame_len].copy_from_slice(&ax25_frame[..frame_len]);
+        // Compute CRC
+        let crc = crc16_ccitt(ax25_frame);
+        let mut frame_crc = vec![0u8; ax25_frame.len() + 2];
+        frame_crc[..ax25_frame.len()].copy_from_slice(ax25_frame);
+        frame_crc[ax25_frame.len()] = crc as u8;
+        frame_crc[ax25_frame.len() + 1] = (crc >> 8) as u8;
 
-        // RS encode
+        // HDLC bit-stuff into bytes with flag wrapping
+        let mut hdlc_buf = [0u8; 300];
+        let (hdlc_len, hdlc_bits) = hdlc_stuff_to_bytes_for_test(&frame_crc, &mut hdlc_buf);
+
+        assert!(
+            hdlc_len <= k,
+            "HDLC-wrapped frame ({}) exceeds k ({})",
+            hdlc_len,
+            k
+        );
+
+        // Build full RS message: [hdlc_data(k) + flag padding | zeros(full_k - k)]
+        // DW uses pad=0 (full RS(255, full_k)) — data at position 0, not position pad.
+        let full_k = 255 - nsym;
+        let mut data = [0u8; 255];
+        data[..hdlc_len].copy_from_slice(&hdlc_buf[..hdlc_len]);
+        flag_pad_bits_for_test(&mut data, hdlc_bits, k * 8);
+        // Positions k..full_k-1 are already zero
+
+        // RS encode with full_k bytes (pad=0, DW compatible)
         let mut parity = [0u8; 64];
-        rs_encode(&data[..k], nsym, &mut parity).unwrap();
+        rs_encode(&data[..full_k], nsym, &mut parity).unwrap();
 
         // Build codeword
-        let mut codeword = [0u8; MAX_BLOCK];
+        let mut codeword = [0u8; 255];
         codeword[..k].copy_from_slice(&data[..k]);
         codeword[k..n].copy_from_slice(&parity[..nsym]);
 
         // Convert to bit stream: 64-bit tag (LSB first) + codeword bytes (LSB first)
         let mut bits = Vec::new();
 
-        // Tag bits: LSB first (bit 0 first) — matches DW right-shift register convention
         for b in 0..64 {
             bits.push((tag.tag >> b) & 1 == 1);
         }
 
-        // Codeword bytes: LSB first per byte
         for &byte in &codeword[..n] {
             for b in 0..8 {
                 bits.push((byte >> b) & 1 == 1);
             }
         }
 
-        (bits, frame_len)
+        bits
     }
 
-    /// Create a minimal valid AX.25 frame (with CRC placeholder).
+    /// Minimal HDLC bit-stuffing for test use (same algorithm as encoder).
+    /// Returns (byte_count, bit_count).
+    fn hdlc_stuff_to_bytes_for_test(data_with_crc: &[u8], out: &mut [u8]) -> (usize, usize) {
+        for b in out.iter_mut() {
+            *b = 0;
+        }
+
+        let mut bit_pos: usize = 0;
+        let out_len = out.len();
+
+        macro_rules! push_bit {
+            ($bit:expr) => {
+                let byte_idx = bit_pos / 8;
+                let bit_idx = bit_pos % 8;
+                if byte_idx < out_len {
+                    if $bit {
+                        out[byte_idx] |= 1 << bit_idx;
+                    }
+                    bit_pos += 1;
+                }
+            };
+        }
+
+        // Opening flag
+        for i in 0..8u8 {
+            push_bit!((0x7Eu8 >> i) & 1 != 0);
+        }
+
+        // Bit-stuff data
+        let mut ones_count: u8 = 0;
+        for &byte in data_with_crc {
+            for i in 0..8u8 {
+                let bit = (byte >> i) & 1 != 0;
+                push_bit!(bit);
+                if bit {
+                    ones_count += 1;
+                    if ones_count == 5 {
+                        push_bit!(false);
+                        ones_count = 0;
+                    }
+                } else {
+                    ones_count = 0;
+                }
+            }
+        }
+
+        // Closing flag
+        for i in 0..8u8 {
+            push_bit!((0x7Eu8 >> i) & 1 != 0);
+        }
+
+        ((bit_pos + 7) / 8, bit_pos)
+    }
+
+    /// Fill remaining bits with repeating 0x7E flag pattern (matches DW's stuff_it).
+    fn flag_pad_bits_for_test(buf: &mut [u8], start_bit: usize, end_bit: usize) {
+        const FLAG: u8 = 0x7E;
+        let mut flag_bit_idx: u8 = 0;
+        let buf_len = buf.len();
+        for bit_pos in start_bit..end_bit {
+            let byte_idx = bit_pos / 8;
+            let bit_idx = bit_pos % 8;
+            if byte_idx >= buf_len {
+                break;
+            }
+            if (FLAG >> flag_bit_idx) & 1 != 0 {
+                buf[byte_idx] |= 1 << bit_idx;
+            } else {
+                buf[byte_idx] &= !(1 << bit_idx);
+            }
+            flag_bit_idx = (flag_bit_idx + 1) % 8;
+        }
+    }
+
+    /// Create a minimal valid AX.25 frame (WITHOUT CRC).
     fn make_test_frame() -> Vec<u8> {
-        // Minimal: 7-byte dest + 7-byte src (with extension bit) + ctrl + PID + 2-byte payload
         let mut frame = vec![0u8; 18];
-        // Dest: "TEST  " shifted left
         for (i, &c) in b"TEST  ".iter().enumerate() {
             frame[i] = c << 1;
         }
-        frame[6] = 0x60; // SSID byte
-        // Src: "SRC   " shifted left
+        frame[6] = 0x60;
         for (i, &c) in b"SRC   ".iter().enumerate() {
             frame[7 + i] = c << 1;
         }
-        frame[13] = 0x61; // SSID byte with extension bit set
-        frame[14] = 0x03; // UI control
-        frame[15] = 0xF0; // No L3 PID
+        frame[13] = 0x61;
+        frame[14] = 0x03;
+        frame[15] = 0xF0;
         frame[16] = b'H';
         frame[17] = b'i';
         frame
@@ -301,16 +425,13 @@ mod tests {
     #[test]
     fn decode_clean_frame() {
         let frame = make_test_frame();
-        // Use tag 3 (RS(80,64), 16 check bytes) — small enough for quick test
-        let (bits, frame_len) = build_fx25_bitstream(&frame, 2);
+        let bits = build_fx25_bitstream(&frame, 2);
 
         let mut decoder = Fx25Decoder::new();
-        // Feed some preamble bits first
         for _ in 0..128 {
             assert!(decoder.feed_bit(false).is_none());
         }
 
-        // Feed the FX.25 bitstream
         let mut decoded_frame = None;
         for &bit in &bits {
             if let Some(f) = decoder.feed_bit(bit) {
@@ -321,7 +442,7 @@ mod tests {
 
         assert!(decoded_frame.is_some(), "no frame decoded");
         let decoded = decoded_frame.unwrap();
-        assert_eq!(&decoded[..frame_len], &frame[..frame_len]);
+        assert_eq!(&decoded[..], &frame[..]);
         assert_eq!(decoder.stats_tags_detected, 1);
         assert_eq!(decoder.stats_rs_clean, 1);
     }
@@ -329,14 +450,12 @@ mod tests {
     #[test]
     fn decode_with_byte_errors() {
         let frame = make_test_frame();
-        let (mut bits, frame_len) = build_fx25_bitstream(&frame, 2);
+        let mut bits = build_fx25_bitstream(&frame, 2);
 
         // Corrupt 5 bytes in the RS block area (after the 64-bit tag)
-        // Each byte is 8 bits, so corrupt bits at positions 64+offset*8
         for i in 0..5 {
-            let byte_start = 64 + (i * 3 + 10) * 8; // spread errors around
+            let byte_start = 64 + (i * 3 + 10) * 8;
             if byte_start + 7 < bits.len() {
-                // Flip all 8 bits of that byte
                 for b in 0..8 {
                     bits[byte_start + b] = !bits[byte_start + b];
                 }
@@ -356,16 +475,19 @@ mod tests {
             }
         }
 
-        assert!(decoded_frame.is_some(), "RS should correct 5 byte errors with 16 check bytes");
+        assert!(
+            decoded_frame.is_some(),
+            "RS should correct 5 byte errors with 16 check bytes"
+        );
         let decoded = decoded_frame.unwrap();
-        assert_eq!(&decoded[..frame_len], &frame[..frame_len]);
+        assert_eq!(&decoded[..], &frame[..]);
         assert_eq!(decoder.stats_rs_corrected, 1);
     }
 
     #[test]
     fn decode_too_many_errors_fails() {
         let frame = make_test_frame();
-        let (mut bits, _) = build_fx25_bitstream(&frame, 2);
+        let mut bits = build_fx25_bitstream(&frame, 2);
 
         // Corrupt 9 bytes (exceeds max_t=8 for 16 check bytes)
         for i in 0..9 {
@@ -397,9 +519,9 @@ mod tests {
     #[test]
     fn tag_detection_with_bit_errors() {
         let frame = make_test_frame();
-        let (mut bits, frame_len) = build_fx25_bitstream(&frame, 2);
+        let mut bits = build_fx25_bitstream(&frame, 2);
 
-        // Flip 3 bits in the correlation tag (should still match with hamming ≤ 5)
+        // Flip 3 bits in the correlation tag (should still match with hamming <= 5)
         bits[10] = !bits[10];
         bits[30] = !bits[30];
         bits[50] = !bits[50];
@@ -417,37 +539,36 @@ mod tests {
             }
         }
 
-        assert!(decoded_frame.is_some(), "tag should match with 3 bit errors");
-        assert_eq!(&decoded_frame.unwrap()[..frame_len], &frame[..frame_len]);
+        assert!(
+            decoded_frame.is_some(),
+            "tag should match with 3 bit errors"
+        );
+        assert_eq!(&decoded_frame.unwrap()[..], &frame[..]);
     }
 
     #[test]
     fn multiple_frames_sequential() {
         let frame1 = make_test_frame();
         let mut frame2 = make_test_frame();
-        frame2[16] = b'X'; // different payload
+        frame2[16] = b'X';
 
-        let (bits1, len1) = build_fx25_bitstream(&frame1, 2);
-        let (bits2, len2) = build_fx25_bitstream(&frame2, 2);
+        let bits1 = build_fx25_bitstream(&frame1, 2);
+        let bits2 = build_fx25_bitstream(&frame2, 2);
 
         let mut decoder = Fx25Decoder::new();
         let mut frames_decoded = Vec::new();
 
-        // Feed preamble
         for _ in 0..128 {
             decoder.feed_bit(false);
         }
-        // Feed first frame
         for &bit in &bits1 {
             if let Some(f) = decoder.feed_bit(bit) {
                 frames_decoded.push(f.to_vec());
             }
         }
-        // Feed gap
         for _ in 0..64 {
             decoder.feed_bit(false);
         }
-        // Feed second frame
         for &bit in &bits2 {
             if let Some(f) = decoder.feed_bit(bit) {
                 frames_decoded.push(f.to_vec());
@@ -455,8 +576,8 @@ mod tests {
         }
 
         assert_eq!(frames_decoded.len(), 2);
-        assert_eq!(&frames_decoded[0][..len1], &frame1[..len1]);
-        assert_eq!(&frames_decoded[1][..len2], &frame2[..len2]);
+        assert_eq!(&frames_decoded[0][..], &frame1[..]);
+        assert_eq!(&frames_decoded[1][..], &frame2[..]);
         assert_eq!(decoder.stats_tags_detected, 2);
     }
 
@@ -475,14 +596,24 @@ mod tests {
     #[test]
     fn all_tag_sizes() {
         let frame = make_test_frame();
-        // Test with tags that have enough room for our test frame
         for tag_idx in 0..FX25_TAGS.len() {
             let tag = &FX25_TAGS[tag_idx];
-            if tag.check_bytes == 0 || (tag.rs_k as usize) < frame.len() {
+            if tag.check_bytes == 0 {
+                continue;
+            }
+            // Check HDLC-wrapped frame fits in k
+            let crc = crc16_ccitt(&frame);
+            let mut frame_crc = vec![0u8; frame.len() + 2];
+            frame_crc[..frame.len()].copy_from_slice(&frame);
+            frame_crc[frame.len()] = crc as u8;
+            frame_crc[frame.len() + 1] = (crc >> 8) as u8;
+            let mut hdlc_buf = [0u8; 300];
+            let (hdlc_len, _) = hdlc_stuff_to_bytes_for_test(&frame_crc, &mut hdlc_buf);
+            if hdlc_len > tag.rs_k as usize {
                 continue;
             }
 
-            let (bits, frame_len) = build_fx25_bitstream(&frame, tag_idx);
+            let bits = build_fx25_bitstream(&frame, tag_idx);
             let mut decoder = Fx25Decoder::new();
             for _ in 0..128 {
                 decoder.feed_bit(false);
@@ -496,10 +627,40 @@ mod tests {
                 }
             }
 
-            assert!(decoded_frame.is_some(),
-                "tag {tag_idx} RS({},{}) decode failed", tag.rs_n, tag.rs_k);
-            assert_eq!(&decoded_frame.unwrap()[..frame_len], &frame[..frame_len],
-                "tag {tag_idx} data mismatch");
+            assert!(
+                decoded_frame.is_some(),
+                "tag {tag_idx} RS({},{}) decode failed",
+                tag.rs_n,
+                tag.rs_k
+            );
+            assert_eq!(
+                &decoded_frame.unwrap()[..],
+                &frame[..],
+                "tag {tag_idx} data mismatch"
+            );
         }
+    }
+
+    #[test]
+    fn encode_decode_roundtrip_via_encoder() {
+        // Verify that the encoder's output can be decoded by the decoder
+        let frame = make_test_frame();
+        let block = fx25_encode(&frame, 16).unwrap();
+
+        let mut decoder = Fx25Decoder::new();
+        for _ in 0..128 {
+            decoder.feed_bit(false);
+        }
+
+        let mut decoded = None;
+        for bit in block.iter_bits() {
+            if let Some(f) = decoder.feed_bit(bit) {
+                decoded = Some(f.to_vec());
+                break;
+            }
+        }
+
+        assert!(decoded.is_some(), "encoder output should decode");
+        assert_eq!(&decoded.unwrap()[..], &frame[..]);
     }
 }
